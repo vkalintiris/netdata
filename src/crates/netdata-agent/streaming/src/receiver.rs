@@ -2183,7 +2183,7 @@ mod tests {
     #[test]
     fn an_attach_postpones_the_child_s_health() {
         let cases = [
-            ("health enabled = yes\n  postpone alerts on connect = 90s", Some(90)),
+            ("health enabled = yes\n  postpone alerts on connect = 90s\n  health log retention = 1h", Some(90)),
             ("health enabled = auto", Some(60)),
             ("health enabled = no\n  postpone alerts on connect = 90s", None),
             ("health enabled = yes\n  postpone alerts on connect = 0", None),
@@ -2207,6 +2207,11 @@ mod tests {
                 netdata_agent_log::capture(|| r.admit(pending(&guid), Link::Plain(Conn::Unix(ours))));
             assert!(admitted, "{settings}");
             let host = r.hosts.find_by_guid(&guid).expect("the child's host");
+            // the attach gives the host its ACLK sync configuration, and its alert log the stream configuration's
+            // retention (5 days unless set), whatever its health setting
+            assert!(host.aclk_sync_config(), "{settings}");
+            let retention = if settings.contains("health log retention = 1h") { 3600 } else { 5 * 86400 };
+            assert_eq!(host.health_log_retention_s(), retention, "{settings}");
             let postponed: Vec<String> =
                 texts(records).into_iter().filter(|t| t.contains("Postponing health checks")).collect();
             match delay {

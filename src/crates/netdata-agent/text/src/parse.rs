@@ -718,7 +718,8 @@ mod tests {
 
     #[test]
     fn strtoul0_matches_glibc() {
-        let cases: [(&[u8], (u64, usize)); 7] = [
+        let ones65: &[u8] = b"0b11111111111111111111111111111111111111111111111111111111111111111";
+        let cases: [(&[u8], (u64, usize)); 14] = [
             (b" -1", (u64::MAX, 3)),
             (b"0x10z", (16, 4)),
             (b"010", (8, 3)),
@@ -726,6 +727,13 @@ mod tests {
             (b"18446744073709551616", (u64::MAX, 20)),
             (b"-18446744073709551616", (u64::MAX, 21)),
             (b"x", (0, 0)),
+            (b"0b101", (5, 5)),
+            (b"0B11", (3, 4)),
+            (b"0b", (0, 1)),
+            (b"0b2", (0, 1)),
+            (b"-0b11", (3u64.wrapping_neg(), 5)),
+            (b" +0b1z", (1, 5)),
+            (ones65, (u64::MAX, 67)),
         ];
         for (input, expected) in cases {
             assert_eq!(
@@ -841,8 +849,12 @@ fn clamp_signed(negative: bool, magnitude: u64, overflow: bool) -> (i64, bool) {
 
 /// The part `strtol()`, `strtoll()` and `strtoul()` share for base 0, 10 or 16 in the "C" locale: leading
 /// `isspace()`, an optional sign, then digits. Base 10 takes decimal digits only; base 16 and 0 take a `0x`/`0X`
-/// prefix (only when a hex digit follows) and hex digits; base 0 otherwise takes a leading `0` as octal, or decimal.
+/// prefix (only when a hex digit follows) and hex digits; base 0 also takes a `0b`/`0B` prefix (only when a binary
+/// digit follows) and otherwise a leading `0` as octal, or decimal.
 /// Returns `(negative, magnitude, overflowed u64, consumed)`, or `None` without digits (nothing is consumed).
+///
+/// The binary prefix is C23's: the agent is built with `_GNU_SOURCE`, which on glibc 2.38 and later binds these
+/// functions to their `__isoc23_` forms.
 fn scan_base(s: &[u8], base: u32) -> Option<(bool, u64, bool, usize)> {
     debug_assert!(base == 0 || base == 10 || base == 16);
     let mut i = skip_spaces(s, 0);
@@ -866,6 +878,8 @@ fn scan_base(s: &[u8], base: u32) -> Option<(bool, u64, bool, usize)> {
         (16u32, i + 2)
     } else if base == 16 {
         (16, i)
+    } else if at(s, i) == b'0' && matches!(at(s, i + 1), b'b' | b'B') && matches!(at(s, i + 2), b'0' | b'1') {
+        (2, i + 2)
     } else if at(s, i) == b'0' {
         (8, i)
     } else {
@@ -1115,7 +1129,7 @@ mod uuid_and_strtoull_tests {
     #[test]
     fn strtoll0_matches_glibc() {
         type Case = (&'static [u8], (i64, usize));
-        let cases: [Case; 10] = [
+        let cases: [Case; 15] = [
             (b"42", (42, 2)),
             (b"  -17x", (-17, 5)),
             (b"0x1F", (31, 4)),
@@ -1126,6 +1140,11 @@ mod uuid_and_strtoull_tests {
             (b"9223372036854775808", (i64::MAX, 19)),
             (b"-9223372036854775808", (i64::MIN, 20)),
             (b"abc", (0, 0)),
+            (b"0b101", (5, 5)),
+            (b"-0b11", (-3, 5)),
+            (b"0b", (0, 1)),
+            (b"0b2", (0, 1)),
+            (b"0b11111111111111111111111111111111111111111111111111111111111111111", (i64::MAX, 67)),
         ];
         for (input, want) in cases {
             assert_eq!(

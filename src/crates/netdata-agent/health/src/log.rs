@@ -76,7 +76,23 @@ impl AlarmLog {
         if let Some(entry) = self.entry_mut(unique_id) {
             entry.pending_save_count = entry.pending_save_count.saturating_sub(1);
         }
-        self.parked.retain(|entry| entry.unique_id != unique_id || entry.pending_save_count != 0);
+        self.parked.retain(|entry| entry.unique_id != unique_id || entry.waits_for_a_save());
+    }
+
+    /// A save of that entry was asked for, and is made once the store's lock is released.
+    pub fn owe_save(&mut self, unique_id: u32) {
+        if let Some(entry) = self.entry_mut(unique_id) {
+            entry.owed_saves = entry.owed_saves.saturating_add(1);
+        }
+    }
+
+    /// An owed save of that entry was made, handed to the metadata queue, or given up. An entry that left the log
+    /// goes when it waits for no other.
+    pub fn save_settled(&mut self, unique_id: u32) {
+        if let Some(entry) = self.entry_mut(unique_id) {
+            entry.owed_saves = entry.owed_saves.saturating_sub(1);
+        }
+        self.parked.retain(|entry| entry.unique_id != unique_id || entry.waits_for_a_save());
     }
 
     /// The walk of `health_alarm_log_process_to_send_notifications()`: the unique ids of the entries that still
@@ -150,13 +166,14 @@ impl AlarmLog {
     }
 
     /// The entries `goes` names leave the log; one with a save still queued is kept aside for the store job
-    /// (`health_alarm_log_free_one_nochecks_nounlink()`).
+    /// (`health_alarm_log_free_one_nochecks_nounlink()`), and one whose save is owed since it was logged for the
+    /// thread that is about to make it.
     fn remove_where(&mut self, goes: impl Fn(&Entry) -> bool) {
         let mut kept = VecDeque::with_capacity(self.entries.len());
         for entry in self.entries.drain(..) {
             if !goes(&entry) {
                 kept.push_back(entry);
-            } else if entry.pending_save_count != 0 {
+            } else if entry.waits_for_a_save() {
                 self.parked.push(entry);
             }
         }
@@ -220,6 +237,7 @@ mod tests {
             updates_id: 0,
             last_repeat: 0,
             pending_save_count: 0,
+            owed_saves: 0,
         }
     }
 
@@ -240,6 +258,30 @@ mod tests {
 
     /// The scan reads the clock when it starts, and once more at the first entry that is due (C builds its summary
     /// of raised alerts there and starts over): an entry that became due between the two reads is named too.
+    /// An entry that leaves the log before the save it was logged with is made waits for that save: the thread
+    /// that logged it finds it and saves it, and only then is it let go.
+    #[test]
+    fn an_entry_that_leaves_the_log_before_its_save_waits_for_it() {
+        let mut log = log(100);
+        let (added, _) = log.add(entry(7, Status::Clear, NOW));
+        log.owe_save(added.unique_id);
+        log.clear();
+        assert!(log.entries.is_empty());
+        assert_eq!(log.entry_mut(added.unique_id).map(|entry| entry.owed_saves), Some(1), "kept aside");
+        log.save_settled(added.unique_id);
+        assert!(log.entry_mut(added.unique_id).is_none(), "its save is made: it goes");
+
+        // one that also has a save queued waits for both
+        let (added, _) = log.add(entry(7, Status::Clear, NOW));
+        log.owe_save(added.unique_id);
+        log.entry_mut(added.unique_id).expect("in the log").pending_save_count = 1;
+        log.clear();
+        log.save_settled(added.unique_id);
+        assert!(log.entry_mut(added.unique_id).is_some(), "the queued save is still to come");
+        log.save_done(added.unique_id);
+        assert!(log.entry_mut(added.unique_id).is_none());
+    }
+
     #[test]
     fn the_scan_reads_the_clock_again_at_its_first_due_entry() {
         let reads = Cell::new(0);

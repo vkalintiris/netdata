@@ -77,6 +77,17 @@ pub struct Entry {
     pub last_repeat: i64,
     /// `ae->pending_save_count`: the saves of this entry the metadata queue holds.
     pub pending_save_count: u32,
+    /// The saves of this entry that were asked for under the store's lock and are made once it is released (C
+    /// makes them on its pointer to the entry): an entry that leaves the log meanwhile is kept until they are.
+    pub owed_saves: u32,
+}
+
+impl Entry {
+    /// Whether a save of this entry is still to come: one the metadata queue holds, or one owed since the entry
+    /// was logged. The memory log keeps such an entry aside when it lets go of it.
+    pub(crate) fn waits_for_a_save(&self) -> bool {
+        self.pending_save_count != 0 || self.owed_saves != 0
+    }
 }
 
 impl Entry {
@@ -136,6 +147,7 @@ impl Entry {
             updates_id: 0,
             last_repeat: 0,
             pending_save_count: 0,
+            owed_saves: 0,
         }
     }
 }

@@ -1,0 +1,91 @@
+# Statements that fail (a trigger refuses the write): what C records, and what is left in memory and in the tables.
+# On the HEALTH thread: the entry's detail row, the alarm's queue row, the alarm's own row, an update. Then the same
+# detail failure in a store job, off the HEALTH thread, in the REMOVED rows a restart injects and in what follows
+# from them, and in the cleanup's delete.
+database real
+retention 50
+rules tests/corpus/sql/save.conf
+aclk-config 1
+chart loop.s loop.s_name loop.sql disks things 1
+label loop.s kind ssd
+var loop.s v 10
+clock 0
+pass 0
+# the detail row of a new entry is refused: the entry stays unsaved, and is inserted again at its next save
+sql CREATE TRIGGER fail_detail BEFORE INSERT ON health_log_detail BEGIN SELECT RAISE(FAIL, 'detail refused'); END
+var loop.s v 70
+clock 1
+pass 1
+sql DROP TRIGGER fail_detail
+clock 2
+pass 2
+# the queue's row is refused: the entry is saved all the same
+sql CREATE TRIGGER fail_queue BEFORE INSERT ON alert_queue BEGIN SELECT RAISE(FAIL, 'queue refused'); END
+var loop.s v 95
+clock 3
+pass 3
+sql DROP TRIGGER fail_queue
+# an update is refused
+sql CREATE TRIGGER fail_update BEFORE UPDATE ON health_log_detail BEGIN SELECT RAISE(FAIL, 'update refused'); END
+var loop.s v 10
+clock 4
+pass 4
+sql DROP TRIGGER fail_update
+# the alarm's own row is refused: nothing of the entry is written
+chart loop.t loop.t_name loop.sql disks things 1
+label loop.t kind hdd
+var loop.t v 10
+sql CREATE TRIGGER fail_log BEFORE INSERT ON health_log BEGIN SELECT RAISE(FAIL, 'log refused'); END
+clock 5
+pass 5
+sql DROP TRIGGER fail_log
+clock 6
+pass 6
+# off the HEALTH thread: a queued entry's detail row is refused in the store job
+queue 1
+chart loop.u loop.u_name loop.sql disks things 1
+label loop.u kind nvme
+var loop.u v 10
+sql CREATE TRIGGER fail_detail BEFORE INSERT ON health_log_detail BEGIN SELECT RAISE(FAIL, 'detail refused'); END
+clock 7
+pass 7
+clock 8
+store
+sql DROP TRIGGER fail_detail
+queue 0
+clock 9
+pass 9
+# a restart whose REMOVED rows are refused
+sql CREATE TRIGGER fail_detail BEFORE INSERT ON health_log_detail BEGIN SELECT RAISE(FAIL, 'detail refused'); END
+clock 100
+restart
+clock 101
+pass 101
+sql DROP TRIGGER fail_detail
+clock 102
+pass 102
+# new statuses, saved whole: each alarm's pointer names a row again
+var loop.s v 70
+var loop.t v 70
+var loop.u v 70
+clock 103
+pass 103
+# a restart whose REMOVED rows go in, while what follows from each is refused: the mark on the row it replaces, and
+# the alarm's pointer
+sql CREATE TRIGGER fail_update BEFORE UPDATE ON health_log_detail BEGIN SELECT RAISE(FAIL, 'update refused'); END
+sql CREATE TRIGGER fail_pointer BEFORE UPDATE ON health_log BEGIN SELECT RAISE(FAIL, 'pointer refused'); END
+clock 200
+restart
+clock 201
+pass 201
+sql DROP TRIGGER fail_update
+sql DROP TRIGGER fail_pointer
+clock 202
+pass 202
+# the cleanup's delete is refused: the memory log is cleaned all the same
+sql CREATE TRIGGER fail_delete BEFORE DELETE ON health_log_detail BEGIN SELECT RAISE(FAIL, 'delete refused'); END
+clock 400
+cleanup
+sql DROP TRIGGER fail_delete
+clock 401
+alarm-log 0

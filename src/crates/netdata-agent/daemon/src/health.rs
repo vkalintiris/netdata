@@ -85,6 +85,10 @@ pub(crate) fn mark_health_thread() {
     IS_HEALTH_THREAD.with(|flag| flag.set(true));
 }
 
+fn is_health_thread() -> bool {
+    IS_HEALTH_THREAD.with(Cell::get)
+}
+
 /// `sql_health_alarm_log_save()` of a host's entry: an insert, or an update of an entry saved before; with the
 /// host's ACLK sync configuration an insert writes the alarm's row of the queue toward the Cloud too. True when a
 /// row was inserted.
@@ -92,7 +96,8 @@ pub(crate) fn save_entry(meta: &MetaDb, host: &Host, entry: &Entry) -> bool {
     let Some(host_id) = crate::meta_store::host_id(host) else {
         return false;
     };
-    netdata_agent_health::sql::save(meta, &host.hostname(), &host_id, entry, host.aclk_sync_config())
+    let (hostname, queue) = (host.hostname(), host.aclk_sync_config());
+    netdata_agent_health::sql::save(meta, &hostname, &host_id, entry, queue, is_health_thread())
 }
 
 /// What a health pass asks of the daemon: the charts as they are collected, the database for a lookup, the clock,
@@ -166,7 +171,7 @@ impl Env for LiveEnv {
     }
 
     fn is_health_thread(&self) -> bool {
-        IS_HEALTH_THREAD.with(Cell::get)
+        is_health_thread()
     }
 
     fn service_running(&self) -> bool {
@@ -182,8 +187,9 @@ impl Env for LiveEnv {
         let (hostname, queue) = (host.hostname(), host.aclk_sync_config());
         let running = || self.service_running();
         let mut transition_id = || self.transition_id();
-        let (now, now_ut) = (now_realtime_s(), now_realtime_ut());
-        meta.check_removed_alerts_state(&hostname, &host_id, &running, queue, now, now_ut, &mut transition_id);
+        let mut now_ut = now_realtime_ut;
+        let health = is_health_thread();
+        meta.check_removed_alerts_state(&hostname, &host_id, &running, queue, health, &mut now_ut, &mut transition_id);
         let mut rows = Vec::new();
         let prepared = meta.load_health_log(&host_id, |row| {
             rows.push(row);
@@ -218,8 +224,8 @@ impl Env for LiveEnv {
         else {
             return false;
         };
-        let Some((count, added)) = meta.process_alert_pending_queue(&host_id, host.aclk_sync_config(), now_realtime_s())
-        else {
+        let (queue, now) = (host.aclk_sync_config(), now_realtime_s());
+        let Some((count, added)) = meta.process_alert_pending_queue(&host_id, queue, now, is_health_thread()) else {
             return false;
         };
         if count != 0 {
@@ -420,6 +426,115 @@ mod tests {
         assert_eq!(names(&health), ["user_a"]);
         assert_eq!(templates(&unread.statements()), ["user_a"]);
         assert_eq!(directory_keys(&mut conf), ["health config"]);
+    }
+
+    /// The alert log's part of the live environment when the agent has no metadata database, and when the exit
+    /// closed it. Without one: the load says nothing; the queue refuses every save, so none is ever pending; a save
+    /// the queue refused is made only on the HEALTH thread; a save, an alarm's id and the pending queue each leave
+    /// C's record of a statement that cannot be prepared; no entry is marked as saved. With a closed one nothing is
+    /// said.
+    #[test]
+    fn the_live_env_without_a_database_and_after_its_close() {
+        use netdata_agent_health::entry::entry_flags;
+        use netdata_agent_health::readfile::health_readfile;
+        use netdata_agent_rrd::chart::{Algorithm, ChartSpec, ChartType};
+        use netdata_agent_rrd::host::{HostInfo, pending_flags};
+        use netdata_agent_rrd::mode::DbMode;
+
+        let dir = tempfile::tempdir().unwrap();
+        let rules = dir.path().join("t.conf");
+        std::fs::write(&rules, "template: t_one\n on: t.ctx\n calc: 1\n every: 1s\n warn: $this > 5\n").unwrap();
+        let health = Health::init(Default::default(), Box::new(|_| {}));
+        assert!(health_readfile(&health, rules.as_os_str().as_encoded_bytes(), false));
+        let info = HostInfo {
+            hostname: "live".into(),
+            registry_hostname: "live".into(),
+            os: "linux".into(),
+            timezone: "UTC".into(),
+            abbrev_timezone: "UTC".into(),
+            utc_offset: 0,
+            program_name: "netdata".into(),
+            program_version: "v0".into(),
+            update_every: 1,
+            db_mode: DbMode::Ram,
+            history_entries: 3600,
+            health_enabled: true,
+            system_info: Default::default(),
+            replication_enabled: false,
+            replication_period: 0,
+            replication_step: 0,
+            stream_send: None,
+            cache_dir: None,
+        };
+        let hosts = Arc::new(Hosts::new(Host::new("11ee0000-0000-4000-8000-0000000000ab", true, info)));
+        let host = Arc::clone(hosts.localhost());
+        let (chart, _) = host.charts().create(&ChartSpec {
+            type_: "t",
+            id: "c",
+            name: None,
+            family: Some("f"),
+            context: Some("t.ctx"),
+            title: "T",
+            units: "u",
+            plugin: "p",
+            module: None,
+            priority: 1000,
+            update_every: 1,
+            chart_type: ChartType::Line,
+            mode: DbMode::Ram,
+            history_entries: 3600,
+            page_size: 4096,
+        });
+        chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+        let now = now_realtime_s();
+        chart.update_collection(|collection| {
+            collection.counter_done = 3;
+            collection.last_collected = (now, 0);
+        });
+
+        // a host's first pass through `env`, as a new process makes it: what it recorded
+        let first_pass = |env: &LiveEnv| -> Vec<String> {
+            health.host_freed(&host);
+            host.raise_pending_flags(pending_flags::HEALTH_INITIALIZATION);
+            chart.flags_set_and_clear(flags::PENDING_HEALTH_INITIALIZATION, 0);
+            let mut next_run = now + 10;
+            let ((), records) = netdata_agent_log::capture(|| {
+                let pass = Pass { now, apply_hibernation_delay: false, next_run: &mut next_run, gate: &|| true };
+                health.host_pass(&host, pass, env, &now_realtime_s, &|| true);
+            });
+            records.into_iter().filter_map(|record| record.message).collect()
+        };
+        let failed = |records: &[String], function: &str| {
+            let record = format!("Failed to prepare statement, rc=21 in {function}");
+            records.iter().filter(|message| **message == record).count()
+        };
+
+        // no database, on a thread that is not HEALTH: the link's save is not made; what the pass logs itself is
+        let (queue, unread) = MetaQueue::unread();
+        let env = LiveEnv::new(Arc::clone(&hosts), Windows::default(), None, queue);
+        let records = first_pass(&env);
+        let elsewhere = failed(&records, "sql_health_alarm_log_insert");
+        assert!(elsewhere > 0, "{records:?}");
+        assert_eq!(failed(&records, "sql_get_alarm_id"), 1, "{records:?}");
+        assert_eq!(failed(&records, "process_alert_pending_queue"), 1, "{records:?}");
+        assert!(!records.iter().any(|message| message.contains("Database has not been initialized")), "{records:?}");
+        let alerts = health.host(&host).unwrap();
+        assert_eq!((alerts.pending_transitions(), unread.alert_commands().0.len()), (0, 0), "the queue refuses");
+        assert!(alerts.log_entries().iter().all(|entry| entry.flags & entry_flags::SAVED == 0));
+
+        // the same on HEALTH: the link's refused save is made at once too
+        mark_health_thread();
+        let records = first_pass(&env);
+        assert_eq!(failed(&records, "sql_health_alarm_log_insert"), elsewhere + 1, "{records:?}");
+
+        // a database the exit closed: nothing is said
+        let meta = Arc::new(MetaDb::open(dir.path(), &Default::default()).unwrap());
+        let (queue, _unread) = MetaQueue::unread();
+        let env = LiveEnv::new(Arc::clone(&hosts), Windows::default(), Some(&meta), queue);
+        drop(meta);
+        let records = first_pass(&env);
+        assert!(!records.iter().any(|message| message.starts_with("Failed to prepare statement")), "{records:?}");
+        assert!(health.host(&host).unwrap().log_entries().iter().all(|entry| entry.flags & entry_flags::SAVED == 0));
     }
 
     /// What the loop reads of a chart through the daemon: its collection as it stands, the span of its stored

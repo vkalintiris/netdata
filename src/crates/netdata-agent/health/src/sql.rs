@@ -20,7 +20,15 @@ use crate::tables::{DataSource, DimsGrouping, GroupCondition};
 
 /// `sql_health_alarm_log_save()`: an entry that was saved before is updated, another is inserted (with `queue`,
 /// the alarm's row of the unclaimed queue too). True when a row was inserted: the caller marks the entry SAVED.
-pub fn save(meta: &MetaDb, hostname: &str, host_id: &[u8; 16], entry: &Entry, queue: bool) -> bool {
+/// `health_thread`: the caller is HEALTH (C's `is_health_thread`), which shows in the record of a failed step.
+pub fn save(
+    meta: &MetaDb,
+    hostname: &str,
+    host_id: &[u8; 16],
+    entry: &Entry,
+    queue: bool,
+    health_thread: bool,
+) -> bool {
     let row = EntryRow {
         unique_id: entry.unique_id,
         alarm_id: entry.alarm_id,
@@ -54,10 +62,10 @@ pub fn save(meta: &MetaDb, hostname: &str, host_id: &[u8; 16], entry: &Entry, qu
         global_id: entry.global_id,
     };
     if entry.flags & entry_flags::SAVED != 0 {
-        meta.health_alarm_log_update(hostname, &row);
+        meta.health_alarm_log_update(hostname, &row, health_thread);
         false
     } else {
-        meta.health_alarm_log_insert(hostname, host_id, &row, queue)
+        meta.health_alarm_log_insert(hostname, host_id, &row, queue, health_thread)
     }
 }
 
@@ -165,6 +173,7 @@ pub(crate) fn entry_of(row: LoadedRow) -> Result<Entry, &'static str> {
         updates_id: row.updates_id,
         last_repeat: row.last_repeat,
         pending_save_count: 0,
+        owed_saves: 0,
     })
 }
 

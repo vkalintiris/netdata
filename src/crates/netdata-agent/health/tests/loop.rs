@@ -392,10 +392,11 @@ mod replay {
                 return database.then(Vec::new);
             };
             let (hostname, id, queue) = (host.hostname(), host_id(host), self.aclk_config.get());
-            let (now, now_usec) = (self.clock(), self.now_usec());
+            let mut now_usec = || self.now_usec();
             let mut transition_id = || self.transition_id();
-            let running = || self.is_running();
-            real.meta.check_removed_alerts_state(&hostname, &id, &running, queue, now, now_usec, &mut transition_id);
+            let (running, health) = (|| self.is_running(), self.health_thread.get());
+            let meta = &real.meta;
+            meta.check_removed_alerts_state(&hostname, &id, &running, queue, health, &mut now_usec, &mut transition_id);
             let mut rows = Vec::new();
             let prepared = real.meta.load_health_log(&id, |row| {
                 rows.push(row);
@@ -440,7 +441,8 @@ mod replay {
             self.calls.borrow_mut().push(vec![b"save".to_vec(), text(entry.unique_id), hex8(entry.flags)]);
             match self.real.borrow().as_ref() {
                 Some(real) => {
-                    sql::save(&real.meta, &host.hostname(), &host_id(host), entry, self.aclk_config.get())
+                    let (hostname, queue, health) = (host.hostname(), self.aclk_config.get(), self.health_thread.get());
+                    sql::save(&real.meta, &hostname, &host_id(host), entry, queue, health)
                 }
                 None => self.saved.get(),
             }
@@ -1380,10 +1382,11 @@ fn queue_matches_c() {
 /// Every scenario of `tests/corpus/sql/` against C's pass with C's own alert log SQL over a real database file:
 /// here the Rust statements run over a new metadata database, and after each step the rows of the alert log's four
 /// tables are compared too. A scenario's `restart` is a new process on the same file: the load at the host's first
-/// pass, with the REMOVED rows it injects, rows it refuses, and a service that stops while it loads.
+/// pass, with the REMOVED rows it injects, rows it refuses, and a service that stops while it loads. In `fail` a
+/// trigger refuses each of the statements in turn: C's two records per failed step, and what is left behind.
 #[test]
 fn sql_matches_c() {
-    assert_eq!(replayed("sql"), 88);
+    assert_eq!(replayed("sql"), 107);
 }
 
 /// The steps a family's replay compared; any difference from C's rows fails.

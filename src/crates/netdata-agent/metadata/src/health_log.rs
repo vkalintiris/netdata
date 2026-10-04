@@ -11,7 +11,7 @@ use rusqlite::{Connection, Row, ToSql};
 
 use crate::conn;
 use crate::open::MetaDb;
-use crate::read::prepare_failed;
+use crate::read::{End, prepare_failed};
 use crate::write::{Step, execute, text};
 
 const SQL_UPDATE_HEALTH_LOG: &str = "UPDATE health_log_detail SET updated_by_id = @updated_by, flags = @flags, \
@@ -385,8 +385,16 @@ fn bytes_or_null(row: &Row<'_>, i: usize) -> Option<Vec<u8>> {
     }
 }
 
+/// Whether a step failed because the database is busy or locked: `sqlite3_step_monitored()` makes such a step
+/// again, up to `MAX_RETRY` times.
+fn busy(err: &rusqlite::Error) -> bool {
+    matches!(conn::result_code(err), conn::SQLITE_BUSY | conn::SQLITE_LOCKED)
+}
+
 /// The rows of a query, each handed to `f`; false when the statement cannot be prepared (reported with the C
-/// function's name). A step that fails ends the rows, as C's `while (step == SQLITE_ROW)`.
+/// function's name). A step that fails ends the rows, as C's `while (step == SQLITE_ROW)`, and the finalize that
+/// follows it is recorded; a busy or locked database is waited for before the first row (rusqlite cannot step
+/// again a statement whose step failed, so the query starts over, which it can only do while `f` saw nothing).
 fn rows(c: &Connection, sql: &str, function: &str, params: &[&dyn ToSql], mut f: impl FnMut(&Row<'_>) -> bool) -> bool {
     let mut stmt = match c.prepare(sql) {
         Ok(stmt) => stmt,
@@ -395,15 +403,43 @@ fn rows(c: &Connection, sql: &str, function: &str, params: &[&dyn ToSql], mut f:
             return false;
         }
     };
-    let Ok(mut rows) = stmt.query(params) else {
-        return true;
-    };
-    while let Ok(Some(row)) = rows.next() {
-        if !f(row) {
-            break;
+    let mut attempt = 1;
+    loop {
+        let Ok(mut rows) = stmt.query(params) else {
+            return true;
+        };
+        let mut seen = false;
+        loop {
+            match rows.next() {
+                Ok(Some(row)) => {
+                    seen = true;
+                    if !f(row) {
+                        return true;
+                    }
+                }
+                Ok(None) => return true,
+                Err(err) if !seen && busy(&err) && attempt < conn::MAX_RETRY => break,
+                Err(err) => {
+                    End::Finalize.failed(conn::result_code(&err), function);
+                    return true;
+                }
+            }
+        }
+        attempt += 1;
+        std::thread::sleep(conn::RETRY_DELAY);
+    }
+}
+
+/// The next row of a walk C makes with `while (step == SQLITE_ROW)`: none at its end, and none at a step that
+/// failed, which the statement's `end` in `function` then records.
+fn next_row<'a, 's>(rows: &'a mut rusqlite::Rows<'s>, end: End, function: &str) -> Option<&'a Row<'s>> {
+    match rows.next() {
+        Ok(row) => row,
+        Err(err) => {
+            end.failed(conn::result_code(&err), function);
+            None
         }
     }
-    true
 }
 
 /// `insert_alert_queue()` on a connection already held: the alarm's row of `alert_queue`, due `trigger_time` plus
@@ -411,6 +447,7 @@ fn rows(c: &Connection, sql: &str, function: &str, params: &[&dyn ToSql], mut f:
 #[allow(clippy::too_many_arguments)]
 fn insert_alert_queue(
     c: &Connection,
+    end: End,
     hostname: &str,
     host_id: &[u8; 16],
     health_log_id: i64,
@@ -425,6 +462,7 @@ fn insert_alert_queue(
         [&&host_id[..], &health_log_id, &i64::from(unique_id), &i64::from(alarm_id), &new_status, &submit_delay];
     if let Err(Step::Failed(rc)) = execute(c, SQL_INSERT_ALERT_PENDING_QUEUE, "insert_alert_queue", &params) {
         netdata_log_error!("HEALTH [{hostname}]: Failed to execute insert_alert_queue, rc = {rc}");
+        end.failed(rc, "insert_alert_queue");
     }
 }
 
@@ -432,14 +470,17 @@ impl MetaDb {
     /// `sql_health_alarm_log_insert()`: the alarm's row of `health_log` (made, or pointed at this entry), then the
     /// entry's row of `health_log_detail`, then, with `queue` (the host has its ACLK sync configuration), the
     /// alarm's row of `alert_queue`, whether or not the detail row went in. True when the detail row was inserted:
-    /// C marks the entry as saved then. The row's `flags` are the entry's before that mark.
+    /// C marks the entry as saved then. The row's `flags` are the entry's before that mark. `health_thread`: the
+    /// caller is HEALTH, which keeps these statements compiled; it shows in the record of a step that failed.
     pub fn health_alarm_log_insert(
         &self,
         hostname: &str,
         host_id: &[u8; 16],
         entry: &EntryRow<'_>,
         queue: bool,
+        health_thread: bool,
     ) -> bool {
+        let end = End::of_health_statement(health_thread);
         let c = self.lock();
         let mut stmt = match c.prepare(SQL_INSERT_HEALTH_LOG) {
             Ok(stmt) => stmt,
@@ -461,19 +502,33 @@ impl MetaDb {
             &&entry.transition_id[..],
             &text_or_null(entry.chart_name),
         ];
-        let health_log_id = match conn::retry(|| stmt.query_row(&params[..], |row| row.get::<_, i64>(0))) {
-            Ok(id) => id,
-            Err(err) => {
+        // C steps the alarm's statement once and resets it only after the entry's row and the queue's row are
+        // written: the three writes are one transaction. The statement's rows are kept until then for the same.
+        let mut attempt = 1;
+        let (health_log_id, alarm_row) = loop {
+            let stepped = stmt.query(&params[..]).and_then(|mut rows| {
+                let id = rows.next()?.map(|row| row.get::<_, i64>(0)).transpose()?;
+                Ok((id, rows))
+            });
+            match stepped {
+                Ok((Some(id), rows)) => break (id, rows),
                 // a step that ends without a row is SQLITE_DONE (101) in C's record
-                let rc = match err {
-                    rusqlite::Error::QueryReturnedNoRows => 101,
-                    err => conn::result_code(&err),
-                };
-                netdata_log_error!("HEALTH [{hostname}]: Failed to execute SQL_INSERT_HEALTH_LOG, rc = {rc}");
-                return false;
+                Ok((None, _)) => {
+                    netdata_log_error!("HEALTH [{hostname}]: Failed to execute SQL_INSERT_HEALTH_LOG, rc = 101");
+                    return false;
+                }
+                Err(err) if busy(&err) && attempt < conn::MAX_RETRY => {
+                    attempt += 1;
+                    std::thread::sleep(conn::RETRY_DELAY);
+                }
+                Err(err) => {
+                    let rc = conn::result_code(&err);
+                    netdata_log_error!("HEALTH [{hostname}]: Failed to execute SQL_INSERT_HEALTH_LOG, rc = {rc}");
+                    end.failed(rc, "sql_health_alarm_log_insert");
+                    return false;
+                }
             }
         };
-        drop(stmt);
 
         let detail: [&dyn ToSql; 23] = [
             &health_log_id,
@@ -506,20 +561,22 @@ impl MetaDb {
             Err(Step::Prepare) => false,
             Err(Step::Failed(rc)) => {
                 netdata_log_error!("HEALTH [{hostname}]: Failed to execute SQL_INSERT_HEALTH_LOG_DETAIL, rc = {rc}");
+                end.failed(rc, function);
                 false
             }
         };
         if queue {
             let (unique_id, alarm_id) = (entry.unique_id, entry.alarm_id);
             let (old, new) = (entry.old_status, entry.new_status);
-            insert_alert_queue(&c, hostname, host_id, health_log_id, unique_id, alarm_id, old, new, entry.when);
+            insert_alert_queue(&c, end, hostname, host_id, health_log_id, unique_id, alarm_id, old, new, entry.when);
         }
+        drop(alarm_row);
         saved
     }
 
     /// `sql_health_alarm_log_update()`: an entry that was saved before: who replaced it, its flags, and what its
-    /// notification's execution left.
-    pub fn health_alarm_log_update(&self, hostname: &str, entry: &EntryRow<'_>) {
+    /// notification's execution left. `health_thread` as for the insert.
+    pub fn health_alarm_log_update(&self, hostname: &str, entry: &EntryRow<'_>, health_thread: bool) {
         let params: [&dyn ToSql; 7] = [
             &i64::from(entry.updated_by_id),
             &i64::from(entry.flags),
@@ -532,6 +589,7 @@ impl MetaDb {
         let c = self.lock();
         if let Err(Step::Failed(rc)) = execute(&c, SQL_UPDATE_HEALTH_LOG, "sql_health_alarm_log_update", &params) {
             netdata_log_error!("HEALTH [{hostname}]: Failed to update health log, rc = {rc}");
+            End::of_health_statement(health_thread).failed(rc, "sql_health_alarm_log_update");
         }
     }
 
@@ -540,7 +598,7 @@ impl MetaDb {
     /// the alarms ends when `running` says the service stops. Each new row takes the next unique id above the
     /// host's highest, the alarm's next event id, a transition id from `transition_id`, and `now` as its time; the
     /// row it replaces is marked as updated by it, the alarm points at it, and with `queue` the alarm's row of
-    /// `alert_queue` is written.
+    /// `alert_queue` is written (`health_thread` as for an entry's insert).
     #[allow(clippy::too_many_arguments)]
     pub fn check_removed_alerts_state(
         &self,
@@ -548,8 +606,8 @@ impl MetaDb {
         host_id: &[u8; 16],
         running: &dyn Fn() -> bool,
         queue: bool,
-        now: i64,
-        now_usec: u64,
+        health_thread: bool,
+        now_usec: &mut dyn FnMut() -> u64,
         transition_id: &mut dyn FnMut() -> [u8; 16],
     ) {
         let c = self.lock();
@@ -591,6 +649,9 @@ impl MetaDb {
                 continue;
             }
             let new_transition = transition_id();
+            // each row is a statement of its own in C, with its own reads of the clock
+            let now_usec = now_usec();
+            let now = (now_usec / 1_000_000) as i64;
             let params: &[(&str, &dyn ToSql)] = &[
                 ("@max_unique_id", &i64::from(max_unique_id)),
                 ("@alarm_id", &i64::from(alarm_id)),
@@ -601,21 +662,34 @@ impl MetaDb {
                 ("@now", &now),
                 ("@now_usec", &(now_usec as i64)),
             ];
-            let mut injected: Vec<(i64, i32)> = Vec::new();
-            match c.prepare(SQL_INJECT_REMOVED) {
-                Ok(mut stmt) => {
-                    if let Ok(mut rows) = stmt.query(params) {
-                        while let Ok(Some(row)) = rows.next() {
-                            injected.push((int(row, 0), double(row, 1) as i32));
-                        }
-                    }
-                }
+            let mut stmt = match c.prepare(SQL_INJECT_REMOVED) {
+                Ok(stmt) => stmt,
                 Err(err) => {
                     prepare_failed(&err, "sql_inject_removed_status");
                     continue;
                 }
+            };
+            // C writes what follows from the new row while the statement that made it is still active: one
+            // transaction. The statement's rows are kept until then for the same.
+            let mut attempt = 1;
+            let injected = loop {
+                let stepped = stmt.query(params).and_then(|mut rows| {
+                    let row = rows.next()?.map(|row| (int(row, 0), double(row, 1) as i32));
+                    Ok((row, rows))
+                });
+                match stepped {
+                    Err(err) if busy(&err) && attempt < conn::MAX_RETRY => {
+                        attempt += 1;
+                        std::thread::sleep(conn::RETRY_DELAY);
+                    }
+                    stepped => break stepped,
+                }
+            };
+            // a step that failed shows in the statement's finalize only
+            if let Err(err) = &injected {
+                End::Finalize.failed(conn::result_code(err), "sql_inject_removed_status");
             }
-            for (health_log_id, old_status) in injected {
+            if let Ok((Some((health_log_id, old_status)), _new_row)) = injected {
                 // sql_set_updated_by_in_health_log_detail()
                 let updated: [&dyn ToSql; 4] =
                     [&ENTRY_FLAG_UPDATED, &i64::from(max_unique_id), &i64::from(unique_id), &&last_transition[..]];
@@ -623,6 +697,7 @@ impl MetaDb {
                 let step = execute(&c, SQL_SET_UPDATED_BY_IN_HEALTH_LOG_DETAIL, function, &updated);
                 if let Err(Step::Failed(rc)) = step {
                     netdata_log_error!("HEALTH [N/A]: Failed to execute SQL_INJECT_REMOVED_UPDATE_DETAIL, rc = {rc}");
+                    End::Finalize.failed(rc, function);
                 }
                 // sql_update_transition_in_health_log()
                 let pointed: [&dyn ToSql; 4] =
@@ -630,10 +705,12 @@ impl MetaDb {
                 let function = "sql_update_transition_in_health_log";
                 if let Err(Step::Failed(rc)) = execute(&c, SQL_UPDATE_TRANSITION_IN_HEALTH_LOG, function, &pointed) {
                     netdata_log_error!("HEALTH [N/A]: Failed to execute SQL_INJECT_REMOVED_UPDATE_DETAIL, rc = {rc}");
+                    End::Finalize.failed(rc, function);
                 }
                 if queue {
-                    let (id, removed) = (max_unique_id, STATUS_REMOVED);
-                    insert_alert_queue(&c, hostname, host_id, health_log_id, id, alarm_id, old_status, removed, now);
+                    let (id, removed, end) = (max_unique_id, STATUS_REMOVED, End::of_health_statement(health_thread));
+                    let old = old_status;
+                    insert_alert_queue(&c, end, hostname, host_id, health_log_id, id, alarm_id, old, removed, now);
                 }
             }
         }
@@ -709,7 +786,7 @@ impl MetaDb {
             Ok(mut stmt) => {
                 let params: [&dyn ToSql; 2] = [&health_log_id, &i64::from(alarm_id)];
                 if let Ok(mut rows) = stmt.query(&params[..]) {
-                    while let Ok(Some(row)) = rows.next() {
+                    while let Some(row) = next_row(&mut rows, End::Finalize, "get_next_alarm_event_id") {
                         next_event_id = int(row, 0) as u32;
                     }
                 }
@@ -736,6 +813,7 @@ impl MetaDb {
         if let Err(err) = conn::retry(|| stmt.execute(params)) {
             let rc = conn::result_code(&err);
             netdata_log_error!("Failed to cleanup health log detail table, rc = {rc}");
+            End::Finalize.failed(rc, "sql_health_alarm_log_cleanup");
         }
         true
     }
@@ -779,7 +857,7 @@ impl MetaDb {
         let Ok(mut rows) = stmt.query(&params[..]) else {
             return true;
         };
-        while let Ok(Some(row)) = rows.next() {
+        while let Some(row) = next_row(&mut rows, End::Finalize, "sql_health_alarm_log2json") {
             each(AlarmLogRow {
                 unique_id: int(row, 0),
                 alarm_id: int(row, 1),
@@ -850,7 +928,10 @@ impl MetaDb {
             let row = match rows.next() {
                 Ok(Some(row)) => row,
                 Ok(None) => return true,
-                Err(_) => return false,
+                Err(err) => {
+                    End::Finalize.failed(conn::result_code(&err), "sql_alert_cleanup");
+                    return false;
+                }
             };
             let Uuid::Valid(host_id) = uuid_column(row, 0) else {
                 netdata_log_error!("Alert cleanup: skipping host with invalid host_id");
@@ -863,8 +944,9 @@ impl MetaDb {
             let params: &[(&str, &dyn ToSql)] = &[("@host_id", &&host_id[..])];
             match c.prepare(SQL_DELETE_MISSING_CHART_ALERT) {
                 Ok(mut delete) => {
-                    if conn::retry(|| delete.execute(params)).is_err() {
+                    if let Err(err) = conn::retry(|| delete.execute(params)) {
                         netdata_log_error!("Failed to execute command to delete missing charts from health_log");
+                        End::Finalize.failed(conn::result_code(&err), function);
                     }
                 }
                 Err(err) => prepare_failed(&err, function),
@@ -888,7 +970,7 @@ impl MetaDb {
             return Ok(None);
         };
         let (mut found, mut invalid) = (None, 0usize);
-        while let Ok(Some(row)) = rows.next() {
+        while let Some(row) = next_row(&mut rows, End::Finalize, "sql_get_alert_configuration") {
             let Uuid::Valid(hash_id) = uuid_column(row, 0) else {
                 invalid += 1;
                 continue;
@@ -946,8 +1028,16 @@ impl MetaDb {
     /// status for the alarm (the version row then takes the entry's unique id; also when its statement cannot be
     /// prepared), not when the entry's rule is a variable (no warning, no critical expression), else the alarm's
     /// row of `aclk_queue` is made or pointed at the entry. Returns how many rows were processed and how many were
-    /// queued; `None` when the walk's statement cannot be prepared. C's NOTICE is the caller's.
-    pub fn process_alert_pending_queue(&self, host_id: &[u8; 16], has_config: bool, now: i64) -> Option<(u32, u32)> {
+    /// queued; `None` when the walk's statement cannot be prepared. C's NOTICE is the caller's. `health_thread`:
+    /// the caller is HEALTH, which keeps these statements compiled; it shows in the record of a step that failed.
+    pub fn process_alert_pending_queue(
+        &self,
+        host_id: &[u8; 16],
+        has_config: bool,
+        now: i64,
+        health_thread: bool,
+    ) -> Option<(u32, u32)> {
+        let end = End::of_health_statement(health_thread);
         let c = self.lock();
         let mut due: Vec<(i64, u32, i32, i64)> = Vec::new();
         let params: &[(&str, &dyn ToSql)] = &[("@host_id", &&host_id[..]), ("@now", &now)];
@@ -959,7 +1049,7 @@ impl MetaDb {
             }
         };
         if let Ok(mut rows) = stmt.query(params) {
-            while let Ok(Some(row)) = rows.next() {
+            while let Some(row) = next_row(&mut rows, end, "process_alert_pending_queue") {
                 due.push((int(row, 0), int(row, 1) as u32, double(row, 2) as i32, int(row, 3)));
             }
         }
@@ -967,7 +1057,8 @@ impl MetaDb {
 
         let (mut count, mut added) = (0, 0);
         for (health_log_id, unique_id, status, rowid) in due {
-            if has_config && insert_alert_to_submit_queue(&c, host_id, health_log_id, unique_id, status, now) == 0 {
+            let queued = || insert_alert_to_submit_queue(&c, end, host_id, health_log_id, unique_id, status, now);
+            if has_config && queued() == 0 {
                 added += 1;
             }
             // delete_alert_from_pending_queue()
@@ -975,6 +1066,7 @@ impl MetaDb {
             let function = "delete_alert_from_pending_queue";
             if let Err(Step::Failed(rc)) = execute(&c, SQL_DELETE_PROCESSED_ROWS, function, &processed) {
                 netdata_log_error!("Failed to delete processed rows, rc = {rc}");
+                end.failed(rc, function);
             }
             count += 1;
         }
@@ -996,9 +1088,11 @@ impl MetaDb {
 }
 
 /// `insert_alert_to_submit_queue()`: 1 when the Cloud knows the status already, 2 for a variable's entry, 0 when
-/// the entry was queued (also when the insert's step failed), -1 when the insert cannot be prepared.
+/// the entry was queued (also when the insert's step failed), -1 when the insert cannot be prepared. `end`: how the
+/// calling thread lets go of these statements.
 fn insert_alert_to_submit_queue(
     c: &Connection,
+    end: End,
     host_id: &[u8; 16],
     health_log_id: i64,
     unique_id: u32,
@@ -1009,6 +1103,10 @@ fn insert_alert_to_submit_queue(
     let matches = match c.prepare(SQL_SELECT_LAST_ALERT_STATUS) {
         Ok(mut stmt) => {
             let known = stmt.query_row([health_log_id], |row| Ok(double(row, 0) as i32));
+            // no row is no failure
+            if let Err(err @ rusqlite::Error::SqliteFailure(..)) = &known {
+                end.failed(conn::result_code(err), "cloud_status_matches");
+            }
             known.is_ok_and(|known| known == status)
         }
         Err(err) => {
@@ -1020,8 +1118,9 @@ fn insert_alert_to_submit_queue(
         // update_alert_version_transition()
         let params: [&dyn ToSql; 2] = [&i64::from(unique_id), &health_log_id];
         let function = "update_alert_version_transition";
-        if let Err(Step::Failed(_)) = execute(c, SQL_UPDATE_ALERT_VERSION_TRANSITION, function, &params) {
+        if let Err(Step::Failed(rc)) = execute(c, SQL_UPDATE_ALERT_VERSION_TRANSITION, function, &params) {
             netdata_log_error!("Failed to update alert_version to latest transition");
+            end.failed(rc, function);
         }
         return 1;
     }
@@ -1030,7 +1129,10 @@ fn insert_alert_to_submit_queue(
     let variable = match c.prepare(SQL_SELECT_VARIABLE_ALERT_BY_UNIQUE_ID) {
         Ok(mut stmt) => {
             let params: [&dyn ToSql; 2] = [&i64::from(unique_id), &&host_id[..]];
-            stmt.exists(&params[..]).unwrap_or(false)
+            stmt.exists(&params[..]).unwrap_or_else(|err| {
+                end.failed(conn::result_code(&err), "is_event_from_alert_variable_config");
+                false
+            })
         }
         Err(err) => {
             prepare_failed(&err, "is_event_from_alert_variable_config");
@@ -1047,6 +1149,7 @@ fn insert_alert_to_submit_queue(
         Err(Step::Prepare) => -1,
         Err(Step::Failed(rc)) => {
             netdata_log_error!("Failed to insert alert in the submit queue {unique_id}, rc = {rc}");
+            end.failed(rc, "insert_alert_to_submit_queue");
             0
         }
     }
@@ -1140,15 +1243,15 @@ mod tests {
     fn an_entry_is_inserted_then_updated() {
         let (_dir, meta) = db();
         let (t1, t2) = ([1u8; 16], [2u8; 16]);
-        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(1, 1, -2, 0, 0, &t1), false));
+        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(1, 1, -2, 0, 0, &t1), false, true));
         assert_eq!(dump(&meta, LOG), ["1 7 a t.c x01 t.c_name"]);
         assert_eq!(dump(&meta, DETAIL), [format!("1 1 1 0 0 {T} 128 0.0 -2.0 NULL NULL x01")]);
         assert!(dump(&meta, QUEUE).is_empty(), "no ACLK sync configuration, no queue row");
 
         // REMOVED to UNINITIALIZED is due 600 s later; then UNINITIALIZED to WARNING at once, 5 s later: later
-        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(1, 1, -2, 0, 0, &t1), true));
+        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(1, 1, -2, 0, 0, &t1), true, true));
         assert_eq!(dump(&meta, QUEUE), [format!("1 1 7 0 {}", T + 600)]);
-        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(2, 2, 0, 3, 5, &t2), true));
+        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(2, 2, 0, 3, 5, &t2), true, true));
         assert_eq!(dump(&meta, LOG), ["1 7 a t.c x02 t.c_name"]);
         assert_eq!(dump(&meta, QUEUE), [format!("1 2 7 3 {}", T + 5)]);
         let rows = dump(&meta, DETAIL);
@@ -1157,7 +1260,7 @@ mod tests {
 
         let mut replaced = entry(1, 1, -2, 0, 0, &t1);
         (replaced.updated_by_id, replaced.flags, replaced.exec_code) = (2, 0x1000_0082, 4);
-        meta.health_alarm_log_update("h", &replaced);
+        meta.health_alarm_log_update("h", &replaced, true);
         let rows = dump(&meta, DETAIL);
         assert_eq!(rows[0], format!("1 1 1 2 0 {T} 268435586 0.0 -2.0 NULL NULL x01"));
         assert_eq!(rows[1], rows[0]);
@@ -1165,7 +1268,7 @@ mod tests {
         let other = [9u8; 16];
         let mut stranger = entry(2, 2, 0, 3, 5, &other);
         stranger.updated_by_id = 99;
-        meta.health_alarm_log_update("h", &stranger);
+        meta.health_alarm_log_update("h", &stranger, true);
         assert_eq!(dump(&meta, DETAIL)[2], format!("1 2 2 0 1 {} 128 3.0 0.0 70.0 NULL x02", T + 5));
     }
 
@@ -1202,6 +1305,34 @@ mod tests {
         assert!(meta.store_alert_config(&row));
     }
 
+    /// Each REMOVED row a restart injects is a statement of its own in C, with its own read of the clock: two
+    /// alarms get two times, and so two `global_id`s, which order and page the alert transitions.
+    #[test]
+    fn each_injected_row_reads_the_clock() {
+        let (_dir, meta) = db();
+        rule(&meta);
+        let (t1, t2) = ([1u8; 16], [2u8; 16]);
+        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(1, 1, 0, 3, 0, &t1), false, true));
+        let other = EntryRow { alarm_id: 8, name: Some(b"b"), ..entry(2, 1, 0, 3, 0, &t2) };
+        assert!(meta.health_alarm_log_insert("h", &HOST, &other, false, true));
+
+        let mut clock = (T + 100) as u64 * 1_000_000;
+        let mut now_usec = || {
+            clock += 1_500_000;
+            clock
+        };
+        let mut next = 0x30u8;
+        let mut transition = || {
+            next += 1;
+            [next; 16]
+        };
+        meta.check_removed_alerts_state("h", &HOST, &|| true, false, true, &mut now_usec, &mut transition);
+        let removed = "SELECT unique_id, when_key, global_id FROM health_log_detail WHERE new_status = -2";
+        let injected = dump(&meta, removed);
+        let first = (T + 101) as u64 * 1_000_000 + 500_000;
+        assert_eq!(injected, [format!("3 {} {first}", T + 101), format!("4 {} {}", T + 103, first + 1_500_000)]);
+    }
+
     /// At a restart the alarm whose last entry is not REMOVED gets a REMOVED row: the next unique id of the host,
     /// the next event id, the time given, the old row's flags; the old row is marked as replaced by it and the
     /// alarm points at it. The load then gives that row, with the rule's source and class. A second check finds
@@ -1211,15 +1342,16 @@ mod tests {
         let (_dir, meta) = db();
         rule(&meta);
         let (t1, t2) = ([1u8; 16], [2u8; 16]);
-        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(1, 1, -2, 0, 0, &t1), false));
-        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(2, 2, 0, 3, 5, &t2), false));
+        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(1, 1, -2, 0, 0, &t1), false, true));
+        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(2, 2, 0, 3, 5, &t2), false, true));
 
         let mut next = 0x30u8;
         let mut transition = || {
             next += 1;
             [next; 16]
         };
-        meta.check_removed_alerts_state("h", &HOST, &|| true, true, T + 100, 77, &mut transition);
+        let at = |second: i64| second as u64 * 1_000_000 + 77;
+        meta.check_removed_alerts_state("h", &HOST, &|| true, true, true, &mut || at(T + 100), &mut transition);
         let rows = dump(&meta, DETAIL);
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[1], format!("1 2 2 3 1 {} 130 3.0 0.0 70.0 NULL x02", T + 5), "UPDATED, by 3");
@@ -1228,7 +1360,7 @@ mod tests {
         // WARNING to REMOVED: due 10 s after the check
         assert_eq!(dump(&meta, QUEUE), [format!("1 3 7 -2 {}", T + 110)]);
 
-        meta.check_removed_alerts_state("h", &HOST, &|| true, true, T + 200, 78, &mut transition);
+        meta.check_removed_alerts_state("h", &HOST, &|| true, true, true, &mut || at(T + 200), &mut transition);
         assert_eq!(dump(&meta, DETAIL).len(), 3, "the last entry is REMOVED");
 
         let mut loaded = Vec::new();
@@ -1244,7 +1376,7 @@ mod tests {
         assert_eq!((row.transition_id, row.config_hash_id), (Uuid::Valid([0x31; 16]), Uuid::Valid(HASH)));
         assert_eq!(row.source.as_deref(), Some(&b"line=3,file=/etc/a.conf"[..]));
         assert_eq!((row.classification.as_deref(), row.component.as_deref()), (Some(&b"Errors"[..]), None));
-        assert_eq!((row.name.as_deref(), row.global_id), (Some(&b"a"[..]), Some(77)));
+        assert_eq!((row.name.as_deref(), row.global_id), (Some(&b"a"[..]), Some(at(T + 100))));
 
         // another host has nothing; a rule that left alert_hash takes its alarm out of the load
         let mut other = 0;
@@ -1269,7 +1401,7 @@ mod tests {
         let ids = [[1u8; 16], [2u8; 16], [3u8; 16]];
         for (i, new) in [0, 3, 1].into_iter().enumerate() {
             let row = entry(i as u32 + 1, i as u32 + 1, 0, new, 0, &ids[i]);
-            assert!(meta.health_alarm_log_insert("h", &HOST, &row, false));
+            assert!(meta.health_alarm_log_insert("h", &HOST, &row, false, true));
         }
         let listed = |after: i64, chart: Option<&[u8]>, limit: u32| {
             let mut rows = Vec::new();
@@ -1304,7 +1436,7 @@ mod tests {
     fn orphans_go_by_host_and_by_chart() {
         let (_dir, meta) = db();
         let t = [1u8; 16];
-        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(1, 1, 0, 3, 0, &t), false));
+        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(1, 1, 0, 3, 0, &t), false, true));
         let counts = |meta: &MetaDb| {
             let log = dump(meta, "SELECT count(*) FROM health_log");
             let detail = dump(meta, "SELECT count(*) FROM health_log_detail");
@@ -1327,7 +1459,7 @@ mod tests {
         assert_eq!(counts(&meta), ("0".to_owned(), "0".to_owned()));
 
         // an alarm of a host the host table does not have
-        assert!(meta.health_alarm_log_insert("h", &[0x22; 16], &entry(1, 1, 0, 3, 0, &t), false));
+        assert!(meta.health_alarm_log_insert("h", &[0x22; 16], &entry(1, 1, 0, 3, 0, &t), false, true));
         meta.delete_orphan_health_rows();
         assert_eq!(counts(&meta), ("0".to_owned(), "0".to_owned()));
     }
@@ -1362,34 +1494,34 @@ mod tests {
         };
 
         // WARNING at T: due at once. The rule has no warning and no critical expression: a variable, not queued
-        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(1, 1, 0, 3, 0, &t), true));
-        assert_eq!(meta.process_alert_pending_queue(&HOST, true, T - 1), Some((0, 0)), "not due yet");
+        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(1, 1, 0, 3, 0, &t), true, true));
+        assert_eq!(meta.process_alert_pending_queue(&HOST, true, T - 1, true), Some((0, 0)), "not due yet");
         assert_eq!(queue(&meta), 1);
-        assert_eq!(meta.process_alert_pending_queue(&HOST, true, T), Some((1, 0)));
+        assert_eq!(meta.process_alert_pending_queue(&HOST, true, T, true), Some((1, 0)));
         assert_eq!((queue(&meta), cloud(&meta).len()), (0, 0));
 
         // with a warning expression the entry is queued, the alarm's row pointed at the newest
         exec(&meta, "UPDATE alert_hash SET warn = '$this > 1'");
-        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(1, 1, 0, 3, 0, &t), true));
-        assert_eq!(meta.process_alert_pending_queue(&HOST, true, T + 7), Some((1, 1)));
+        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(1, 1, 0, 3, 0, &t), true, true));
+        assert_eq!(meta.process_alert_pending_queue(&HOST, true, T + 7, true), Some((1, 1)));
         assert_eq!(cloud(&meta), [format!("1 1 {}", T + 7)]);
-        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(2, 2, 3, 4, 0, &t), true));
-        assert_eq!(meta.process_alert_pending_queue(&HOST, true, T + 9), Some((1, 1)));
+        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(2, 2, 3, 4, 0, &t), true, true));
+        assert_eq!(meta.process_alert_pending_queue(&HOST, true, T + 9, true), Some((1, 1)));
         assert_eq!(cloud(&meta), [format!("1 2 {}", T + 9)]);
 
         // the Cloud holds CRITICAL (4) for the alarm: nothing is queued, its version row takes the unique id
         exec(&meta, "INSERT INTO alert_version (health_log_id, unique_id, status, version) VALUES (1, 2, 4, 50)");
         exec(&meta, "DELETE FROM aclk_queue");
-        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(3, 3, 3, 4, 0, &t), true));
-        assert_eq!(meta.process_alert_pending_queue(&HOST, true, T + 9), Some((1, 0)));
+        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(3, 3, 3, 4, 0, &t), true, true));
+        assert_eq!(meta.process_alert_pending_queue(&HOST, true, T + 9, true), Some((1, 0)));
         assert!(cloud(&meta).is_empty());
         assert_eq!(dump(&meta, "SELECT unique_id, status FROM alert_version"), ["3 4"]);
         assert_eq!(meta.node_alert_version(&HOST), 50);
         assert_eq!(meta.node_alert_version(&[0x22; 16]), 0);
 
         // a host without the configuration: the due row is deleted and nothing is queued
-        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(4, 4, 4, 3, 0, &t), true));
-        assert_eq!(meta.process_alert_pending_queue(&HOST, false, T + 9), Some((1, 0)));
+        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(4, 4, 4, 3, 0, &t), true, true));
+        assert_eq!(meta.process_alert_pending_queue(&HOST, false, T + 9, true), Some((1, 0)));
         assert_eq!((queue(&meta), cloud(&meta).len()), (0, 0));
     }
 
@@ -1399,8 +1531,8 @@ mod tests {
     fn an_alarm_s_id_is_found_by_chart_and_name() {
         let (_dir, meta) = db();
         let (t1, t2) = ([1u8; 16], [2u8; 16]);
-        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(1, 1, -2, 0, 0, &t1), false));
-        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(2, 6, 0, 3, 5, &t2), false));
+        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(1, 1, -2, 0, 0, &t1), false, true));
+        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(2, 6, 0, 3, 5, &t2), false, true));
         assert_eq!(meta.get_alarm_id(&HOST, b"t.c", Some(b"a")), Some((7, 7)));
         assert_eq!(meta.get_alarm_id(&HOST, b"t.other", Some(b"a")), None);
         assert_eq!(meta.get_alarm_id(&HOST, b"t.c", Some(b"b")), None);
@@ -1415,7 +1547,7 @@ mod tests {
         for (i, at) in [0, 10, 20].into_iter().enumerate() {
             let mut row = entry(i as u32 + 1, i as u32 + 1, 0, 3, at, &ids[i]);
             row.updated_by_id = if i < 2 { i as u32 + 2 } else { 0 };
-            assert!(meta.health_alarm_log_insert("h", &HOST, &row, false));
+            assert!(meta.health_alarm_log_insert("h", &HOST, &row, false, true));
         }
         let left = |meta: &MetaDb| dump(meta, "SELECT unique_id FROM health_log_detail ORDER BY rowid");
         // at T+60 with 50 s: only the first is older (when < now - retention is strict)

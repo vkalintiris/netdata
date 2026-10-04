@@ -2594,6 +2594,7 @@ fn a_vnode_let_go_is_reenabled_by_host() {
     let mut p = vnode_parser(&hosts, &attached);
     feed_ok(&mut p, &[format!("HOST_DEFINE {VNODE} v1"), "HOST_DEFINE_END".into()]);
     let v = hosts.find_by_guid(VNODE).unwrap();
+    assert!(v.aclk_sync_config(), "a vnode's definition gives it its ACLK sync configuration");
     // another plugin's run end, which defined it too
     v.virtual_offline();
     let (results, records) = netdata_agent_log::capture(|| feed_all(&mut p, &[&format!("HOST {VNODE}")]));

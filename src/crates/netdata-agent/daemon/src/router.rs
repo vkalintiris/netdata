@@ -1098,7 +1098,7 @@ mod tests {
             last_repeat: 0,
             global_id: 5,
         };
-        assert!(meta.health_alarm_log_insert(&host.hostname(), &host_id, &entry, false));
+        assert!(meta.health_alarm_log_insert(&host.hostname(), &host_id, &entry, false, true));
 
         // health never ran for the host: its limit is 0
         assert_eq!(ask(&s, "/api/v1/alarm_log", ""), (status::OK, json, "\n    []\n".to_owned()));

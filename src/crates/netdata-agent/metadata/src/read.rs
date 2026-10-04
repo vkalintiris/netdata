@@ -58,6 +58,31 @@ pub(crate) fn prepare_failed(err: &rusqlite::Error, function: &str) {
     );
 }
 
+/// How C lets go of a statement: `SQLITE_FINALIZE()`, or `SQLITE_RESET()` for one its thread keeps compiled.
+#[derive(Clone, Copy)]
+pub(crate) enum End {
+    Finalize,
+    Reset,
+}
+
+impl End {
+    /// The statements HEALTH keeps compiled (`is_health_thread`): reset on its thread, finalized on any other,
+    /// which prepares them for the call.
+    pub(crate) fn of_health_statement(health_thread: bool) -> End {
+        if health_thread { End::Reset } else { End::Finalize }
+    }
+
+    /// `SQLITE_FINALIZE()` or `SQLITE_RESET()` after a step that failed with `rc`: SQLite answers the step's code
+    /// again, and C records it with the function it is in.
+    pub(crate) fn failed(self, rc: i32, function: &str) {
+        let verb = match self {
+            End::Finalize => "finalize",
+            End::Reset => "reset",
+        };
+        nd_log!(Source::Daemon, Priority::Err, "Failed to {verb} statement rc={rc} in {function}");
+    }
+}
+
 /// Runs `sql` with `params` bound, calling `f` for each row. While the database is busy the query runs again, as
 /// `sqlite3_step_monitored()` retries, but only before a row came out: rusqlite restarts a statement whose step
 /// failed, where C would continue it. False when the statement could not be prepared.

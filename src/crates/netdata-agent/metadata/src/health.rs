@@ -5,6 +5,7 @@ use rusqlite::ToSql;
 use rusqlite::types::{ToSqlOutput, Value};
 
 use crate::open::MetaDb;
+use crate::read::End;
 use crate::write::{Step, execute, text};
 
 const SQL_STORE_ALERT_CONFIG_HASH: &str = "INSERT OR REPLACE INTO alert_hash (hash_id, date_updated, alarm, template, \
@@ -127,8 +128,7 @@ impl MetaDb {
             Err(Step::Prepare) => false,
             Err(Step::Failed(rc)) => {
                 netdata_log_error!("Failed to execute sql statement, rc = {rc}");
-                // SQLITE_FINALIZE(): finalizing a statement whose step failed returns that code again
-                netdata_log_error!("Failed to finalize statement rc={rc} in execute_statement");
+                End::Finalize.failed(rc, "execute_statement");
                 false
             }
         }

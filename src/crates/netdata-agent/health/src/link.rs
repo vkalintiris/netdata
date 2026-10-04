@@ -29,9 +29,10 @@ impl Health {
     }
 
     /// `host->health.default_exec` and `host->health.default_recipient`: the configuration's from the host's first
-    /// health pass on, and no text before it (a host health never ran for has none).
+    /// health pass on (set with the log's limit, before the log is loaded), and no text before it (a host health
+    /// never ran for has none).
     pub fn host_defaults(&self, host: &Host) -> (&[u8], &[u8]) {
-        match self.host(host).is_some_and(|alerts| alerts.is_initialized()) {
+        match self.host(host).is_some_and(|alerts| alerts.has_defaults()) {
             true => (&self.config.default_exec, &self.config.default_recipient),
             false => (b"", b""),
         }

@@ -200,6 +200,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 } else {
                     netdata_log_error!("Failed to check host alerts");
                 }
+                // C exits with the database open: no last checkpoint, and its write-ahead log stays beside it
+                std::mem::forget(meta);
                 return 0;
             }
             Opt::WithArg(b'W', v) if v == b"simple-pattern" => {

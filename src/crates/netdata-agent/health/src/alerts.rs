@@ -64,6 +64,10 @@ impl Store {
         let (entry, replaced) = self.log.add(entry);
         saves.extend(replaced.map(|older| (older, is_async)));
         saves.push((entry.unique_id, is_async));
+        // C saves both on its pointers once the log's lock is released: until then neither may leave memory
+        for unique_id in replaced.into_iter().chain([entry.unique_id]) {
+            self.log.owe_save(unique_id);
+        }
         entry
     }
 
@@ -139,6 +143,9 @@ pub struct HostAlerts {
     pending_transitions: AtomicI32,
     /// `host->health_log.max`: how many entries the alert log's query answers, 0 until the host's first pass.
     log_max: AtomicU32,
+    /// Whether the host's first pass gave it the configuration's default exec and recipient
+    /// (`host->health.default_exec`, `default_recipient`): it does so with the limit, before it loads the log.
+    defaults_set: AtomicBool,
     /// `host->health.alert_status_snapshot`: the counts of the last complete pass, and how often counts were
     /// published, times two (C's generation is odd while a writer is at it).
     counts: Mutex<(u64, Option<PassCounts>)>,
@@ -171,6 +178,12 @@ impl HostAlerts {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Whether no thread holds the store's lock now.
+    #[cfg(test)]
+    pub(crate) fn store_is_free(&self) -> bool {
+        self.inner.try_lock().is_ok()
+    }
+
     /// The records of entries made under the store's lock, written once it is released, in the order made.
     fn log_records(&self, entries: &[Entry]) {
         if entries.is_empty() {
@@ -185,7 +198,15 @@ impl HostAlerts {
     /// `health_alarm_log_save()`: an entry's save. An asynchronous one (a link's, an unlink's) is offered to the
     /// metadata queue, which counts it on the host and on the entry before it answers; refused, it is made at once
     /// only on the HEALTH thread while the service runs, else not at all. A synchronous one is made at once.
-    fn save(&self, env: &dyn Env, unique_id: u32, is_async: bool) {
+    /// `owed`: the save was asked for when the entry was logged, and the entry waits in memory for it.
+    fn save(&self, env: &dyn Env, unique_id: u32, is_async: bool, owed: bool) {
+        self.make_save(env, unique_id, is_async);
+        if owed {
+            self.store().log.save_settled(unique_id);
+        }
+    }
+
+    fn make_save(&self, env: &dyn Env, unique_id: u32, is_async: bool) {
         if is_async {
             // metadata_queue_ae_save(): both counters go up before the queue is asked, and back when it refuses
             self.pending_transitions.fetch_add(1, Ordering::Relaxed);
@@ -236,7 +257,7 @@ impl HostAlerts {
     /// The saves of entries made under the store's lock, once it is released, in the order made.
     fn run_saves(&self, env: &dyn Env, saves: &Saves) {
         for &(unique_id, is_async) in saves {
-            self.save(env, unique_id, is_async);
+            self.save(env, unique_id, is_async, true);
         }
     }
 
@@ -258,6 +279,7 @@ impl HostAlerts {
     ) {
         self.log_max.store(config.health_log_entries_max, Ordering::Relaxed);
         host.set_health_log_retention_s(config.health_log_retention_s);
+        self.defaults_set.store(true, Ordering::Release);
         {
             let mut store = self.store();
             store.log.next_log_id = clock() as u32;
@@ -322,6 +344,11 @@ impl HostAlerts {
     /// `host->health_log.max`.
     pub fn log_max(&self) -> u32 {
         self.log_max.load(Ordering::Relaxed)
+    }
+
+    /// Whether the host has its default exec and recipient: from its first pass on, before that pass loads the log.
+    pub(crate) fn has_defaults(&self) -> bool {
+        self.defaults_set.load(Ordering::Acquire)
     }
 
 
@@ -697,7 +724,7 @@ impl HostAlerts {
             };
             env.notify(&mut copy);
             self.with_entry(unique_id, |entry| entry.flags |= entry_flags::PROCESSED);
-            self.save(env, unique_id, false);
+            self.save(env, unique_id, false, false);
         }
         self.store().log.trim(clock);
     }
@@ -1145,6 +1172,198 @@ mod tests {
             assert!(alerts.is_initialized());
             assert_eq!(alerts.log_entries().len(), loaded, "{looks_allowed} looks allowed");
             assert_eq!(looks.get(), looks_made, "{looks_allowed} looks allowed");
+        }
+    }
+
+    /// What the daemon gives a pass takes the database's lock or another thread's queue: the table's alarm id, the
+    /// load, the queue, the save, the store request, the pending queue, the notification. None may run while the
+    /// host's store is locked. An environment that looks at the lock in each of them sees it free through a host's
+    /// life: its first pass with its links and status changes, the scan, a repeat, an unlink.
+    #[test]
+    fn nothing_of_the_daemon_runs_under_the_store_s_lock() {
+        use crate::pass::{ChartFacts, Pass};
+        use netdata_agent_query::value::{ValueRequest, ValueResult};
+        use std::cell::Cell;
+
+        struct Watching {
+            inner: Scripted,
+            health: Arc<crate::Health>,
+            host: Arc<Host>,
+            looks: Cell<usize>,
+        }
+        impl Watching {
+            fn look(&self) {
+                self.looks.set(self.looks.get() + 1);
+                if let Some(alerts) = self.health.host(&self.host) {
+                    assert!(alerts.store_is_free(), "the daemon was called under the store's lock");
+                }
+            }
+        }
+        impl Env for Watching {
+            fn facts(&self, chart: &Chart) -> ChartFacts {
+                self.inner.facts(chart)
+            }
+            fn retention(&self, chart: &Chart) -> (i64, i64) {
+                self.inner.retention(chart)
+            }
+            fn lookup(&self, host: &Arc<Host>, chart: &Arc<Chart>, request: &ValueRequest) -> ValueResult {
+                self.look();
+                self.inner.lookup(host, chart, request)
+            }
+            fn now_usec(&self) -> u64 {
+                self.inner.now_usec()
+            }
+            fn transition_id(&self) -> [u8; 16] {
+                self.inner.transition_id()
+            }
+            fn exiting(&self) -> bool {
+                false
+            }
+            fn is_health_thread(&self) -> bool {
+                true
+            }
+            fn service_running(&self) -> bool {
+                true
+            }
+            fn load(&self, host: &Host) -> Option<Vec<LoadedRow>> {
+                self.look();
+                self.inner.load(host)
+            }
+            fn sql_alarm_id(&self, host: &Host, chart: &[u8], name: Option<&[u8]>) -> Option<(u32, u32)> {
+                self.look();
+                self.inner.sql_alarm_id(host, chart, name)
+            }
+            fn queue_save(&self, alerts: &Arc<HostAlerts>, unique_id: u32) -> bool {
+                self.look();
+                self.inner.queue_save(alerts, unique_id)
+            }
+            fn sql_save(&self, host: &Host, entry: &Entry) -> bool {
+                self.look();
+                self.inner.sql_save(host, entry)
+            }
+            fn commit_transitions(&self) {
+                self.look();
+            }
+            fn process_pending_queue(&self, host: &Host) -> bool {
+                self.look();
+                self.inner.process_pending_queue(host)
+            }
+            fn notify(&self, entry: &mut Entry) {
+                self.look();
+                self.inner.notify(entry);
+            }
+        }
+
+        let rules = [
+            rule_text("template", "plain", "t.ctx", &["warn: $this > 0"]),
+            rule_text("template", "repeating", "t.ctx", &["warn: $this > 0", "repeat: warning 1s critical 1s"]),
+        ];
+        let health = health_with(&rules.concat());
+        let host = host(&[]);
+        let c = chart(&host, "t.c", None, "t.ctx", &[]);
+        let env = Watching {
+            inner: Scripted { collected: Some(NOW), saves: true, table: Some(Vec::new()), ..Scripted::default() },
+            health: Arc::clone(&health),
+            host: Arc::clone(&host),
+            looks: Cell::new(0),
+        };
+        for now in [NOW, NOW + 10, NOW + 20] {
+            let mut next_run = now + 100;
+            let pass = Pass { now, apply_hibernation_delay: false, next_run: &mut next_run, gate: &|| true };
+            health.host_pass(&host, pass, &env, &|| now, &|| true);
+        }
+        let alerts = health.host(&host).expect("the host's alerts");
+        let statuses: Vec<Status> = alerts.alerts().iter().map(|alert| alert.run().status).collect();
+        assert_eq!(statuses, [Status::Warning, Status::Warning]);
+        health.chart_freed(host.machine_guid(), &c, &env, &|| NOW + 30);
+        assert!(alerts.alerts().is_empty());
+        // a load, two alarm ids, the links' and the changes' saves, the notifications, a repeat, the unlinks
+        assert!(env.looks.get() >= 20, "{} looks", env.looks.get());
+    }
+
+    /// HEALTH and the metadata thread's store job can both come to save an entry that has no row yet (C reads its
+    /// saved bit without a lock, and can insert it twice). Here one save is one step: the entry read, its row
+    /// written, the entry marked. Whichever thread comes second finds it saved, and updates.
+    #[test]
+    fn an_entry_two_threads_save_is_inserted_once() {
+        use crate::pass::ChartFacts;
+        use netdata_agent_query::value::{ValueRequest, ValueResult};
+        use std::sync::atomic::AtomicUsize;
+
+        #[derive(Default)]
+        struct Racing {
+            inserts: AtomicUsize,
+            updates: AtomicUsize,
+        }
+        impl Env for Racing {
+            fn facts(&self, chart: &Chart) -> ChartFacts {
+                Idle.facts(chart)
+            }
+            fn retention(&self, chart: &Chart) -> (i64, i64) {
+                Idle.retention(chart)
+            }
+            fn lookup(&self, host: &Arc<Host>, chart: &Arc<Chart>, request: &ValueRequest) -> ValueResult {
+                Idle.lookup(host, chart, request)
+            }
+            fn now_usec(&self) -> u64 {
+                0
+            }
+            fn transition_id(&self) -> [u8; 16] {
+                [0; 16]
+            }
+            fn exiting(&self) -> bool {
+                false
+            }
+            fn is_health_thread(&self) -> bool {
+                true
+            }
+            fn service_running(&self) -> bool {
+                true
+            }
+            fn load(&self, _: &Host) -> Option<Vec<LoadedRow>> {
+                None
+            }
+            fn sql_alarm_id(&self, _: &Host, _: &[u8], _: Option<&[u8]>) -> Option<(u32, u32)> {
+                None
+            }
+            fn queue_save(&self, _: &Arc<HostAlerts>, _: u32) -> bool {
+                false
+            }
+            /// An insert takes its time, as a statement does.
+            fn sql_save(&self, _: &Host, entry: &Entry) -> bool {
+                if entry.flags & entry_flags::SAVED != 0 {
+                    self.updates.fetch_add(1, Ordering::Relaxed);
+                    return false;
+                }
+                self.inserts.fetch_add(1, Ordering::Relaxed);
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                true
+            }
+            fn commit_transitions(&self) {}
+            fn process_pending_queue(&self, _: &Host) -> bool {
+                false
+            }
+            fn notify(&self, _: &mut Entry) {}
+        }
+
+        let health = health_with(&rule_text("template", "a", "t.ctx", &[]));
+        let host = host(&[]);
+        let c = chart(&host, "t.c", None, "t.ctx", &[]);
+        let prototypes = health.prototypes();
+        let rule = &prototypes.get(b"a").unwrap().rules()[0];
+        for round in 0..20 {
+            let alerts = HostAlerts::new(&host);
+            // the link's entry, which nothing saved (the idle environment saves nothing)
+            assert!(alerts.add(&c, rule, &Idle, &|| NOW));
+            let unique_id = alerts.log_entries()[0].unique_id;
+            let env = Racing::default();
+            std::thread::scope(|scope| {
+                scope.spawn(|| alerts.save(&env, unique_id, false, false));
+                scope.spawn(|| alerts.save_queued(unique_id, &|entry| env.sql_save(&host, entry)));
+            });
+            let counts = (env.inserts.load(Ordering::Relaxed), env.updates.load(Ordering::Relaxed));
+            assert_eq!(counts, (1, 1), "round {round}");
+            assert_eq!(alerts.log_entries()[0].flags & entry_flags::SAVED, entry_flags::SAVED);
         }
     }
 

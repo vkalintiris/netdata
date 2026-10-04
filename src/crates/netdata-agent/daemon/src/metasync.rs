@@ -471,8 +471,8 @@ impl MetaSync {
                         Err(RecvTimeoutError::Timeout) => None,
                         Err(RecvTimeoutError::Disconnected) => break,
                     };
-                    // a store asked for by command starts a job or is dropped; the timer's wish stays until a job
-                    // starts
+                    // a store asked for by command starts a job or is dropped; the timer's wish is used up by the
+                    // job that starts
                     let mut store_now = false;
                     // metadata_event_loop_timer_cb()
                     let now = Instant::now();
@@ -531,21 +531,22 @@ impl MetaSync {
                     }
                     // METADATA_STORE: one job at a time; without a database the writer stays off (D61.8)
                     if (store_metadata || store_now) && !running && let Some(w) = &writer {
-                        if !store_now {
-                            store_metadata = false;
-                        }
+                        store_metadata = false;
                         running = true;
                         let (w, shared, tx) = (w.clone(), Arc::clone(&shared), job_tx.clone());
-                        let taken = std::mem::take(&mut pending);
-                        if pool
-                            .queue(move || {
-                                store_job(&w, &shared, taken);
-                                // the exit closes the database once METASYNC has seen this job end
-                                drop(w);
-                                let _ = tx.send(Cmd::StoreDone);
-                            })
-                            .is_err()
-                        {
+                        // the lists go with the job; a job that cannot be queued hands them back, as C's does: a
+                        // host whose queued saves were lost would never be evaluated again
+                        let taken = Arc::new(Mutex::new(Some(std::mem::take(&mut pending))));
+                        let for_job = Arc::clone(&taken);
+                        let queued = pool.queue(move || {
+                            let lists = for_job.lock().unwrap_or_else(PoisonError::into_inner).take();
+                            store_job(&w, &shared, lists.unwrap_or_default());
+                            // the exit closes the database once METASYNC has seen this job end
+                            drop(w);
+                            let _ = tx.send(Cmd::StoreDone);
+                        });
+                        if queued.is_err() {
+                            pending = taken.lock().unwrap_or_else(PoisonError::into_inner).take().unwrap_or_default();
                             running = false;
                         }
                     }
@@ -1121,79 +1122,112 @@ mod tests {
     /// The alert log between HEALTH and a store job, on a real metadata database. A host's first pass queues the
     /// save of its alert's link entry and asks for a job; what the pass logs itself (the alert's first status) it
     /// saves at once, with the link entry that status replaces. While a save is pending the next pass is postponed.
+    /// A parent with health on whose only chart has one alert, over a metadata database: what the tests of the
+    /// alert log's saves share.
+    struct AlertWorld {
+        meta: Arc<MetaDb>,
+        hosts: Arc<Hosts>,
+        host: Arc<Host>,
+        chart: Arc<netdata_agent_rrd::chart::Chart>,
+        rules: std::path::PathBuf,
+        now: i64,
+    }
+
+    impl AlertWorld {
+        fn new(dir: &std::path::Path) -> AlertWorld {
+            use netdata_agent_rrd::chart::{Algorithm, ChartSpec, ChartType};
+            let meta = Arc::new(MetaDb::open(dir, &Default::default()).unwrap());
+            let base = info("parent", "linux");
+            let ram = HostInfo { health_enabled: true, db_mode: DbMode::Ram, history_entries: 3600, ..base };
+            let hosts = Arc::new(Hosts::new(Host::new("5a1e0000-0000-4000-8000-0000000000aa", true, ram)));
+            let host = Arc::clone(hosts.localhost());
+            host.set_aclk_sync_config();
+            let (chart, _) = host.charts().create(&ChartSpec {
+                type_: "t",
+                id: "c",
+                name: None,
+                family: Some("f"),
+                context: Some("t.ctx"),
+                title: "T",
+                units: "u",
+                plugin: "p",
+                module: None,
+                priority: 1000,
+                update_every: 1,
+                chart_type: ChartType::Line,
+                mode: DbMode::Ram,
+                history_entries: 3600,
+                page_size: 4096,
+            });
+            chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+            let now = now_realtime_s();
+            chart.update_collection(|collection| {
+                collection.counter_done = 3;
+                collection.last_collected = (now, 0);
+            });
+            let rules = dir.join("t.conf");
+            std::fs::write(&rules, "template: t_one\n on: t.ctx\n calc: 1\n every: 1s\n warn: $this > 5\n").unwrap();
+            AlertWorld { meta, hosts, host, chart, rules, now }
+        }
+
+        /// A process' health: its rules read, each stored in `alert_hash`.
+        fn plugin(&self) -> Arc<Health> {
+            use netdata_agent_health::readfile::health_readfile;
+            use netdata_agent_health::store::alert_hash_row;
+            let meta = Arc::clone(&self.meta);
+            let health = Health::init(
+                Default::default(),
+                Box::new(move |rule| assert!(meta.store_alert_config(&alert_hash_row(rule)))),
+            );
+            assert!(health_readfile(&health, self.rules.as_os_str().as_encoded_bytes(), false));
+            health
+        }
+
+        /// What HEALTH queues goes to `queue`; the calling thread is HEALTH.
+        fn env(&self, queue: MetaQueue) -> crate::health::LiveEnv {
+            crate::health::mark_health_thread();
+            crate::health::LiveEnv::new(Arc::clone(&self.hosts), Default::default(), Some(&self.meta), queue)
+        }
+
+        /// One pass over the host, and the records it wrote.
+        fn pass(&self, health: &Health, env: &crate::health::LiveEnv) -> Vec<String> {
+            use netdata_agent_health::pass::Pass;
+            let now = self.now;
+            let mut next_run = now + 10;
+            let ((), records) = netdata_agent_log::capture(|| {
+                let pass = Pass { now, apply_hibernation_delay: false, next_run: &mut next_run, gate: &|| true };
+                health.host_pass(&self.host, pass, env, &now_realtime_s, &|| true);
+            });
+            records.into_iter().filter_map(|record| record.message).collect()
+        }
+
+        fn rows(&self, table: &str) -> i64 {
+            let meta = self.meta.lock();
+            meta.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row.get(0)).unwrap()
+        }
+    }
+
     /// The job's step saves what was queued (here an update of a row HEALTH inserted) and records two per save, and
     /// no save is pending afterwards: every entry the host logged has its row, and the alarm its row of the queue
     /// toward the Cloud. A new process on the same database loads the alarm's last entry, and its alert keeps its
     /// alarm id.
     #[test]
     fn a_job_saves_the_alert_entries_health_queued() {
-        use netdata_agent_health::pass::Pass;
-        use netdata_agent_health::readfile::health_readfile;
-        use netdata_agent_health::store::alert_hash_row;
-        use netdata_agent_rrd::chart::{Algorithm, ChartSpec, ChartType, flags};
+        use netdata_agent_rrd::chart::flags;
         use netdata_agent_rrd::host::pending_flags;
 
         let dir = tempfile::tempdir().unwrap();
-        let meta = Arc::new(MetaDb::open(dir.path(), &Default::default()).unwrap());
-        let base = info("parent", "linux");
-        let ram = HostInfo { health_enabled: true, db_mode: DbMode::Ram, history_entries: 3600, ..base };
-        let hosts = Arc::new(Hosts::new(Host::new("5a1e0000-0000-4000-8000-0000000000aa", true, ram)));
-        let host = Arc::clone(hosts.localhost());
-        host.set_aclk_sync_config();
-        let (chart, _) = host.charts().create(&ChartSpec {
-            type_: "t",
-            id: "c",
-            name: None,
-            family: Some("f"),
-            context: Some("t.ctx"),
-            title: "T",
-            units: "u",
-            plugin: "p",
-            module: None,
-            priority: 1000,
-            update_every: 1,
-            chart_type: ChartType::Line,
-            mode: DbMode::Ram,
-            history_entries: 3600,
-            page_size: 4096,
-        });
-        chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
-        let now = now_realtime_s();
-        chart.update_collection(|collection| {
-            collection.counter_done = 3;
-            collection.last_collected = (now, 0);
-        });
-
-        let rules = dir.path().join("t.conf");
-        std::fs::write(&rules, "template: t_one\n on: t.ctx\n calc: 1\n every: 1s\n warn: $this > 5\n").unwrap();
-        let plugin = || {
-            let meta = Arc::clone(&meta);
-            let health = Health::init(
-                Default::default(),
-                Box::new(move |rule| assert!(meta.store_alert_config(&alert_hash_row(rule)))),
-            );
-            assert!(health_readfile(&health, rules.as_os_str().as_encoded_bytes(), false));
-            health
-        };
-        let health = plugin();
+        let world = AlertWorld::new(dir.path());
+        let (meta, hosts, host, chart) = (&world.meta, &world.hosts, &world.host, &world.chart);
+        let health = world.plugin();
         let (queue, unread) = MetaQueue::unread();
-        let env = crate::health::LiveEnv::new(Arc::clone(&hosts), Default::default(), Some(&meta), queue);
-        crate::health::mark_health_thread();
-        let pass = |health: &Health| {
-            let mut next_run = now + 10;
-            let ((), records) = netdata_agent_log::capture(|| {
-                let pass = Pass { now, apply_hibernation_delay: false, next_run: &mut next_run, gate: &|| true };
-                health.host_pass(&host, pass, &env, &now_realtime_s, &|| true);
-            });
-            records.into_iter().filter_map(|record| record.message).collect::<Vec<String>>()
-        };
-        let rows = |table: &str| -> i64 {
-            meta.lock().query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row.get(0)).unwrap()
-        };
+        let env = world.env(queue);
+        let pass = |health: &Health| world.pass(health, &env);
+        let rows = |table: &str| world.rows(table);
 
         // the first pass: the links' saves are queued, a job is asked for, and HEALTH saved its own entries
         pass(&health);
-        let alerts = health.host(&host).unwrap();
+        let alerts = health.host(host).unwrap();
         let (queued, stores) = unread.alert_commands();
         assert!(!queued.is_empty(), "the link entries' saves");
         assert_eq!((alerts.pending_transitions(), stores), (queued.len() as i32, 1));
@@ -1210,9 +1244,9 @@ mod tests {
 
         // the job's step
         let writer = Writer {
-            meta: Arc::clone(&meta),
+            meta: Arc::clone(meta),
             context_db: Weak::new(),
-            hosts: Arc::clone(&hosts),
+            hosts: Arc::clone(hosts),
             datafiles_present: false,
             health: Arc::clone(&health),
         };
@@ -1228,13 +1262,62 @@ mod tests {
 
         // a new process: the host's first pass loads the alarm's last entry, and the alert takes its alarm id again
         drop(alerts);
-        let health = plugin();
+        let health = world.plugin();
         host.raise_pending_flags(pending_flags::HEALTH_INITIALIZATION);
         chart.flags_set_and_clear(flags::PENDING_HEALTH_INITIALIZATION, 0);
         let records = pass(&health);
         let loaded = "[parent]: Table health_log, loaded 1 alarm entries, errors in 0 entries.";
         assert!(records.iter().any(|record| record == loaded), "{records:?}");
-        assert_eq!(health.host(&host).unwrap().alerts()[0].id, alarm_id);
+        assert_eq!(health.host(host).unwrap().alerts()[0].id, alarm_id);
+    }
+
+    /// `METADATA_STORE` while a job runs is dropped (`if (config->metadata_running) break;`), and the lists no job
+    /// took are freed at the shutdown without a save (`store_alert_transitions()` with `cleanup_only`): the saves
+    /// HEALTH queued behind a running job stay pending on their host, and a statement queued with them is not
+    /// stepped.
+    #[test]
+    fn a_store_during_a_job_is_dropped_and_a_shutdown_frees_what_no_job_took() {
+        let dir = tempfile::tempdir().unwrap();
+        let world = AlertWorld::new(dir.path());
+        let pool = WorkPool::new(1, 256 * 1024);
+        // the pool's only thread is held: the job the first store starts stays behind it, running for METASYNC
+        let (release, held) = mpsc::channel::<()>();
+        let hold = move || {
+            let _ = held.recv();
+        };
+        pool.queue(hold).unwrap();
+        let sync = MetaSync::start(&pool, 1, 256 * 1024).unwrap();
+        let health = world.plugin();
+        let hosts = Arc::clone(&world.hosts);
+        sync.set_writer(Arc::clone(&world.meta), Weak::new(), hosts, false, Arc::clone(&health));
+        let queue = sync.queue();
+        queue.execute_store_statement(row(7));
+        queue.store();
+
+        // HEALTH's first pass: its link saves are queued and it asks for a store, behind the job
+        let env = world.env(sync.queue());
+        world.pass(&health, &env);
+        let alerts = health.host(&world.host).unwrap();
+        let pending = alerts.pending_transitions();
+        assert!(pending > 0, "the link entries' saves");
+        queue.execute_store_statement(row(8));
+        queue.store();
+        let saved = world.rows("health_log_detail");
+
+        // the two queued statements' rows (the table has the world's rule too)
+        let stored = || -> Vec<u8> {
+            stored_rows(&world.meta).into_iter().filter(|hash| [7, 8].contains(hash)).collect()
+        };
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while stored().is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // a store that was kept would start its job once the first one ends
+        std::thread::sleep(Duration::from_millis(300));
+        sync.shutdown();
+        assert_eq!(stored(), [7]);
+        assert_eq!((alerts.pending_transitions(), world.rows("health_log_detail")), (pending, saved));
     }
 
     /// `commit_alert_transitions()`: a store asked for by command starts a job at once, where the timer's first store
@@ -1308,10 +1391,10 @@ mod tests {
         };
         // localhost's alarm 7: entry 1, which entry 2 replaced, and entry 2, its last; alarm 8 of a host the table
         // `host` does not have
-        assert!(meta.health_alarm_log_insert("parent", &host_id, &entry(1, 7, 0), false));
-        assert!(meta.health_alarm_log_insert("parent", &host_id, &entry(2, 7, 0), false));
-        meta.health_alarm_log_update("parent", &entry(1, 7, 2));
-        assert!(meta.health_alarm_log_insert("gone", &[0xee; 16], &entry(3, 8, 0), false));
+        assert!(meta.health_alarm_log_insert("parent", &host_id, &entry(1, 7, 0), false, true));
+        assert!(meta.health_alarm_log_insert("parent", &host_id, &entry(2, 7, 0), false, true));
+        meta.health_alarm_log_update("parent", &entry(1, 7, 2), true);
+        assert!(meta.health_alarm_log_insert("gone", &[0xee; 16], &entry(3, 8, 0), false, true));
         let rows = |table: &str| -> i64 {
             meta.lock().query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row.get(0)).unwrap()
         };

@@ -2792,10 +2792,12 @@ mod tests {
         assert_eq!(host.set_receiver(Arc::clone(&slot)), Attach::Attached);
         hosts.update_is_parent_label();
         assert_eq!(pending("the label was there"), asked(true, 0, "the label was there"));
+        assert!(!localhost.aclk_sync_config(), "nothing changed: no node info is queued");
 
         host.clear_receiver(&slot, 0);
         hosts.update_is_parent_label();
         assert_eq!(pending("detached"), asked(false, pending_flags::LABEL_RECHECK, "detached"));
+        assert!(localhost.aclk_sync_config(), "a changed label queues localhost's node info");
         hosts.update_is_parent_label();
         assert_eq!(pending("the same answer"), asked(false, 0, "the same answer"));
 
