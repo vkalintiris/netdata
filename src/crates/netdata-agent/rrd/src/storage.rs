@@ -53,6 +53,7 @@ pub struct StorageLayout {
     freed_dimension_row: OnceLock<DimensionRowHook>,
     /// What health does when a chart or a host goes, installed by the daemon.
     health_hook: OnceLock<HealthHook>,
+    alert_view: OnceLock<AlertViewHook>,
     /// `health_evloop_iteration`: the passes of the HEALTH loop.
     health_iteration: AtomicU64,
     /// The `[db]` cleanup times the maintenance and its readers share.
@@ -111,6 +112,43 @@ impl std::fmt::Debug for HealthHook {
     }
 }
 
+/// What a query sees of health: C's query target reads the host's alert dictionary and each chart's alert list
+/// directly (`database/contexts/query_target.c`); here health is above this crate, so the daemon installs the view.
+pub trait AlertView: Send + Sync {
+    /// `dictionary_version(host->rrdcalc_root_index)` and `host->health_transitions`: what a data answer prints as
+    /// `alerts_hard_hash` and `alerts_soft_hash`. Zeros for a host health never ran for.
+    fn versions(&self, host: &Host) -> (u64, u64);
+    /// The alerts linked to this chart object, in link order (`st->alerts.base`).
+    fn chart_alerts(&self, host: &Host, chart: &Chart) -> Vec<ChartAlert>;
+}
+
+/// One alert of a chart as a query sees it: its rule's name and its published status.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChartAlert {
+    pub name: Vec<u8>,
+    /// How a data answer counts the status.
+    pub class: AlertClass,
+    /// `rrdcalc_status2string()` of the status, which the `alerts=` filter matches as `NAME:STATUS`.
+    pub status_name: &'static str,
+}
+
+/// The four counters of `QUERY_ALERTS_COUNTS`: every status that is not CLEAR, WARNING or CRITICAL is `Other`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlertClass {
+    Clear,
+    Warning,
+    Critical,
+    Other,
+}
+
+struct AlertViewHook(Arc<dyn AlertView>);
+
+impl std::fmt::Debug for AlertViewHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AlertViewHook")
+    }
+}
+
 impl Default for StorageLayout {
     fn default() -> Self {
         StorageLayout::new(None)
@@ -132,6 +170,7 @@ impl StorageLayout {
             pulse: Pulse::default(),
             freed_dimension_row: OnceLock::new(),
             health_hook: OnceLock::new(),
+            alert_view: OnceLock::new(),
             health_iteration: AtomicU64::new(0),
             cleanup: OnceLock::new(),
         }
@@ -167,6 +206,16 @@ impl StorageLayout {
         if let Some(hook) = self.health_hook.get() {
             (hook.0)(event);
         }
+    }
+
+    /// Installs what queries see of the hosts' alerts; once.
+    pub fn set_alert_view(&self, view: Arc<dyn AlertView>) {
+        let _ = self.alert_view.set(AlertViewHook(view));
+    }
+
+    /// What queries see of the hosts' alerts; none while health is not there.
+    pub fn alert_view(&self) -> Option<&dyn AlertView> {
+        self.alert_view.get().map(|view| &*view.0)
     }
 
     /// Installs what removes a freed dimension's metadata row; once.
@@ -369,6 +418,33 @@ impl TierHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The alert view is what the daemon installed, and the first one stays; a host's health delay is what was
+    /// last set, 0 for none.
+    #[test]
+    fn the_alert_view_and_a_host_s_delay_are_what_was_set() {
+        struct Fixed(u64);
+        impl AlertView for Fixed {
+            fn versions(&self, _: &Host) -> (u64, u64) {
+                (self.0, self.0 + 1)
+            }
+            fn chart_alerts(&self, _: &Host, _: &Chart) -> Vec<ChartAlert> {
+                vec![ChartAlert { name: b"a".to_vec(), class: AlertClass::Clear, status_name: "CLEAR" }]
+            }
+        }
+        let host = Host::new("guid-view", false, crate::testutil::info("view"));
+        assert!(host.storage().alert_view().is_none());
+        host.storage().set_alert_view(Arc::new(Fixed(5)));
+        host.storage().set_alert_view(Arc::new(Fixed(50)));
+        let view = host.storage().alert_view().expect("the view");
+        assert_eq!(view.versions(&host), (5, 6));
+
+        assert_eq!(host.health_delay_up_to(), 0);
+        host.set_health_delay_up_to(1_700_000_060);
+        assert_eq!(host.health_delay_up_to(), 1_700_000_060);
+        host.set_health_delay_up_to(0);
+        assert_eq!(host.health_delay_up_to(), 0);
+    }
 
     /// `rrdeng_metric_retention_delete_by_id()`: the metric's times cleared; one nobody holds leaves the registry,
     /// and its tier counts one metric less; one held stays until released.

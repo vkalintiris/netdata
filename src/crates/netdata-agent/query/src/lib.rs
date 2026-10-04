@@ -19,6 +19,7 @@ pub mod request;
 pub mod rrdr;
 pub mod tables;
 pub mod target;
+pub mod value;
 #[cfg(test)]
 mod testing;
 pub mod window;

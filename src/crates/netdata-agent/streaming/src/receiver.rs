@@ -799,8 +799,9 @@ impl Receivers {
                 return false;
             }
         }
-        // rrdhost_set_receiver(); health itself is not ported, the delay is only logged
+        // rrdhost_set_receiver(): a child that was just connected gets its health postponed
         if config.health_enabled != 0 && config.health_delay > 0 {
+            host.set_health_delay_up_to(now_s().saturating_add(config.health_delay));
             nd_log!(
                 Source::Daemon,
                 Priority::Debug,
@@ -2167,6 +2168,51 @@ mod tests {
                 format!("cannot set TCP_KEEPCNT on socket {fd}"),
             ]
         );
+    }
+
+    /// `rrdhost_set_receiver()`: a child that attaches with health on and a positive `postpone alerts on connect`
+    /// has its health postponed until that many seconds from now; with health off, or without a delay, the host's
+    /// delay is left alone and nothing is logged.
+    #[test]
+    fn an_attach_postpones_the_child_s_health() {
+        let cases = [
+            ("health enabled = yes\n  postpone alerts on connect = 90s", Some(90)),
+            ("health enabled = auto", Some(60)),
+            ("health enabled = no\n  postpone alerts on connect = 90s", None),
+            ("health enabled = yes\n  postpone alerts on connect = 0", None),
+        ];
+        for (i, (settings, delay)) in cases.into_iter().enumerate() {
+            let (r, _pool) = receivers();
+            r.conf.lock().unwrap().config.load_bytes(
+                format!("[{ADMIT_KEY}]\n  enabled = yes\n  {settings}\n").as_bytes(),
+                "stream.conf",
+                false,
+                None,
+            );
+            let guid = format!("5a1e0000-0000-4000-8000-0000000000f{i}");
+            let (ours, _theirs) = mio::net::UnixStream::pair().unwrap();
+            let before = now_s();
+            let (admitted, records) =
+                netdata_agent_log::capture(|| r.admit(pending(&guid), Link::Plain(Conn::Unix(ours))));
+            assert!(admitted, "{settings}");
+            let host = r.hosts.find_by_guid(&guid).expect("the child's host");
+            let postponed: Vec<String> =
+                texts(records).into_iter().filter(|t| t.contains("Postponing health checks")).collect();
+            match delay {
+                Some(delay) => {
+                    let up_to = host.health_delay_up_to();
+                    assert!((before + delay..=now_s() + delay).contains(&up_to), "{settings}: {up_to}");
+                    assert_eq!(postponed.len(), 1, "{settings}");
+                    assert!(postponed[0].ends_with(&format!(
+                        "Postponing health checks for {delay} seconds, because it was just connected."
+                    )));
+                }
+                None => {
+                    assert_eq!(host.health_delay_up_to(), 0, "{settings}");
+                    assert!(postponed.is_empty(), "{settings}");
+                }
+            }
+        }
     }
 
     /// `stream_receiver_send_first_response()`: a prompt the socket does not take whole (here EPIPE, the child gone)

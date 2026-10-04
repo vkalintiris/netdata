@@ -11,7 +11,7 @@ use netdata_agent_rrd::chart::{Chart, dim_flags};
 use netdata_agent_rrd::contexts::{self, Context, Instance, Metric, flags};
 use netdata_agent_rrd::host::Host;
 use netdata_agent_rrd::labels::PatternArray;
-use netdata_agent_rrd::storage::TierHandle;
+use netdata_agent_rrd::storage::{AlertClass, ChartAlert, TierHandle};
 use netdata_agent_storage::dbengine::RRD_STORAGE_TIERS;
 use netdata_agent_storage::storage_point::StoragePoint;
 use netdata_agent_text::print::print_uuid_lower;
@@ -49,12 +49,46 @@ pub struct Counts {
     pub failed: u32,
 }
 
+/// `QUERY_ALERTS_COUNTS`: the alerts of a version-2 query's queryable instances, by published status.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct AlertCounts {
+    pub clear: u32,
+    pub warning: u32,
+    pub critical: u32,
+    pub other: u32,
+}
+
+impl AlertCounts {
+    /// One alert more of that class.
+    pub fn count(&mut self, class: AlertClass) {
+        match class {
+            AlertClass::Clear => self.clear += 1,
+            AlertClass::Warning => self.warning += 1,
+            AlertClass::Critical => self.critical += 1,
+            AlertClass::Other => self.other += 1,
+        }
+    }
+
+    pub fn add(&mut self, other: &AlertCounts) {
+        self.clear += other.clear;
+        self.warning += other.warning;
+        self.critical += other.critical;
+        self.other += other.other;
+    }
+
+    /// No alert at all: C then prints nothing.
+    pub fn is_empty(&self) -> bool {
+        *self == AlertCounts::default()
+    }
+}
+
 #[derive(Debug)]
 pub struct QueryNode {
     pub host: Arc<Host>,
     pub node_id: Option<String>,
     pub metrics: Counts,
     pub instances: Counts,
+    pub alerts: AlertCounts,
     /// The positive points of its queried metrics, merged (v2).
     pub query_points: StoragePoint,
     /// How long its metrics took to execute (`qn->duration_ut`); never set for the last node queried.
@@ -67,6 +101,7 @@ pub struct QueryContext {
     pub rc: Arc<Context>,
     pub metrics: Counts,
     pub instances: Counts,
+    pub alerts: AlertCounts,
     pub query_points: StoragePoint,
 }
 
@@ -78,6 +113,7 @@ pub struct QueryInstance {
     pub id_fqdn: String,
     pub name_fqdn: String,
     pub metrics: Counts,
+    pub alerts: AlertCounts,
     pub query_points: StoragePoint,
 }
 
@@ -204,12 +240,15 @@ pub struct QueryTarget {
 }
 
 /// `struct query_versions` plus the host index's version: the dictionary versions summed over the hosts in scope.
-/// Health and the hub queue are not ported, so their terms are 0 (as in C for an unclaimed agent with health off).
+/// The hub queue is not ported, so its term is 0 (as in C for an unclaimed agent).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Versions {
     pub nodes_hard_hash: u64,
     pub contexts_hard_hash: u64,
     pub contexts_soft_hash: u64,
+    /// The hosts' alert dictionaries' versions, and their counts of alert transitions.
+    pub alerts_hard_hash: u64,
+    pub alerts_soft_hash: u64,
 }
 
 /// What selects the metrics: v1's routed host (and chart), or every host for v2/v3.
@@ -259,7 +298,7 @@ struct Walk<'a> {
     dimensions: Option<SimplePattern>,
     scope_labels: Option<PatternArray>,
     labels: Option<PatternArray>,
-    alerts: bool,
+    alerts: Option<SimplePattern>,
     needs_all_dimensions: bool,
     qt: QueryTarget,
 }
@@ -556,16 +595,22 @@ impl Walk<'_> {
             || self.instances.as_ref().is_none_or(|sp| {
                 self.instance_matches(sp, ri, &id_fqdn, &name_fqdn, node_id.as_deref())
             });
-        let queryable = context_queryable
+        let mut queryable = context_queryable
             && instances_ok
-            && self.labels.as_ref().is_none_or(|a| a.label_match(&ri.labels(), b':'))
-            && !(self.req.version >= 2 && self.alerts);
-        // query_target_eval_instance_rrdcalc() acquires the chart of a v2 query's queryable instance, which touches it
-        if queryable
-            && self.req.version >= 2
-            && let Some(chart) = ri.chart()
-        {
-            chart.touch_last_accessed();
+            && self.labels.as_ref().is_none_or(|a| a.label_match(&ri.labels(), b':'));
+        if queryable && let Some(sp) = &self.alerts {
+            queryable = alerts_match(sp, &host, ri);
+        }
+        // query_target_eval_instance_rrdcalc(): the alerts of a v2 query's queryable instance count for it, its
+        // context and its node, before its dimensions are looked at: an instance dropped for having none has
+        // counted above itself
+        let mut alerts = AlertCounts::default();
+        if queryable && self.req.version >= 2 {
+            for alert in chart_alerts(&host, ri) {
+                alerts.count(alert.class);
+            }
+            self.qt.contexts[context].alerts.add(&alerts);
+            self.qt.nodes[node].alerts.add(&alerts);
         }
         let instance = self.qt.instances.len();
         self.qt.instances.push(QueryInstance {
@@ -574,6 +619,7 @@ impl Walk<'_> {
             id_fqdn,
             name_fqdn,
             metrics: Counts::default(),
+            alerts,
             query_points: StoragePoint::default(),
         });
         let (kept, admitted) = self.dimensions(&host, instance, ri, queryable);
@@ -612,6 +658,7 @@ impl Walk<'_> {
             rc: Arc::clone(rc),
             metrics: Counts::default(),
             instances: Counts::default(),
+            alerts: AlertCounts::default(),
             query_points: StoragePoint::default(),
         });
         let before = self.qt.instances.len();
@@ -642,6 +689,7 @@ impl Walk<'_> {
             node_id,
             metrics: Counts::default(),
             instances: Counts::default(),
+            alerts: AlertCounts::default(),
             query_points: StoragePoint::default(),
             duration_ut: 0,
         });
@@ -684,6 +732,37 @@ impl Walk<'_> {
             self.qt.nodes.pop();
         }
     }
+}
+
+/// The alerts of an instance's chart, in link order, as health shows them; none without health or without the
+/// chart. `rrdinstance_acquired_rrdset_acquire()` finds the chart through the host's index, which touches it.
+pub fn chart_alerts(host: &Host, ri: &Instance) -> Vec<ChartAlert> {
+    let Some(chart) = ri.chart() else {
+        return Vec::new();
+    };
+    chart.touch_last_accessed();
+    host.storage().alert_view().map_or_else(Vec::new, |view| view.chart_alerts(host, &chart))
+}
+
+/// `query_target_match_alert_pattern()`: each alert of the instance's chart is asked by its name, then as
+/// `NAME:STATUS`; the first positive match keeps the instance, the first negative one drops it, and so does a
+/// chart without a match.
+fn alerts_match(sp: &SimplePattern, host: &Host, ri: &Instance) -> bool {
+    for alert in chart_alerts(host, ri) {
+        let mut text = alert.name;
+        for with_status in [false, true] {
+            if with_status {
+                text.push(b':');
+                text.extend_from_slice(alert.status_name.as_bytes());
+            }
+            match sp.matches_extract(&text, 0).0 {
+                SimplePatternResult::MatchedPositive => return true,
+                SimplePatternResult::MatchedNegative => return false,
+                SimplePatternResult::NotMatched => {}
+            }
+        }
+    }
+    false
 }
 
 /// `snprintfz(buf, 1200, ...)`: at most 1199 bytes.
@@ -730,6 +809,11 @@ pub fn foreach_host<B>(
             continue;
         }
         versions.contexts_hard_hash += u64::from(host.contexts().version());
+        if let Some(view) = host.storage().alert_view() {
+            let (hard, soft) = view.versions(host);
+            versions.alerts_hard_hash += hard;
+            versions.alerts_soft_hash += soft;
+        }
         f(host, nodes.is_none_or(|sp| host_matches(sp, host)))?;
     }
     ControlFlow::Continue(())
@@ -780,7 +864,7 @@ pub fn create(mut req: DataRequest, source: Source, now_s: i64) -> QueryTarget {
         dimensions: pattern(&req.dimensions),
         scope_labels: label_array(&req.scope_labels),
         labels: label_array(&req.labels),
-        alerts: pattern(&req.alerts).is_some(),
+        alerts: pattern(&req.alerts),
         needs_all_dimensions,
         qt: QueryTarget {
             request: req.clone(),
@@ -1069,5 +1153,57 @@ mod tests {
         assert_eq!(v2(&h, "labels=foo").query.len(), 2);
         // '!' is dropped from the parsed text: `!k:v` requires k:v.
         assert_eq!(v2(&h, "scope_labels=!k:v").query.len(), 2);
+    }
+
+    /// `query_target_eval_instance_rrdcalc()`: the alerts of a version-2 query's queryable instance count for the
+    /// instance, its context and its node; the versions are the hosts' sums. A version-1 query counts nothing.
+    #[test]
+    fn a_v2_query_counts_its_instances_alerts() {
+        let h = crate::testing::host_with_alerts();
+        let (qt, _) = crate::testing::v2_target(&h, "contexts=ctx.a");
+        let three = AlertCounts { clear: 1, warning: 1, critical: 0, other: 1 };
+        assert_eq!((qt.instances[0].alerts, qt.contexts[0].alerts, qt.nodes[0].alerts), (three, three, three));
+        assert_eq!((qt.versions.alerts_hard_hash, qt.versions.alerts_soft_hash), (7, 9));
+
+        let (qt, _) = crate::testing::v1_target(&h, "points=3");
+        assert!(qt.instances[0].alerts.is_empty() && qt.nodes[0].alerts.is_empty());
+
+        // without health nothing is counted and the versions stay 0
+        let (qt, _) = crate::testing::v2_target(&crate::testing::host(), "contexts=ctx.a");
+        assert!(qt.instances[0].alerts.is_empty());
+        assert_eq!((qt.versions.alerts_hard_hash, qt.versions.alerts_soft_hash), (0, 0));
+    }
+
+    /// `query_target_match_alert_pattern()`: per alert in link order (a_warn WARNING, a_clear CLEAR, a_undef
+    /// UNDEFINED) the name, then `NAME:STATUS`; the first match that is not NOT decides. An instance the filter
+    /// drops is not queried and its alerts are not counted.
+    #[test]
+    fn the_alerts_filter_keeps_an_instance_by_its_first_match() {
+        let h = crate::testing::host_with_alerts();
+        let cases = [
+            ("a_warn", true),
+            ("a_undef", true),
+            ("nope", false),
+            ("a_clear:CLEAR", true),
+            ("a_clear:WARNING", false),
+            ("*:UNDEFINED", true),
+            ("*:CRITICAL", false),
+            // the first alert's name is refused before any other alert is asked
+            ("!a_warn|*", false),
+            // the first alert's name matches `*` before the second alert could be refused
+            ("!a_clear|*", true),
+            ("!*:WARNING|*", true),
+        ];
+        for (filter, kept) in cases {
+            let (qt, _) = crate::testing::v2_target(&h, &format!("contexts=ctx.a&alerts={filter}"));
+            let admitted = !qt.query.is_empty();
+            assert_eq!(admitted, kept, "{filter}");
+            assert_eq!(!qt.nodes[0].alerts.is_empty(), kept, "{filter}");
+        }
+        // without health a filter keeps nothing; a lone `*` is no filter
+        let (qt, _) = crate::testing::v2_target(&crate::testing::host(), "contexts=ctx.a&alerts=a*");
+        assert!(qt.query.is_empty());
+        let (qt, _) = crate::testing::v2_target(&crate::testing::host(), "contexts=ctx.a&alerts=*");
+        assert!(!qt.query.is_empty());
     }
 }

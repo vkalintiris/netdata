@@ -6,7 +6,7 @@ use netdata_agent_rrd::chart::{Algorithm, ChartSpec, ChartType};
 use netdata_agent_rrd::contexts::{SqlChart, SqlDim};
 use netdata_agent_rrd::host::{Host, HostInfo};
 use netdata_agent_rrd::mode::DbMode;
-use netdata_agent_rrd::storage::StorageLayout;
+use netdata_agent_rrd::storage::{AlertClass, ChartAlert, StorageLayout};
 use netdata_agent_storage::dbengine::engine::query::Dbengine;
 use netdata_agent_storage::storage_number::SN_FLAG_NOT_ANOMALOUS;
 
@@ -75,6 +75,37 @@ pub fn host() -> Arc<Host> {
         );
     }
     h.contexts().process_queued();
+    h
+}
+
+/// What health would show of [`host`]'s chart: three alerts, one in each of three classes, in link order.
+struct ThreeAlerts;
+
+impl netdata_agent_rrd::storage::AlertView for ThreeAlerts {
+    fn versions(&self, _: &Host) -> (u64, u64) {
+        (7, 9)
+    }
+
+    fn chart_alerts(&self, _: &Host, chart: &netdata_agent_rrd::chart::Chart) -> Vec<ChartAlert> {
+        if chart.id() != "t.a" {
+            return Vec::new();
+        }
+        let alerts = [
+            ("a_warn", AlertClass::Warning, "WARNING"),
+            ("a_clear", AlertClass::Clear, "CLEAR"),
+            ("a_undef", AlertClass::Other, "UNDEFINED"),
+        ];
+        alerts
+            .into_iter()
+            .map(|(name, class, status_name)| ChartAlert { name: name.into(), class, status_name })
+            .collect()
+    }
+}
+
+/// [`host`], with health showing three alerts on its chart.
+pub fn host_with_alerts() -> Arc<Host> {
+    let h = host();
+    h.storage().set_alert_view(Arc::new(ThreeAlerts));
     h
 }
 

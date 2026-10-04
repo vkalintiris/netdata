@@ -427,6 +427,9 @@ pub struct Host {
     /// `host->health.evloop_iteration`: the HEALTH loop's pass when a receiver last attached or left; the host is
     /// archived only after more than 10 more.
     health_last_iteration: AtomicU64,
+    /// `host->health.delay_up_to`: until when the HEALTH loop leaves the host alone, 0 for no delay. A child's
+    /// receiver sets it at the attach and the loop at a resume from suspension; the loop clears it.
+    health_delay_up_to: AtomicI64,
     /// `RRDHOST_FLAG_OBSOLETE_ALL_IN_PROGRESS`: the maintenance marks the host's charts obsolete; receivers wait.
     obsolete_all_busy: AtomicBool,
     /// `RRDHOST_FLAG_ORPHAN`: a child whose receiver has gone.
@@ -608,6 +611,7 @@ impl Host {
             receiver_last_connected_s: AtomicI64::new(0),
             receiver_last_disconnected_s: AtomicI64::new(0),
             health_last_iteration: AtomicU64::new(0),
+            health_delay_up_to: AtomicI64::new(0),
             obsolete_all_busy: AtomicBool::new(false),
             orphan: AtomicBool::new(false),
             // rrd_init(): localhost's collector is this agent
@@ -1161,6 +1165,16 @@ impl Host {
     /// `rrdhost_health_evloop_last_iteration()`.
     pub fn health_last_iteration(&self) -> u64 {
         self.health_last_iteration.load(Ordering::Relaxed)
+    }
+
+    /// `host->health.delay_up_to`: 0 when health is not postponed.
+    pub fn health_delay_up_to(&self) -> i64 {
+        self.health_delay_up_to.load(Ordering::Relaxed)
+    }
+
+    /// Postpones the host's health until `second`, or lifts the delay with 0.
+    pub fn set_health_delay_up_to(&self, second: i64) {
+        self.health_delay_up_to.store(second, Ordering::Relaxed);
     }
 
     /// An ephemeral host loaded from the metadata database counts as disconnected at its load

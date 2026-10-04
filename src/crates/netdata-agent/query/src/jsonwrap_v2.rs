@@ -1,6 +1,6 @@
 //! The v2 JSON wrapper around a result (`src/web/api/formatters/jsonwrap-v2.c`), with the v2 summaries
 //! (`jsonwrap-summary-*.c`), the detailed tree (`jsonwrap-objects-tree.c`), `buffer_json_agents_v2()` and
-//! `buffer_json_cloud_timings()`. Health is not ported, so every alert count is 0 and alert lists are empty.
+//! `buffer_json_cloud_timings()`.
 //! Spec §9.8.
 
 use std::collections::HashMap;
@@ -19,7 +19,7 @@ use crate::jsonwrap::query_timings;
 use crate::keys::Keys;
 use crate::rrdr::Rrdr;
 use crate::tables::{group_by, group_by_names, options, options_to_json_array};
-use crate::target::{Counts, QueryTarget, Versions, metric_status};
+use crate::target::{AlertCounts, Counts, QueryTarget, Versions, chart_alerts, metric_status};
 use crate::window::Window;
 
 /// `MCP_QUERY_INFO_SUMMARY_SECTION`, `_DATABASE_SECTION`, `_VIEW_SECTION` (`src/web/mcp/mcp.h`).
@@ -126,6 +126,50 @@ impl Ctx<'_> {
         w.object_close();
     }
 
+    /// `query_target_alerts_counts()`: the non-zero counts as the `alerts` member, or as an array item led by the
+    /// alert's `name`; nothing when all four are 0.
+    fn alerts_counts(&self, w: &mut JsonWriter, a: &AlertCounts, name: Option<&[u8]>) {
+        if a.is_empty() {
+            return;
+        }
+        let k = self.k;
+        match name {
+            Some(name) => {
+                w.add_array_item_object();
+                w.member_add_string(k.name(), name);
+            }
+            None => w.member_add_object(k.alerts()),
+        }
+        let counts = [(k.clear(), a.clear), (k.warning(), a.warning), (k.critical(), a.critical), (k.other(), a.other)];
+        for (key, value) in counts {
+            if value > 0 {
+                w.member_add_uint64(key, u64::from(value));
+            }
+        }
+        w.object_close();
+    }
+
+    /// `query_target_summary_alerts_v2()`: the alerts of every instance of the target, grouped by name in the order
+    /// first seen.
+    fn summary_alerts(&self, w: &mut JsonWriter) {
+        let mut order: Vec<Vec<u8>> = Vec::new();
+        let mut entries: HashMap<Vec<u8>, AlertCounts> = HashMap::new();
+        for qi in &self.qt.instances {
+            let host = &self.qt.nodes[self.qt.contexts[qi.context].node].host;
+            for alert in chart_alerts(host, &qi.ri) {
+                if !entries.contains_key(&alert.name) {
+                    order.push(alert.name.clone());
+                }
+                entries.entry(alert.name).or_default().count(alert.class);
+            }
+        }
+        w.member_add_array(Some(b"alerts"));
+        for name in &order {
+            self.alerts_counts(w, &entries[name], Some(name));
+        }
+        w.array_close();
+    }
+
     /// `query_target_total_counts()`.
     fn total_counts(&self, w: &mut JsonWriter, key: &str, t: &Totals) {
         if t.selected == 0 && t.queried == 0 && t.failed == 0 && t.excluded == 0 {
@@ -190,6 +234,7 @@ impl Ctx<'_> {
             if !self.minimal() {
                 self.counts(w, k.instances(), &qn.instances);
                 self.counts(w, k.dimensions(), &qn.metrics);
+                self.alerts_counts(w, &qn.alerts, None);
             }
             self.points_statistics(w, &qn.query_points);
             w.object_close();
@@ -212,6 +257,7 @@ impl Ctx<'_> {
             });
             let (mut remaining, mut contribution) = (0, 0.0);
             let (mut metrics, mut instances) = (Counts::default(), Counts::default());
+            let mut alerts = AlertCounts::default();
             let mut points = StoragePoint::UNSET;
             for (i, &(n, share, _)) in items.iter().enumerate() {
                 let qn = &qt.nodes[n];
@@ -222,6 +268,7 @@ impl Ctx<'_> {
                     remaining += 1;
                     add_counts(&mut metrics, &qn.metrics);
                     add_counts(&mut instances, &qn.instances);
+                    alerts.add(&qn.alerts);
                     points.merge_to(&qn.query_points);
                 }
                 totals.add(&qn.metrics);
@@ -234,6 +281,7 @@ impl Ctx<'_> {
                 if !self.minimal() {
                     self.counts(w, k.instances(), &instances);
                     self.counts(w, k.dimensions(), &metrics);
+                    self.alerts_counts(w, &alerts, None);
                 }
                 self.points_statistics(w, &points);
                 w.object_close();
@@ -251,7 +299,7 @@ impl Ctx<'_> {
     fn summary_contexts(&self, w: &mut JsonWriter, totals: &mut Totals) -> usize {
         let k = self.k;
         let mut order: Vec<&str> = Vec::new();
-        let mut entries: HashMap<&str, (Counts, Counts, StoragePoint)> = HashMap::new();
+        let mut entries: HashMap<&str, (Counts, Counts, AlertCounts, StoragePoint)> = HashMap::new();
         for qc in &self.qt.contexts {
             let id = qc.rc.id();
             let e = entries.entry(id).or_insert_with(|| {
@@ -259,21 +307,24 @@ impl Ctx<'_> {
                 (
                     Counts::default(),
                     Counts::default(),
+                    AlertCounts::default(),
                     StoragePoint::default(),
                 )
             });
             add_counts(&mut e.0, &qc.instances);
             add_counts(&mut e.1, &qc.metrics);
-            e.2.merge_to(&qc.query_points);
+            e.2.add(&qc.alerts);
+            e.3.merge_to(&qc.query_points);
         }
         w.member_add_array(Some(b"contexts"));
         for id in &order {
-            let (instances, metrics, points) = &entries[id];
+            let (instances, metrics, alerts, points) = &entries[id];
             w.add_array_item_object();
             w.member_add_string("id", id);
             if !self.minimal() {
                 self.counts(w, k.instances(), instances);
                 self.counts(w, k.dimensions(), metrics);
+                self.alerts_counts(w, alerts, None);
             }
             self.points_statistics(w, points);
             w.object_close();
@@ -302,6 +353,7 @@ impl Ctx<'_> {
             }
             if !self.minimal() {
                 self.counts(w, k.dimensions(), &qi.metrics);
+                self.alerts_counts(w, &qi.alerts, None);
             }
             self.points_statistics(w, &qi.query_points);
             w.object_close();
@@ -324,6 +376,7 @@ impl Ctx<'_> {
             });
             let (mut remaining, mut contribution) = (0, 0.0);
             let mut metrics = Counts::default();
+            let mut alerts = AlertCounts::default();
             let mut points = StoragePoint::UNSET;
             for (n, &(i, share)) in items.iter().enumerate() {
                 let qi = &qt.instances[i];
@@ -333,6 +386,7 @@ impl Ctx<'_> {
                     contribution += share;
                     remaining += 1;
                     add_counts(&mut metrics, &qi.metrics);
+                    alerts.add(&qi.alerts);
                     points.merge_to(&qi.query_points);
                 }
                 totals.add(&qi.metrics);
@@ -346,6 +400,7 @@ impl Ctx<'_> {
                 }
                 if !self.minimal() {
                     self.counts(w, k.dimensions(), &metrics);
+                    self.alerts_counts(w, &alerts, None);
                 }
                 self.points_statistics(w, &points);
                 w.object_close();
@@ -1004,9 +1059,7 @@ pub fn begin_v2(qt: &QueryTarget, window: &Window, nodes_hard_hash: u64) -> (Jso
     let (keys, values) = totals.split_at_mut(5);
     x.summary_labels(&mut w, &mut keys[4], &mut values[0]);
     if opts & options::MINIMAL_STATS == 0 {
-        // Health is not ported: no alert is linked to any instance.
-        w.member_add_array(Some(b"alerts"));
-        w.array_close();
+        x.summary_alerts(&mut w);
     }
     if aggregatable(opts) {
         w.member_add_object(b"globals");
@@ -1175,16 +1228,15 @@ pub fn end_v2(
     w.finalize();
 }
 
-/// `version_hashes_api_v2()`: the routing, nodes, contexts and alerts versions (health is not ported: its hashes are
-/// 0, as in C with health off).
+/// `version_hashes_api_v2()`: the routing, nodes, contexts and alerts versions.
 pub fn version_hashes_v2(w: &mut JsonWriter, v: &Versions) {
     w.member_add_object(b"versions");
     w.member_add_uint64("routing_hard_hash", 1);
     w.member_add_uint64("nodes_hard_hash", v.nodes_hard_hash);
     w.member_add_uint64("contexts_hard_hash", v.contexts_hard_hash);
     w.member_add_uint64("contexts_soft_hash", v.contexts_soft_hash);
-    w.member_add_uint64("alerts_hard_hash", 0);
-    w.member_add_uint64("alerts_soft_hash", 0);
+    w.member_add_uint64("alerts_hard_hash", v.alerts_hard_hash);
+    w.member_add_uint64("alerts_soft_hash", v.alerts_soft_hash);
     w.object_close();
 }
 

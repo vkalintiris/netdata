@@ -116,7 +116,7 @@ pub struct DataRequest {
 }
 
 impl DataRequest {
-    fn new(version: u8, profile: &Profile) -> Self {
+    pub(crate) fn new(version: u8, profile: &Profile) -> Self {
         DataRequest {
             version,
             scope_nodes: None,

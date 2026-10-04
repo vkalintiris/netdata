@@ -40,6 +40,10 @@ keys! {
     dimensions: "ds", "dimensions";
     instances: "is", "instances";
     alerts: "al", "alerts";
+    clear: "cl", "clear";
+    warning: "wr", "warning";
+    critical: "cr", "critical";
+    other: "ot", "other";
     statistics: "sts", "statistics";
     name: "nm", "name";
     hostname: "nm", "hostname";
