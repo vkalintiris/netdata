@@ -366,9 +366,10 @@ INSERT INTO health_log_detail (health_log_id, unique_id, alarm_id, alarm_event_i
 // before the option (C sets its directories when it loads `-c`, netdata-conf.c:6-40; the option alone would open the
 // compiled-in cache directory). C opens the database as an agent does (migrations, the start's cleanup batch), then,
 // per row of the host table, deletes the alert log rows of charts the host does not have. Compared: the alert log's
-// tables after, what was written to stderr, the exit status and what was written to stdout.
+// tables after, what was written to stderr, the exit status, what was written to stdout, and the files the command
+// leaves in the cache directory (C exits with the database open: its -wal and -shm files stay).
 func alertCleanup(t *testing.T, seed string) {
-	var tables, records [2]string
+	var tables, records, files [2]string
 	var codes [2]int
 	for i, bin := range binaries(t) {
 		dir := filepath.Join(t.TempDir(), string([]Role{Oracle, Candidate}[i]))
@@ -395,6 +396,14 @@ func alertCleanup(t *testing.T, seed string) {
 			t.Fatal(err)
 		}
 		stdout, stderr, code := runPrint(t, bin, "-c", conf, "-W", "sqlite-alert-cleanup")
+		// before the dump opens the database
+		left, err := os.ReadDir(cache)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range left {
+			files[i] += f.Name() + "\n"
+		}
 		tables[i] = strings.Join(alertCleanupRows(dumpDB(t, filepath.Join(cache, "netdata-meta.db"), "--table", "health_log",
 			"--table", "health_log_detail", "--table", "alert_queue", "--table", "aclk_queue")), "\n")
 		records[i] = "stdout: " + stdout + "\nstderr:\n" + errnoRe.ReplaceAllString(strings.ReplaceAll(stderr, dir, "<RUN>"), "")
@@ -414,6 +423,9 @@ func alertCleanup(t *testing.T, seed string) {
 	if codes[0] != 0 || !strings.Contains(records[0], `msg="Alert cleanup done"`) {
 		t.Fatalf("oracle: exit %d, records:\n%s", codes[0], records[0])
 	}
+	if !strings.Contains(files[0], "netdata-meta.db-wal\n") {
+		t.Fatalf("oracle: no write-ahead log left in the cache directory:\n%s", files[0])
+	}
 	if tables[0] != tables[1] {
 		t.Fatalf("the alert log's tables differ after the cleanup\noracle:\n%s\ncandidate:\n%s", tables[0], tables[1])
 	}
@@ -423,7 +435,10 @@ func alertCleanup(t *testing.T, seed string) {
 	if codes[0] != codes[1] {
 		t.Errorf("exit status: oracle %d, candidate %d", codes[0], codes[1])
 	}
-	t.Logf("both sides: exit %d\n%s\n%s", codes[0], tables[0], records[0])
+	if files[0] != files[1] {
+		t.Errorf("the files left in the cache directory differ\noracle:\n%s\ncandidate:\n%s", files[0], files[1])
+	}
+	t.Logf("both sides: exit %d\n%s\n%s\nleft in the cache directory:\n%s", codes[0], tables[0], records[0], files[0])
 }
 
 // alertCleanupRows are the rows of a metadata-dump output (the header, the pragmas and the schema are `sqlite.files`'
