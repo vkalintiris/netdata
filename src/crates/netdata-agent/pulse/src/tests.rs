@@ -603,6 +603,9 @@ fn a_parent_charts_its_children() {
     // the next pass keeps the labels (their version did not move), follows the state and the traffic, and revives
     // an obsolete dimension
     let label_version = traffic.meta().labels.version();
+    // the first pass applied the labels, which asked health to match the chart's alerts again
+    let recheck = netdata_agent_rrd::chart::flags::PENDING_LABEL_RECHECK;
+    assert_eq!(traffic.take_health_pending() & recheck, recheck);
     let connections = host
         .charts()
         .find(&format!("netdata.streaming.in.reconnects.{CHILD}"), true)
@@ -619,6 +622,8 @@ fn a_parent_charts_its_children() {
         nodes(&["local", "stale disconnected"])
     );
     assert_eq!(traffic.meta().labels.version(), label_version);
+    // labels that were not applied again ask health for nothing
+    assert_eq!(traffic.take_health_pending() & recheck, 0);
     assert_eq!(
         values(host, &format!("netdata.streaming.in.traffic.{CHILD}"))[0],
         ("in".to_string(), 100)
@@ -628,13 +633,20 @@ fn a_parent_charts_its_children() {
         0
     );
 
-    // a new label of the child reaches its four charts on the next pass
+    // a new label of the child reaches its four charts on the next pass, and health is asked to match each chart's
+    // alerts again: the chart's recheck, and localhost's "some chart is pending"
+    host.take_health_pending();
+    for id in per_child(CHILD) {
+        host.charts().find(&id, true).unwrap().take_health_pending();
+    }
     child.update_labels(|l| l.add(b"rack", b"r1", SRC_CONFIG));
     pulse.cycle();
     for id in per_child(CHILD) {
         let chart = host.charts().find(&id, true).unwrap();
         assert_eq!(chart.meta().labels.get(b"rack"), Some(&b"r1"[..]), "{id}");
+        assert_eq!(chart.take_health_pending() & recheck, recheck, "{id}");
     }
+    assert_eq!(host.take_health_pending(), netdata_agent_rrd::host::pending_flags::HEALTH_INITIALIZATION);
 
     // each inbound state of a child is one dimension of its state chart (replicating before it ever ran: a running
     // child's replication is latched to running); loading is none of them

@@ -488,7 +488,10 @@ mod tests {
             (&stored, false),
             "too early"
         );
+        assert_eq!(localhost.take_health_pending(), 0);
         tz.pulse_refresh(&localhost, 30 * MINUTE_UT, now_s);
+        // the two labels changed: health matches localhost's alerts again
+        assert_eq!(localhost.take_health_pending(), netdata_agent_rrd::host::pending_flags::LABEL_RECHECK);
         let utc = SystemTimezone {
             name: "Etc/UTC".into(),
             abbrev: "UTC".into(),
@@ -515,6 +518,7 @@ mod tests {
         tz.pulse_refresh(&localhost, 59 * MINUTE_UT, now_s);
         tz.pulse_refresh(&localhost, 60 * MINUTE_UT, now_s);
         assert!(!changed(&localhost), "nothing changed");
+        assert_eq!(localhost.take_health_pending(), 0);
 
         // a configured zone stays, and its difference from the system's is told once
         let mut configured = Timezone {

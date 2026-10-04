@@ -2727,6 +2727,29 @@ mod tests {
         assert!(ran.load(Ordering::SeqCst), "the cleanup of a receiver that is not the host's");
     }
 
+    /// `rrdhost_set_is_parent_label()`: localhost's labels are rechecked by health when `_is_parent` changed, and
+    /// only then.
+    #[test]
+    fn the_parent_label_asks_health_for_a_recheck_when_it_changes() {
+        let hosts = Hosts::new(Host::new("guid-l", true, info("l")));
+        let localhost = hosts.localhost();
+        let host = hosts.find_or_create("guid-c", DbMode::Ram, || info("c"), |_| {}).expect("created");
+        let slot = Arc::new(ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {})));
+        let label = || localhost.labels().get(b"_is_parent").map(<[u8]>::to_vec);
+        localhost.take_health_pending();
+
+        assert_eq!(host.set_receiver(Arc::clone(&slot)), Attach::Attached);
+        hosts.update_is_parent_label();
+        assert_eq!((label(), localhost.take_health_pending()), (Some(b"true".to_vec()), pending_flags::LABEL_RECHECK));
+        hosts.update_is_parent_label();
+        assert_eq!(localhost.take_health_pending(), 0, "the same answer again");
+
+        host.clear_receiver(&slot, 0);
+        hosts.update_is_parent_label();
+        assert_eq!((label(), localhost.take_health_pending()), (Some(b"false".to_vec()), pending_flags::LABEL_RECHECK));
+        assert_eq!(host.take_health_pending(), 0, "the child's own labels did not change");
+    }
+
     /// A receiver leaves while a walk that frees hosts holds the index (R55 M3): the count it updates is not under
     /// the index's lock, as C's atomic `streaming_connected_receivers`.
     #[test]

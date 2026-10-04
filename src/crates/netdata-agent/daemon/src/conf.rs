@@ -1318,8 +1318,8 @@ impl Conf {
             .unwrap_or_else(|| "(null)".to_string())
     }
 
-    /// `health_set_silencers_filename()`, the "silencers" step, which creates `[health]`. Health is not ported, so
-    /// the file is not read yet.
+    /// `health_set_silencers_filename()`, the "silencers" step, which creates `[health]`. The silencers are not
+    /// ported, so the file is not read yet.
     pub fn health_silencers_filename(&mut self) {
         let default = format!("{}/health.silencers.json", self.dirs.varlib);
         self.netdata

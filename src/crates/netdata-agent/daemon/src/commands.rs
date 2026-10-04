@@ -370,7 +370,7 @@ fn run(idx: usize, args: &[u8]) -> (Status, Option<Vec<u8>>) {
             Some(b"Agent is not connected to Netdata Cloud".to_vec()),
         ),
         RELOAD_HEALTH => {
-            // health is not ported: only its record
+            // the reload of the health configuration is not ported: only its record
             netdata_agent_log::limits_unlimited();
             netdata_log_info!("COMMAND: Reloading HEALTH configuration.");
             netdata_agent_log::limits_reset();
