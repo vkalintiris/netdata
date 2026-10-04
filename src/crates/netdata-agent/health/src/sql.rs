@@ -5,7 +5,9 @@ use netdata_agent_log::netdata_log_error;
 use netdata_agent_metadata::health_log::{EntryRow, LoadedRow, Uuid};
 use netdata_agent_metadata::open::MetaDb;
 use netdata_agent_text::c::c_str;
+use netdata_agent_query::tables::options_to_json_array;
 use netdata_agent_text::json::{JsonOptions, JsonWriter};
+use netdata_agent_text::parse::{str2ndd, uuid_parse_flexi};
 use netdata_agent_text::print::print_uuid_lower;
 use netdata_agent_text::units::format_value_and_unit;
 
@@ -13,6 +15,7 @@ use crate::Clock;
 use crate::alert::Status;
 use crate::alerts::HostAlerts;
 use crate::entry::{Entry, entry_flags};
+use crate::tables::{DataSource, DimsGrouping, GroupCondition};
 
 /// `sql_health_alarm_log_save()`: an entry that was saved before is updated, another is inserted (with `queue`,
 /// the alarm's row of the unclaimed queue too). True when a row was inserted: the caller marks the entry SAVED.
@@ -348,3 +351,102 @@ pub fn alarm_log_json(
     wb.finalize();
     wb.into_bytes()
 }
+
+/// What `/api/v2/alert_config` and `/api/v3/alert_config` answer for a hash.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ConfigAnswer {
+    /// 200: the rule's configuration.
+    Found(Vec<u8>),
+    /// 404, `Config is not found.`
+    NotFound,
+    /// 500, `Failed to execute SQL query.`
+    Failed,
+}
+
+/// `contexts_v2_alert_config_to_json()`: the rule of that hash as its row of `alert_hash` has it. The hash's text
+/// is read as C's flexible parser reads a UUID (any case, with or without dashes); a text that is no UUID finds no
+/// rule (C asks the table with a buffer it never set). Without a database the query fails. `default_recipient` is
+/// localhost's, for a rule that names none.
+pub fn alert_config_json(meta: Option<&MetaDb>, hash: &[u8], default_recipient: &[u8]) -> ConfigAnswer {
+    let Some(meta) = meta else {
+        return ConfigAnswer::Failed;
+    };
+    let Some(hash_id) = uuid_parse_flexi(hash) else {
+        return ConfigAnswer::NotFound;
+    };
+    let row = match meta.alert_config(&hash_id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return ConfigAnswer::NotFound,
+        Err(()) => return ConfigAnswer::Failed,
+    };
+
+    let mut wb = JsonWriter::new(JsonOptions::DEFAULT);
+    wb.member_add_string_opt("name", column(&row.alarm));
+    wb.member_add_uuid_ptr("config_hash_id", Some(&row.hash_id));
+
+    wb.member_add_object("selectors");
+    let template = column(&row.template).filter(|template| !template.is_empty());
+    wb.member_add_string("type", if template.is_some() { "template" } else { "alarm" });
+    wb.member_add_string_opt("on", template.or(column(&row.on_key)));
+    wb.member_add_string_opt("families", column(&row.families));
+    wb.member_add_string_opt("host_labels", column(&row.host_labels));
+    wb.member_add_string_opt("chart_labels", column(&row.chart_labels));
+    wb.object_close();
+
+    wb.member_add_object("value");
+    wb.member_add_string_opt("units", column(&row.units));
+    // C hands the 32-bit number to an unsigned 64-bit parameter
+    wb.member_add_uint64("update_every", i64::from(row.update_every) as u64);
+    if row.db_after != 0 {
+        wb.member_add_object("db");
+        wb.member_add_time_t_formatted("after", i64::from(row.db_after), false);
+        wb.member_add_time_t_formatted("before", i64::from(row.db_before), false);
+        wb.member_add_string("time_group_condition", GroupCondition::name_of_id(row.time_group_condition as u8));
+        wb.member_add_double("time_group_value", row.time_group_value);
+        wb.member_add_string("dims_group", DimsGrouping::name_of_id(row.dims_group as u8));
+        wb.member_add_string("data_source", DataSource::name_of_id(row.data_source as u8));
+        wb.member_add_string_opt("method", column(&row.db_method));
+        wb.member_add_string_opt("dimensions", column(&row.db_dimensions));
+        options_to_json_array(&mut wb, b"options", u64::from(row.db_options));
+        wb.object_close();
+    }
+    if let Some(calc) = column(&row.calc) {
+        wb.member_add_string("calc", calc);
+    }
+    wb.object_close();
+
+    let (warn, crit) = (column(&row.warn), column(&row.crit));
+    if warn.is_some() || crit.is_some() {
+        wb.member_add_object("status");
+        for (key, text) in [("green", &row.green), ("red", &row.red)] {
+            let number = column(text).map_or(f64::NAN, |text| str2ndd(text).0);
+            if !number.is_nan() {
+                wb.member_add_double(key, number);
+            }
+        }
+        for (key, expression) in [("warn", warn), ("crit", crit)] {
+            if let Some(expression) = expression {
+                wb.member_add_string(key, expression);
+            }
+        }
+        wb.object_close();
+    }
+
+    wb.member_add_object("notification");
+    wb.member_add_string("type", "agent");
+    wb.member_add_string_opt("exec", column(&row.exec));
+    wb.member_add_string("to", column(&row.to_key).unwrap_or(c_str(default_recipient)));
+    wb.member_add_string_opt("delay", column(&row.delay));
+    wb.member_add_string_opt("repeat", column(&row.repeat));
+    wb.member_add_string_opt("options", column(&row.options));
+    wb.object_close();
+
+    wb.member_add_string_opt("class", column(&row.classification));
+    wb.member_add_string_opt("component", column(&row.component));
+    wb.member_add_string_opt("type", column(&row.r#type));
+    wb.member_add_string_opt("info", column(&row.info));
+    wb.member_add_string_opt("summary", column(&row.summary));
+    wb.finalize();
+    ConfigAnswer::Found(wb.into_bytes())
+}
+

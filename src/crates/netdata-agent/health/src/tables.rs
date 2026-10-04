@@ -1,6 +1,7 @@
 //! The small enums of an alert's configuration and their names (`health_prototypes.h`, the tables at the top of
 //! `health_prototypes.c`), and the lookup options health keeps for itself (`health.h`).
 
+use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_query::tables::options;
 
 /// `ALERT_LOOKUP_TIME_GROUP_CONDITION`: how a `countif` compares each value.
@@ -28,6 +29,19 @@ impl GroupCondition {
             GroupCondition::LessEqual => "<=",
         }
     }
+
+    /// `alerts_group_conditions_id2txt()` of a number a table holds (C reads it into its one-byte enum): one that
+    /// is no condition is recorded, in C's words, which name a data source, and reads as the first of C's table.
+    pub fn name_of_id(id: u8) -> &'static str {
+        use GroupCondition::{Equal, Greater, GreaterEqual, Less, LessEqual, NotEqual};
+        match [Equal, NotEqual, Greater, Less, GreaterEqual, LessEqual].into_iter().find(|c| *c as u8 == id) {
+            Some(condition) => condition.name(),
+            None => {
+                nd_log!(Source::Daemon, Priority::Warning, "Alert data source {id} is not valid");
+                Equal.name()
+            }
+        }
+    }
 }
 
 /// `ALERT_LOOKUP_DIMS_GROUPING`: how a lookup's dimensions become one value.
@@ -53,6 +67,19 @@ impl DimsGrouping {
             DimsGrouping::Min2Max => "min2max",
         }
     }
+
+    /// `alerts_dims_grouping_id2group()` of a number a table holds: one that is no grouping is recorded and reads
+    /// as the first of C's table.
+    pub fn name_of_id(id: u8) -> &'static str {
+        use DimsGrouping::{Average, Max, Min, Min2Max, Sum};
+        match [Sum, Min, Max, Average, Min2Max].into_iter().find(|grouping| *grouping as u8 == id) {
+            Some(grouping) => grouping.name(),
+            None => {
+                nd_log!(Source::Daemon, Priority::Warning, "Alert lookup dimensions grouping {id} is not valid");
+                Sum.name()
+            }
+        }
+    }
 }
 
 /// `ALERT_LOOKUP_DATA_SOURCE`: what a lookup reads.
@@ -72,6 +99,19 @@ impl DataSource {
             DataSource::Samples => "samples",
             DataSource::Percentages => "percentages",
             DataSource::Anomalies => "anomalies",
+        }
+    }
+
+    /// `alerts_data_source_id2source()` of a number a table holds: one that is no data source is recorded and
+    /// reads as the first of C's table.
+    pub fn name_of_id(id: u8) -> &'static str {
+        use DataSource::{Anomalies, Percentages, Samples};
+        match [Samples, Percentages, Anomalies].into_iter().find(|source| *source as u8 == id) {
+            Some(source) => source.name(),
+            None => {
+                nd_log!(Source::Daemon, Priority::Warning, "Alert data source {id} is not valid");
+                Samples.name()
+            }
         }
     }
 }

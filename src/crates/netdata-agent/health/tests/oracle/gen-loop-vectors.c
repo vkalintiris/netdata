@@ -84,6 +84,9 @@
 //   cleanup                            the hourly cleanup of the host: sql_health_alarm_log_cleanup(), then
 //                                      health_alarm_log_cleanup()
 //   alarm-log <after> [chart]          /api/v1/alarm_log's body (`after` is a unique id, as the request gives it)
+//   configs                            /api/v2/alert_config's body for every rule of alert_hash, in the table's
+//                                      order, then for a hash no rule has: a `config` row each, with the hash,
+//                                      how many rules C's query found, and the body (none when it found none)
 //   running-for <n>                    the service runs for n more looks at it, then it is stopping
 //   exiting                            the agent's exit has begun (it cannot be undone)
 //   delay-up-to <second|0>             the host's health is postponed until then (what a connecting child gets)
@@ -92,13 +95,15 @@
 //   pass <now> [hibernate]             one call of the pass
 //   unlink <chart>                     rrdcalc_unlink_and_delete_all_rrdset_alerts()
 //   apply                              health_apply_prototypes_to_host()
-// `unlink`, `apply`, `store`, `restart`, `cleanup` and `alarm-log` are steps too.
+// `unlink`, `apply`, `store`, `restart`, `cleanup`, `alarm-log` and `configs` are steps too.
 //
 // Field encoding: see health-oracle.h. A double is `nan` or its bits in hex.
 
 #include "health-loop-oracle.h"
 #include "health/rrdvar.h"
+#include "database/sqlite/sqlite_functions.h"
 #include "database/sqlite/sqlite_health.h"
+#include "database/contexts/api_v2_contexts_alerts.h"
 
 char *format_value_and_unit(char *value_string, size_t value_string_len, NETDATA_DOUBLE value, const char *units, int precision);
 
@@ -267,6 +272,50 @@ static bool entry_row_changed(uint32_t unique_id, char *text) {
 static void sql_row(const char *table, const char *fields) {
     row("sql");
     fprintf(out, "\t%s%s\n", table, fields);
+}
+
+// What contexts_v2_alert_config_to_json() (database/contexts/api_v2_contexts_alert_config.c) does for one hash,
+// without its web client: C's query and C's JSON callback into a buffer. The endpoint answers 200 with the body
+// when a rule was found, and a text otherwise: the row has no body then.
+static void config_row(const char *hash) {
+    BUFFER *wb = buffer_create(0, NULL);
+    struct alert_transitions_callback_data data = { .wb = wb, .debug = false, .only_one_config = false };
+    DICTIONARY *configs = dictionary_create(DICT_OPTION_SINGLE_THREADED | DICT_OPTION_DONT_OVERWRITE_VALUE);
+    dictionary_set(configs, hash, NULL, 0);
+    buffer_json_initialize(wb, "\"", "\"", 0, true, BUFFER_JSON_OPTIONS_DEFAULT);
+    int added = sql_get_alert_configuration(
+        configs, contexts_v2_alert_config_to_json_from_sql_alert_config_data, &data, false);
+    buffer_json_finalize(wb);
+    dictionary_destroy(configs);
+
+    row("config");
+    field(out, hash);
+    fprintf(out, "\t%d", added);
+    field(out, added > 0 ? buffer_tostring(wb) : "");
+    fputc('\n', out);
+    buffer_free(wb);
+}
+
+static void configs(const char *whole) {
+    if(!db_meta) die("no real database", whole);
+    sqlite3_stmt *stmt = NULL;
+    if(sqlite3_prepare_v2(db_meta, "SELECT hash_id FROM alert_hash ORDER BY rowid", -1, &stmt, NULL) != SQLITE_OK)
+        die("cannot read alert_hash", sqlite3_errmsg(db_meta));
+    size_t used = 0, size = 0;
+    char (*hashes)[UUID_STR_LEN] = NULL;
+    while(sqlite3_step(stmt) == SQLITE_ROW) {
+        if(sqlite3_column_bytes(stmt, 0) != (int)sizeof(nd_uuid_t)) die("a hash that is no UUID", whole);
+        if(used == size) {
+            size = size ? size * 2 : 64;
+            hashes = reallocz(hashes, size * sizeof(*hashes));
+        }
+        uuid_unparse_lower(*(const nd_uuid_t *)sqlite3_column_blob(stmt, 0), hashes[used++]);
+    }
+    sqlite3_finalize(stmt);
+    for(size_t i = 0; i < used; i++)
+        config_row(hashes[i]);
+    freez(hashes);
+    config_row("5a1e0000-0000-4000-8000-00000000dead");
 }
 
 static RRDSET *chart_find(const char *id) {
@@ -783,6 +832,10 @@ static void run_scenario(const char *out_path, const char *scenario_path, const 
             field(out, buffer_tostring(wb));
             fputc('\n', out);
             buffer_free(wb);
+            dump(whole);
+        }
+        else if(strcmp(directive, "configs") == 0) {
+            configs(whole);
             dump(whole);
         }
         else

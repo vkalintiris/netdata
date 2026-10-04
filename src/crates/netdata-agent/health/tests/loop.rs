@@ -164,6 +164,17 @@ mod replay {
         }
     }
 
+    /// The hash of every rule of `alert_hash` in rowid order, as a UUID's text.
+    fn table_hashes(raw: &rusqlite::Connection) -> Vec<Vec<u8>> {
+        let mut statement = raw.prepare("SELECT hash_id FROM alert_hash ORDER BY rowid").expect("the table");
+        let hashes = statement.query_map([], |row| row.get::<_, [u8; 16]>(0)).expect("the rows");
+        let text = |hash: [u8; 16]| {
+            let hex: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
+            format!("{}-{}-{}-{}-{}", &hex[..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..]).into_bytes()
+        };
+        hashes.map(|hash| text(hash.expect("a hash"))).collect()
+    }
+
     /// Every row of a table in rowid order as the generator prints one: the table, then `column=value` for each
     /// column (an integer as it is, a real with 17 digits, a text in quotes, a blob as hex, `NULL`).
     fn table_rows(raw: &rusqlite::Connection, table: &str) -> Vec<Fields> {
@@ -572,6 +583,8 @@ mod replay {
                     fields.push((key, canonical_double(&as_text)));
                 }
                 "alert_notification_timestamp" => fields.push((key, epoch_of(&as_text).to_string())),
+                // the number of `<number>, <its text>`
+                "errno" => fields.push((key, as_text.split(',').next().unwrap_or_default().to_owned())),
                 _ => fields.push((key, as_text)),
             }
         }
@@ -597,6 +610,9 @@ mod replay {
             Priority::Debug => "debug",
         };
         let mut fields = Vec::new();
+        if record.errno != 0 {
+            fields.push(("errno".to_owned(), record.errno.to_string()));
+        }
         for (field, value) in &record.fields {
             let key = match field {
                 Field::MessageId => "msg_id",
@@ -657,8 +673,12 @@ mod replay {
         /// The configuration's retention and limit of the alert log, when the scenario sets them.
         retention_s: Option<u32>,
         log_max: Option<u32>,
-        /// The alert log's body an `alarm-log` step made, until the step's rows are compared.
+        /// What the reader of the rule files recorded, until the first step's rows are compared.
+        reading: Vec<Captured>,
+        /// The alert log's body an `alarm-log` step made, and the rules' answers a `configs` step made, until the
+        /// step's rows are compared.
         body: Option<Vec<u8>>,
+        configs: Vec<Fields>,
         host: Arc<Host>,
         world: World,
         step: usize,
@@ -685,9 +705,16 @@ mod replay {
                     None => Box::new(|_| {}),
                 };
                 let health = Health::init(config, store);
-                for path in &self.rules {
-                    assert!(health_readfile(&health, path.as_bytes(), false), "cannot read {path}");
-                }
+                // the generator reads the files as their directives come: what the reader records is in the rows
+                // of the scenario's first step
+                let ((), reading) = netdata_agent_log::capture(|| {
+                    for path in &self.rules {
+                        // the generator clears the thread's error number before each directive
+                        netdata_agent_log::take_errno();
+                        assert!(health_readfile(&health, path.as_bytes(), false), "cannot read {path}");
+                    }
+                });
+                self.reading = reading;
                 self.health = Some(health);
             }
             Arc::clone(self.health.as_ref().expect("made above"))
@@ -951,13 +978,14 @@ mod replay {
                     let after = strtoul0(args[0].as_bytes()).0 as i64;
                     let chart = rest.split_once(' ').map(|(_, chart)| chart.as_bytes());
                     let limit = health.host(&self.host).map_or(0, |alerts| alerts.log_max());
-                    let (info, config) = (self.host.info(), health.config());
+                    let info = self.host.info();
+                    let (default_exec, default_recipient) = health.host_defaults(&self.host);
                     let view = sql::LogView {
                         hostname: info.hostname.as_bytes(),
                         utc_offset: info.utc_offset,
                         abbrev_timezone: info.abbrev_timezone.as_bytes(),
-                        default_exec: &config.default_exec,
-                        default_recipient: &config.default_recipient,
+                        default_exec,
+                        default_recipient,
                         user_config_dir: b"/oracle/etc",
                         registry_hostname: info.registry_hostname.as_bytes(),
                     };
@@ -967,6 +995,26 @@ mod replay {
                         sql::alarm_log_json(meta, &host_id(&self.host), &view, after, chart, limit)
                     });
                     self.body = Some(body);
+                    self.dump(line, None, records);
+                }
+                // `/api/v2/alert_config` for every rule the table has, in the table's order, then for a hash no rule
+                // has: the hash, how many rules were found, and the body when one was
+                "configs" => {
+                    let (health, world) = (self.health(), &self.world);
+                    let (configs, records) = netdata_agent_log::capture(|| {
+                        let real = world.real.borrow();
+                        let real = real.as_ref().unwrap_or_else(|| panic!("{}: no real database", self.name));
+                        let mut hashes = table_hashes(&real.raw);
+                        hashes.push(b"5a1e0000-0000-4000-8000-00000000dead".to_vec());
+                        let recipient = health.host_defaults(&self.host).1;
+                        let config = |hash: Vec<u8>| match sql::alert_config_json(Some(&real.meta), &hash, recipient) {
+                            sql::ConfigAnswer::Found(body) => vec![hash, b"1".to_vec(), body],
+                            sql::ConfigAnswer::NotFound => vec![hash, b"0".to_vec(), Vec::new()],
+                            sql::ConfigAnswer::Failed => vec![hash, b"-1".to_vec(), Vec::new()],
+                        };
+                        hashes.into_iter().map(config).collect::<Vec<Fields>>()
+                    });
+                    self.configs = configs;
                     self.dump(line, None, records);
                 }
                 other => panic!("{}: directive {other}", self.name),
@@ -1108,6 +1156,9 @@ mod replay {
             if let Some(body) = self.body.take() {
                 put("body", vec![body]);
             }
+            for config in self.configs.drain(..) {
+                put("config", config);
+            }
 
             let mut expected = self.expected.remove(&self.step).unwrap_or_default();
             if let Some(calls) = expected.get_mut("call") {
@@ -1129,6 +1180,7 @@ mod replay {
             let scripted = self.world.real.borrow().is_none();
             let empty_load = b"Table health_log, loaded 0 alarm entries, errors in 0 entries.";
             let load_record = |record: &Record| record.3.ends_with(empty_load);
+            let records: Vec<Captured> = self.reading.drain(..).chain(records).collect();
             let mut actual_records: Vec<Record> = records.iter().map(rust_record).collect();
             actual_records.retain(|record| !(scripted && load_record(record)));
             if expected_records != actual_records {
@@ -1287,7 +1339,9 @@ mod replay {
                 rules: Vec::new(),
                 retention_s: None,
                 log_max: None,
+                reading: Vec::new(),
                 body: None,
+                configs: Vec::new(),
                 host,
                 world,
                 step: 0,
@@ -1328,7 +1382,7 @@ fn queue_matches_c() {
 /// pass, with the REMOVED rows it injects, rows it refuses, and a service that stops while it loads.
 #[test]
 fn sql_matches_c() {
-    assert_eq!(replayed("sql"), 87);
+    assert_eq!(replayed("sql"), 88);
 }
 
 /// The steps a family's replay compared; any difference from C's rows fails.

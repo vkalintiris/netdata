@@ -30,10 +30,12 @@ define themselves):
   and its thread's store job are in play (the queue takes or refuses a save, the thread a step runs on, the job
   that saves each queued entry as it stands by then, the alarm ids the alert log's table knows). `sql.tsv` is the
   same over `../corpus/sql/`, with C's own `sqlite_health.c` and `sqlite_functions.c` and the build's SQLite linked
-  in and run over a real database file (`health-sql-stubs.c`: C's schema cut out of `sqlite_metadata.c`, SQLite's
-  clock the scenario's): the save's inserts and updates, the load at a host's first pass with the REMOVED rows it
-  injects, a restart on the same file, the hourly cleanup, the alarm log's JSON; after every step the rows of
-  `health_log`, `health_log_detail`, `alert_queue` and `aclk_queue` in rowid order;
+  in and run over a real database file (`health-sql-stubs.c`: C's schema cut out of `sqlite_metadata.c`, in the
+  daemon's journal mode, SQLite's clock the scenario's): the save's inserts and updates, the load at a host's first
+  pass with the REMOVED rows it injects and the rows it refuses, a restart on the same file, the hourly cleanup,
+  the alarm log's JSON; after every step the rows of `health_log`, `health_log_detail`, `alert_queue` and
+  `aclk_queue` in rowid order. A `configs` step asks C's `/api/v2/alert_config` code
+  (`database/contexts/api_v2_contexts_alert_config.c`, linked in) for every rule of `alert_hash`;
 - `health-unittest-dump.inc` and `health-unittest-main.inc` are spliced into a copy of
   `src/health/health-config-unittest.c`, so that C's own unit test runs, must pass, and leaves each call it makes to
   the ported functions, with what C returned, in `c_unittest.tsv`.

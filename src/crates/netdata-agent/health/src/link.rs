@@ -28,6 +28,15 @@ impl Health {
         self.hosts().get(guid).cloned()
     }
 
+    /// `host->health.default_exec` and `host->health.default_recipient`: the configuration's from the host's first
+    /// health pass on, and no text before it (a host health never ran for has none).
+    pub fn host_defaults(&self, host: &Host) -> (&[u8], &[u8]) {
+        match self.host(host).is_some_and(|alerts| alerts.is_initialized()) {
+            true => (&self.config.default_exec, &self.config.default_recipient),
+            false => (b"", b""),
+        }
+    }
+
     /// The host's alerts, made at its first pass. Alerts another host object of this GUID left behind are dropped:
     /// this one starts with its first pass.
     fn host_alerts(&self, host: &Arc<Host>) -> Arc<HostAlerts> {

@@ -1,0 +1,16 @@
+# `/api/v2/alert_config` and `/api/v3/alert_config`: a rule's configuration as its row of alert_hash gives it. Every
+# rule of these files is asked by its hash: templates and alarms, lookups with their methods and options, green and
+# red, delays, repeats, labels, classes; then a hash no rule has.
+database real
+rules tests/corpus/keys/all-keys.conf
+rules tests/corpus/keys/green-red.conf
+rules tests/corpus/keys/options-repeat.conf
+rules tests/corpus/lookup/methods.conf
+rules tests/corpus/lookup/options.conf
+rules tests/corpus/lookup/parenthesis.conf
+rules tests/corpus/labels/combined.conf
+rules tests/corpus/delay/delays.conf
+rules ../../../health/health.d/cpu.conf
+rules ../../../health/health.d/disks.conf
+rules ../../../health/health.d/net.conf
+configs

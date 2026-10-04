@@ -64,6 +64,7 @@ LOOP_SOURCES=(
     health/health_log.c health/rrdcalc.c health/health_variable.c health/rrdvar.c
     web/api/v1/api_v1_badge/web_buffer_svg.c
     database/sqlite/sqlite_health.c database/sqlite/sqlite_functions.c
+    database/contexts/api_v2_contexts_alert_config.c
 )
 [[ -f "${BUILD}/libsqlite3.a" ]] || die "no ${BUILD}/libsqlite3.a"
 for source in "${LOOP_SOURCES[@]}"; do
