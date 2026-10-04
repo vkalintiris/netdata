@@ -8,6 +8,7 @@
 
 use std::borrow::Cow;
 
+use netdata_agent_log::netdata_log_error_errno;
 use netdata_agent_nrpc::reply::Reply;
 use netdata_agent_text::c::c_str;
 use netdata_agent_text::parse::{strtoll10, strtoull10, uuid_parse_flexi};
@@ -684,6 +685,167 @@ pub fn object<'a>(
     }
 }
 
+/// A parsed value whose objects keep their members in the document's order, as json-c's do: `serde_json`'s map is
+/// sorted by key unless a feature other packages of the workspace turn on is unified in (D210 F3). A repeated name
+/// keeps its first place and takes its last value, as json-c's `json_object_object_add()` leaves it.
+enum Ordered {
+    Null,
+    Bool(bool),
+    Number,
+    String(String),
+    Array(Vec<Ordered>),
+    Object(Vec<(String, Ordered)>),
+}
+
+impl<'de> serde::Deserialize<'de> for Ordered {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Ordered, D::Error> {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = Ordered;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a JSON value")
+            }
+
+            fn visit_unit<E>(self) -> Result<Ordered, E> {
+                Ok(Ordered::Null)
+            }
+
+            fn visit_bool<E>(self, v: bool) -> Result<Ordered, E> {
+                Ok(Ordered::Bool(v))
+            }
+
+            fn visit_i64<E>(self, _: i64) -> Result<Ordered, E> {
+                Ok(Ordered::Number)
+            }
+
+            fn visit_u64<E>(self, _: u64) -> Result<Ordered, E> {
+                Ok(Ordered::Number)
+            }
+
+            fn visit_f64<E>(self, _: f64) -> Result<Ordered, E> {
+                Ok(Ordered::Number)
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Ordered, E> {
+                Ok(Ordered::String(v.to_owned()))
+            }
+
+            fn visit_string<E>(self, v: String) -> Result<Ordered, E> {
+                Ok(Ordered::String(v))
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Ordered, A::Error> {
+                let mut items = Vec::new();
+                while let Some(item) = seq.next_element()? {
+                    items.push(item);
+                }
+                Ok(Ordered::Array(items))
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Ordered, A::Error> {
+                let mut members: Vec<(String, Ordered)> = Vec::new();
+                while let Some((name, value)) = map.next_entry::<String, Ordered>()? {
+                    match members.iter_mut().find(|(known, _)| *known == name) {
+                        Some(member) => member.1 = value,
+                        None => members.push((name, value)),
+                    }
+                }
+                Ok(Ordered::Object(members))
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+impl Ordered {
+    fn has_nul_key(&self) -> bool {
+        match self {
+            Ordered::Object(members) => members.iter().any(|(name, value)| name.contains('\0') || value.has_nul_key()),
+            Ordered::Array(items) => items.iter().any(Ordered::has_nul_key),
+            _ => false,
+        }
+    }
+}
+
+/// What `json_parse()`'s walk hands its callback, in the walk's order (`json_walk()` and `json_jsonc_parse_array()`
+/// of `src/libnetdata/json/json.c`, the json-c build). C also calls it for an integer of the root, which no callback
+/// of the agent looks at, and cuts a member's name at 256 bytes, which no name a callback knows reaches.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Walked<'a> {
+    /// An array's element that is an object, of any array the walk meets: C's `JSON_OBJECT` call. Elements are
+    /// numbered from 0 as the walk meets them.
+    Element,
+    /// A string member directly in the element of that number.
+    ElementString { element: usize, name: &'a [u8], value: &'a [u8] },
+    /// A string member with no element in hand: of the root, or of an object inside an element.
+    String { name: &'a [u8], value: &'a [u8] },
+    /// A boolean member, wherever the walk meets it; its name is not looked at.
+    Boolean(bool),
+}
+
+/// `json_walk()`: an object's members. A member that is an object is not descended into, a double and a null are
+/// not visited.
+fn walk_object(members: &[(String, Ordered)], elements: &mut usize, callback: &mut dyn FnMut(Walked<'_>)) {
+    for (name, value) in members {
+        match value {
+            Ordered::Array(items) => walk_array(items, elements, callback),
+            Ordered::String(v) => callback(Walked::String { name: name.as_bytes(), value: c_str(v.as_bytes()) }),
+            Ordered::Bool(v) => callback(Walked::Boolean(*v)),
+            Ordered::Null | Ordered::Number | Ordered::Object(_) => {}
+        }
+    }
+}
+
+/// `json_jsonc_parse_array()`: each element that is not null is announced, then its members are walked: an array as
+/// this one, an object as the root, a string as the element's own.
+fn walk_array(items: &[Ordered], elements: &mut usize, callback: &mut dyn FnMut(Walked<'_>)) {
+    for item in items {
+        // C skips a null. It announces an element that is a string, a number, a boolean or an array too, and then
+        // walks its members through a NULL table: the agent dies. Such an element is skipped whole here (D210 F4).
+        let Ordered::Object(members) = item else { continue };
+        let element = *elements;
+        *elements += 1;
+        callback(Walked::Element);
+        for (name, value) in members {
+            match value {
+                Ordered::Array(items) => walk_array(items, elements, callback),
+                Ordered::Object(inner) => walk_object(inner, elements, callback),
+                Ordered::String(v) => {
+                    callback(Walked::ElementString { element, name: name.as_bytes(), value: c_str(v.as_bytes()) })
+                }
+                Ordered::Bool(v) => callback(Walked::Boolean(*v)),
+                Ordered::Null | Ordered::Number => {}
+            }
+        }
+    }
+}
+
+/// `json_parse()`: the first JSON value of `text` is parsed as [`tokener_parse`] parses (with its refusals, D46.1)
+/// and, when it is an object, walked. False when the text is refused, with C's record; a value that is no object
+/// parses and hands the callback nothing, but `null`, which json-c's parse gives as its failure.
+pub fn json_parse(text: &[u8], callback: &mut dyn FnMut(Walked<'_>)) -> bool {
+    let text = prepare(text);
+    let mut values = serde_json::Deserializer::from_slice(&text).into_iter::<Ordered>();
+    let value = match values.next() {
+        Some(Ok(value)) if !too_deep(&text[..values.byte_offset()]) && !value.has_nul_key() => value,
+        _ => Ordered::Null,
+    };
+    match value {
+        Ordered::Null => {
+            netdata_log_error_errno!("JSON: Invalid json string.");
+            false
+        }
+        Ordered::Object(members) => {
+            walk_object(&members, &mut 0, callback);
+            true
+        }
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -808,5 +970,73 @@ mod tests {
         assert_eq!(enum_error("m"), "missing '.m' enum");
         assert_eq!(object_error("s"), "not an object '.s'");
         assert_eq!(object_error("m"), "missing '.m' object");
+    }
+    /// The walk's events, each as its debug text, and what the parse logged.
+    fn walked(text: &str) -> (bool, Vec<String>, Vec<String>) {
+        let mut seen = Vec::new();
+        let (parsed, records) = netdata_agent_log::capture(|| {
+            json_parse(text.as_bytes(), &mut |walked| {
+                seen.push(match walked {
+                    Walked::Element => "element".to_owned(),
+                    Walked::ElementString { element, name, value } => {
+                        format!("{element}:{}={}", String::from_utf8_lossy(name), String::from_utf8_lossy(value))
+                    }
+                    Walked::String { name, value } => {
+                        format!("{}={}", String::from_utf8_lossy(name), String::from_utf8_lossy(value))
+                    }
+                    Walked::Boolean(v) => v.to_string(),
+                })
+            })
+        });
+        (parsed, seen, records.into_iter().filter_map(|record| record.message).collect())
+    }
+
+    #[test]
+    fn the_walk_follows_the_document_s_order() {
+        let events = |text| {
+            let (parsed, seen, records) = walked(text);
+            assert!(parsed && records.is_empty(), "{text}: {records:?}");
+            seen.join(" ")
+        };
+        // members in the order they are written, whatever their names
+        assert_eq!(events(r#"{"zz":true,"aa":false}"#), "true false");
+        assert_eq!(
+            events(r#"{"type":"SILENCE","all":true,"silencers":[{"b":"1","a":"2"}]}"#),
+            "type=SILENCE true element 0:b=1 0:a=2"
+        );
+        // a repeated name keeps its first place and takes its last value
+        assert_eq!(events(r#"{"aa":true,"zz":false,"aa":false}"#), "false false");
+        assert_eq!(events(r#"{"x":[{"a":"1","a":"2"}]}"#), "element 0:a=2");
+        // every array's elements are announced: an array in an element makes elements of its own, and the strings
+        // after it are still the outer element's
+        assert_eq!(events(r#"{"one":[{"a":"1"}],"two":[{"b":"2"}]}"#), "element 0:a=1 element 1:b=2");
+        assert_eq!(events(r#"{"x":[{"in":[{"c":"3"}],"a":"1"}]}"#), "element element 1:c=3 0:a=1");
+        // an object in an element is walked as a root: its strings have no element, its objects are not entered
+        assert_eq!(
+            events(r#"{"x":[{"o":{"type":"DISABLE","b":true,"o":{"b":false}},"a":"1"}]}"#),
+            "element type=DISABLE true 0:a=1"
+        );
+        // not visited: a root's object, doubles, nulls, integers; a null element; an element that is no object
+        assert_eq!(
+            events(r#"{"o":{"b":true},"d":1.5,"n":null,"i":5,"x":[null,"s",5,true,[{"a":"1"}],{}]}"#),
+            "element"
+        );
+        // a string is read up to its first NUL
+        assert_eq!(events(r#"{"x":[{"a":"1\u00002"}]}"#), "element 0:a=1");
+        // a root that is no object parses and gives nothing; what follows the first value is not read
+        assert_eq!(events("5"), "");
+        assert_eq!(events(r#""text""#), "");
+        assert_eq!(events(r#"[{"a":"1"}]"#), "");
+        assert_eq!(events(r#"{"b":true} trailing"#), "true");
+    }
+
+    #[test]
+    fn a_text_that_is_refused_is_recorded() {
+        let deep = format!("{}{}", "[".repeat(33), "]".repeat(33));
+        for text in ["", " ", "{", "not json", "null", r#"{"a\u0000b":true}"#, "{'a':true}", r#"{"a":true,}"#, &deep] {
+            let (parsed, seen, records) = walked(text);
+            assert!(!parsed && seen.is_empty(), "{text}");
+            assert_eq!(records, ["JSON: Invalid json string."], "{text}");
+        }
     }
 }

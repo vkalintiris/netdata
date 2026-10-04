@@ -16,6 +16,7 @@ use crate::entry::Entry;
 use crate::keywords::lossy;
 use crate::notify::{Execution, RaisedSummary};
 use crate::prototype::AlertConfig;
+use crate::silencers::{self, Silencers, Subject};
 use crate::variable::{AlertResolver, This};
 use crate::{Clock, Health, journal, lookup};
 
@@ -325,11 +326,18 @@ pub(crate) fn hysteresis(run: &mut Run, config: &AlertConfig, status: Status, no
     delay
 }
 
-/// `health_silencers_update_disabled_silenced()`: clears the two flags and sets what a silencer says; true when the
-/// alert is disabled. The silencers come with their own commit: nothing is ever disabled or silenced.
-fn silence(run: &mut Run) -> bool {
-    run.run_flags &= !(run_flags::DISABLED | run_flags::SILENCED);
-    false
+/// `health_silencers_update_disabled_silenced()` without its record: DISABLED and SILENCED of the alert's run flags
+/// are set as the silencers say now. The flags before, for the record, when they changed.
+fn silence(silencers: &Silencers, hostname: &str, alert: &Alert, run: &mut Run) -> Option<u32> {
+    let before = run.run_flags;
+    let subject = Subject {
+        name: alert.name(),
+        chart: alert.chart.id().as_bytes(),
+        context: &|pattern| alert.chart.with_meta(|meta| pattern.matches(meta.context.as_bytes())),
+        hostname: hostname.as_bytes(),
+    };
+    run.run_flags = silencers.update(&subject, before);
+    (run.run_flags != before).then_some(before)
 }
 
 /// Which of an alert's expressions.
@@ -434,21 +442,31 @@ impl Health {
             // one read serves the obsolete rule and the runnable test; C reads the flag and the collection time
             // for each, so a collection that lands between its two reads shows a pass earlier there
             let facts = env.facts(&alert.chart);
-            let remove = {
+            let (silencing, remove) = {
                 let mut run = alert.run();
                 counts.add(run.status);
                 alert.update_info_using_labels(&mut run);
-                if silence(&mut run) {
+                let silencing = silence(self.silencers(), &hostname, &alert, &mut run);
+                let silencing = silencing.map(|before| (before, run.run_flags));
+                if run.run_flags & run_flags::DISABLED != 0 {
+                    // a disabled alert's turn ends here: it keeps its status, its value and its RUNNABLE flag
                     alert.publish_run_flags(&run);
-                    continue;
+                    (silencing, None)
+                } else {
+                    // an obsolete chart that was not collected for more than a minute loses its alerts, unless
+                    // they repeat
+                    let remove = run.status != Status::Removed
+                        && facts.obsolete
+                        && add_compare(facts.last_collected_s, 60, now).is_lt()
+                        && !alert.is_repeating();
+                    (silencing, Some(remove))
                 }
-                // an obsolete chart that was not collected for more than a minute loses its alerts, unless they
-                // repeat
-                run.status != Status::Removed
-                    && facts.obsolete
-                    && add_compare(facts.last_collected_s, 60, now).is_lt()
-                    && !alert.is_repeating()
             };
+            // C writes the record inside the update; here the alert's lock is released first
+            if let Some((before, after)) = silencing {
+                silencers::changed_record(hostname.as_bytes(), alert.name(), before, after);
+            }
+            let Some(remove) = remove else { continue };
             let removed = if remove { alerts.obsolete_removed(host, &alert, env, clock) } else { None };
             if let Some((entry, old_status)) = &removed {
                 journal::log_alert(&hostname, entry);

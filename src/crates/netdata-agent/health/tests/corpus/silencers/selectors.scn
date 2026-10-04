@@ -1,0 +1,54 @@
+# Selectors: five alerts on three charts of two contexts, picked by alarm, by chart, by context, by the host's name
+# (not the registry's), by two fields of one selector, by a second selector, by a negative word, and by `template`,
+# which is a selector with no field: it takes every alert.
+rules tests/corpus/notify/two.conf
+rules tests/corpus/loop/gate.conf
+chart loop.n loop.n_name loop.notify disks things 1
+chart loop.n2 loop.n2_name loop.notify disks things 1
+chart loop.g loop.g_name loop.gate - things 1
+var loop.n v 10
+var loop.n2 v 10
+var loop.g v 10
+clock 0
+pass 0
+manage ok cmd=SILENCE&alarm=n_one
+clock 1
+pass 1
+manage ok cmd=RESET
+manage ok cmd=SILENCE&chart=loop.n2
+clock 2
+pass 2
+manage ok cmd=RESET
+manage ok cmd=SILENCE&chart=loop.n2_name
+clock 3
+pass 3
+manage ok cmd=RESET
+manage ok cmd=SILENCE&context=loop.gate
+clock 4
+pass 4
+manage ok cmd=RESET
+manage ok cmd=SILENCE&hosts=oracle-host
+clock 5
+pass 5
+manage ok cmd=RESET
+manage ok cmd=SILENCE&hosts=oracle-registry
+clock 6
+pass 6
+manage ok cmd=RESET
+manage ok cmd=DISABLE&alarm=n_one&chart=loop.n
+clock 7
+pass 7
+manage ok alarm=g_*
+clock 8
+pass 8
+manage ok cmd=RESET
+manage ok cmd=SILENCE&alarm=!n_one *
+clock 9
+pass 9
+manage ok cmd=RESET
+manage ok cmd=SILENCE&template=x
+clock 10
+pass 10
+manage ok cmd=RESET
+clock 11
+pass 11

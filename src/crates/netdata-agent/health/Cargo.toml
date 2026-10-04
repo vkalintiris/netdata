@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 netdata-agent-dyncfg = { workspace = true }
 netdata-agent-eval = { workspace = true }
+netdata-agent-ingest = { workspace = true }
 netdata-agent-inicfg = { workspace = true }
 netdata-agent-log = { workspace = true }
 netdata-agent-metadata = { workspace = true }

@@ -1,0 +1,16 @@
+# A disabled alert of an obsolete chart is not removed while it is disabled; after a RESET it is.
+rules tests/corpus/loop/obsolete.conf
+chart loop.o1 loop.o1_name loop.obsolete - things 1
+live loop.o1 0
+var loop.o1 v 10
+clock 0
+pass 0
+obsolete loop.o1 1
+manage ok cmd=DISABLE&alarm=o_plain
+clock 61
+pass 61
+clock 62
+pass 62
+manage ok cmd=RESET
+clock 63
+pass 63

@@ -15,7 +15,7 @@
 //     index and the delete callback that unlinks the chart's alerts, which waits while a pass walks the alerts;
 //   - a chart's first and last entry, and the database lookup (rrdset2value_api_v1_with_owa), which records its
 //     arguments and answers what the scenario says;
-//   - the silencers (never disabled, never silenced: they come with their own commit);
+//   - the management key the silencers' request handler asks for (the silencers themselves are C's own);
 //   - SQLite: the load of the alert log (C's ids for an empty table, or none; C's load also looks at the running
 //     service once and logs a record, which come with the alert log's tables), the save (it marks the entry SAVED
 //     or not), the alarm id lookup (the alarms a scenario says the table knows), the alarm's last executed event
@@ -250,13 +250,9 @@ int rrdset2value_api_v1_with_owa(
 // ------------------------------------------------------------------------------------------------
 // the silencers
 
-// C: src/health/health_silencers.c. Clears DISABLED and SILENCED, sets one when a silencer matches, returns 1 when
-// DISABLED.
-int health_silencers_update_disabled_silenced(RRDHOST *host, RRDCALC *rc) {
-    (void)host;
-    rc->run_flags &= ~(RRDCALC_FLAG_DISABLED | RRDCALC_FLAG_SILENCED);
-    return 0;
-}
+// C's own src/health/health_silencers.c is linked in. Its request handler compares the request's token with the
+// management key, which api_v1_manage.c reads from the key file in the daemon.
+char *api_secret = "oracle-key";
 
 // ------------------------------------------------------------------------------------------------
 // SQLite, the metadata queue, ACLK, pulse

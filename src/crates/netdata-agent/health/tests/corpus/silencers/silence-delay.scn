@@ -1,0 +1,26 @@
+# SILENCED is taken when an entry is made: an entry made before a SILENCE and due during it is sent; one made
+# during it and due after the RESET is not.
+rules tests/corpus/notify/delay.conf
+chart loop.n loop.n_name loop.notify disks things 1
+var loop.n v 10
+clock 0
+pass 0
+var loop.n v 70
+clock 1
+pass 1
+manage ok cmd=SILENCE ALL
+clock 2
+pass 2
+clock 4
+pass 4
+var loop.n v 10
+clock 5
+pass 5
+var loop.n v 70
+clock 6
+pass 6
+manage ok cmd=RESET
+clock 7
+pass 7
+clock 9
+pass 9

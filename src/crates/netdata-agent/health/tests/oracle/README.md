@@ -17,7 +17,8 @@ define themselves):
   `rrdlabels_unittest()`, which must find no error;
 - `gen-loop-vectors.c` is the evaluation loop's: it links C's alert instances (`rrdcalc.c`), alert log
   (`health_log.c`), variable lookup (`health_variable.c`, `rrdvar.c`), notifications (`health_notifications.c`: the
-  log's scan, the decision, the command line, the wait) and the per-host pass itself (`health_event_loop.c`,
+  log's scan, the decision, the command line, the wait), silencers (`health_silencers.c`, as it stands: the state,
+  the file's read, the request handler of `/api/v1/manage/health`) and the per-host pass itself (`health_event_loop.c`,
   compiled as a copy with `health-loop-splice.inc` appended, because the pass is static), with what the daemon
   gives them stubbed in `health-loop-stubs.c`: the charts, the database lookup (scripted results; its arguments are
   recorded), SQLite, the queues, a notification's command (the spawn records the command line and starts nothing;
@@ -43,7 +44,13 @@ define themselves):
   (`database/contexts/api_v2_contexts_alert_config.c`, linked in) for every rule of `alert_hash`. `notify.tsv` is
   the same over `../corpus/notify/`: which entries are notified, each command line, the marks and times on the
   entry at each save, the slices of each wait, the kill at a deadline, a stop and a broken wait, a failed spawn,
-  a command that does not fit, the summary of raised alerts, a restart after a notification;
+  a command that does not fit, the summary of raised alerts, a restart after a notification. `silencers.tsv` is
+  the same over `../corpus/silencers/`, with requests to C's handler (`manage`) and the read of the silencers'
+  file (`load`) as steps: what SILENCE ALL, DISABLE ALL and selectors do to each alert's flags, entries and
+  notifications. Three tables come from C's silencers alone, a process per case, so that a file text that kills C
+  is a row (`signal 11`): `silencers-file.tsv` (the state C makes of a file's text), `manage.tsv` (sequences of
+  requests: each reply, the file it wrote, its records) and `silencers-match.tsv` (which alerts a state takes, and
+  what the update makes of their flags). The file's path is written `{file}` in every row;
 - `health-unittest-dump.inc` and `health-unittest-main.inc` are spliced into a copy of
   `src/health/health-config-unittest.c`, so that C's own unit test runs, must pass, and leaves each call it makes to
   the ported functions, with what C returned, in `c_unittest.tsv`.

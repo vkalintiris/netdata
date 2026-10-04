@@ -3111,6 +3111,7 @@ dependencies = [
  "indexmap",
  "netdata-agent-dyncfg",
  "netdata-agent-eval",
+ "netdata-agent-ingest",
  "netdata-agent-inicfg",
  "netdata-agent-log",
  "netdata-agent-metadata",
@@ -3134,6 +3135,7 @@ dependencies = [
  "netdata-agent-rrd",
  "netdata-agent-storage",
  "netdata-agent-text",
+ "serde",
  "serde_json",
 ]
 

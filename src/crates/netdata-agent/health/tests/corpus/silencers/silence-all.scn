@@ -1,0 +1,22 @@
+# SILENCE ALL before a rise: each alert's record and flag, the entries made silenced and no command for them. After
+# a RESET the flags go, with their records, and the next rise is sent.
+rules tests/corpus/notify/two.conf
+chart loop.n loop.n_name loop.notify disks things 1
+var loop.n v 10
+clock 0
+pass 0
+manage ok cmd=SILENCE ALL
+clock 1
+pass 1
+var loop.n v 70
+clock 2
+pass 2
+var loop.n v 10
+clock 3
+pass 3
+manage ok cmd=RESET
+clock 4
+pass 4
+var loop.n v 70
+clock 5
+pass 5

@@ -21,9 +21,26 @@
 //                    spawned 0|1> <flags after> <exec_run_timestamp set 0|1> <saves> <the record's message, `-`
 //                    for none>
 //
+//   gen-loop-vectors silencers <directory> <a file for the records>
+//       C's own health_silencers.c. Every case runs in a child process, so that a crash of C is a row too: the
+//       case's first field (the file's bytes, the sequence, the state), then `signal <n>`.
+//       silencers-file.tsv   <the file's bytes> <the state after health_silencers_init(), as health_silencers2json()
+//                            prints it> <the records' messages>
+//       manage.tsv           <sequence> <n> <the token: ok (the management key), bad (another text), - (none)> <the
+//                            query> <the reply's code> <its content type is JSON 0|1> <its body> <the file is
+//                            there 0|1> <the file's bytes> <the records' messages>: the n-th request of a
+//                            sequence through web_client_api_request_v1_mgmt_health(). The file is removed before
+//                            each request, so a file is what that request wrote; in the sequence `unwritable` the
+//                            file's path leads through a regular file
+//       silencers-match.tsv  <the requests that made the state, joined by ` ; `> <the alert's name> <its chart>
+//                            <its chart's context, \x00 for an alert without a chart> <the hostname> <run flags
+//                            before> <what health_silencers_check_silenced() answers: None, DISABLE or SILENCE>
+//                            <what health_silencers_update_disabled_silenced() returns> <run flags after> <the
+//                            records' messages>
+//
 //   gen-loop-vectors scenario <loop.tsv to append to> <scenario file> <a file for the records>
 //       One process per scenario. Rows are <scenario> <step> <kind> ..., a step being one `pass`, `unlink`,
-//       `apply`, `store`, `restart`, `cleanup`, `alarm-log`, `configs` or `wait` directive:
+//       `apply`, `store`, `restart`, `cleanup`, `alarm-log`, `configs`, `wait`, `load` or `manage` directive:
 //         do         the directive
 //         next_run   after a pass: the pass's next_run
 //         host       pending flags (i = initialization, r = label recheck), health_transitions,
@@ -53,6 +70,10 @@
 //                    in rowid order: the table, then `column=value` per column (an integer as it is, a real with
 //                    17 digits, a text quoted and escaped, a blob as x'hex', NULL)
 //         body       an `alarm-log` step: the JSON sql_health_alarm_log2json() writes
+//         list       a `load` step: the silencers' state as health_silencers2json() prints it
+//         reply      a `manage` step: the reply's code, whether its content type is JSON, its body
+//         file       a `manage` step: whether the silencers' file is there, and its bytes
+// The silencers' file is a path beside the records; every row names it `{file}`.
 //
 // A scenario file holds a directive per line (`#` starts a comment). Seconds are offsets from T0 = 2000000000.
 //   rules <path>                       reads a health.d file (relative to the crate's directory, where this runs)
@@ -116,12 +137,17 @@
 //   running-for <n>                    the service runs for n more looks at it, then it is stopping
 //   exiting                            the agent's exit has begun (it cannot be undone)
 //   delay-up-to <second|0>             the host's health is postponed until then (what a connecting child gets)
+//   silencers-file <text|->            the silencers' file holds the rest of the line (`-`: there is no file)
+//   load                               health_silencers_init(): the file's read at health's start
+//   manage <ok|bad|-> [query]          a request to /api/v1/manage/health with the management key, another text
+//                                      or no token: web_client_api_request_v1_mgmt_health() over the decoded query
 //   pending host-init|host-recheck|chart-init <chart>|chart-recheck <chart>
 //   clock <second> [microseconds]
 //   pass <now> [hibernate]             one call of the pass
 //   unlink <chart>                     rrdcalc_unlink_and_delete_all_rrdset_alerts()
 //   apply                              health_apply_prototypes_to_host()
-// `unlink`, `apply`, `store`, `restart`, `cleanup`, `alarm-log`, `configs` and `wait` are steps too.
+// `unlink`, `apply`, `store`, `restart`, `cleanup`, `alarm-log`, `configs`, `wait`, `load` and `manage` are steps
+// too.
 //
 // Field encoding: see health-oracle.h. A double is `nan` or its bits in hex.
 
@@ -130,6 +156,15 @@
 #include "database/sqlite/sqlite_functions.h"
 #include "database/sqlite/sqlite_health.h"
 #include "database/contexts/api_v2_contexts_alerts.h"
+#include "web/server/web_client.h"
+#include <sys/resource.h>
+#include <sys/wait.h>
+
+// the management key (api_v1_manage.c's in the daemon, the stubs' here)
+extern char *api_secret;
+
+// health_silencers.c defines it and no header declares it
+void health_silencers2json(BUFFER *wb);
 
 char *format_value_and_unit(char *value_string, size_t value_string_len, NETDATA_DOUBLE value, const char *units, int precision);
 
@@ -303,6 +338,20 @@ static size_t calls_size, calls_done;
 static int records_fd = -1;
 static off_t records_read;
 
+// the silencers' file: a path beside the records, named `{file}` in every row
+static char silencers_path[4096];
+
+static void name_file(char *line) {
+    size_t len = strlen(silencers_path);
+    if(len < 6)
+        return;
+    for(char *at = strstr(line, silencers_path); at; at = strstr(at, silencers_path)) {
+        memcpy(at, "{file}", 6);
+        memmove(at + 6, at + len, strlen(at + len) + 1);
+        at += 6;
+    }
+}
+
 static void row(const char *kind) {
     oracle_esc(out, scenario);
     fprintf(out, "\t%zu\t%s", step, kind);
@@ -429,6 +478,7 @@ static void records(void) {
                 value_end++;
             memmove(value, value_end, strlen(value_end) + 1);
         }
+        name_file(line);
         row("record");
         field(out, line);
         fputc('\n', out);
@@ -640,6 +690,64 @@ static char *word(char **rest, const char *directive) {
     return w;
 }
 
+// ------------------------------------------------------------------------------------------------
+// the silencers: C's own health_silencers.c
+
+static void file_write(const void *bytes, size_t len) {
+    FILE *to = fopen(silencers_path, "w");
+    if(!to || fwrite(bytes, 1, len, to) != len || fclose(to) != 0) die("cannot write", silencers_path);
+}
+
+// whether the silencers' file is there, and its bytes
+static void file_fields(FILE *f) {
+    FILE *from = fopen(silencers_path, "r");
+    if(!from) {
+        fputs("\t0\t", f);
+        return;
+    }
+    char *bytes = NULL;
+    size_t len = 0, size = 0, got;
+    do {
+        size += 65536;
+        bytes = reallocz(bytes, size);
+        got = fread(bytes + len, 1, size - len, from);
+        len += got;
+    } while(got);
+    fclose(from);
+    fputs("\t1\t", f);
+    oracle_esc_bytes(f, bytes, len);
+    freez(bytes);
+}
+
+// the state as C prints it
+static void list_field(FILE *f) {
+    BUFFER *wb = buffer_create(0, NULL);
+    health_silencers2json(wb);
+    field(f, buffer_tostring(wb));
+    buffer_free(wb);
+}
+
+// One request through C's handler: the reply's code, whether its content type is JSON, its body. The token is the
+// management key (`ok`), another text (`bad`) or none (`-`); the query is what the web server hands over, decoded.
+static void manage_fields(FILE *f, const char *token, const char *query) {
+    static struct web_client w;
+    static char another[] = "another-key";
+    memset(&w, 0, sizeof(w));
+    w.response.data = buffer_create(0, NULL);
+    if(strcmp(token, "ok") == 0)
+        w.auth_bearer_token = api_secret;
+    else if(strcmp(token, "bad") == 0)
+        w.auth_bearer_token = another;
+    else if(strcmp(token, "-") != 0)
+        die("an unknown token", token);
+    char *url = strdupz(query);
+    int code = web_client_api_request_v1_mgmt_health(&host, &w, url);
+    fprintf(f, "\t%d\t%d", code, w.response.data->content_type == CT_APPLICATION_JSON ? 1 : 0);
+    field(f, buffer_tostring(w.response.data));
+    buffer_free(w.response.data);
+    freez(url);
+}
+
 // What every scenario starts from: C's records captured, the health globals, and one host without a chart.
 static void world_init(const char *records_path) {
     // C's records go to stderr: into a file this program reads back after each step
@@ -664,6 +772,12 @@ static void world_init(const char *records_path) {
     health_globals.config.enabled_alerts = simple_pattern_create("*", NULL, SIMPLE_PATTERN_EXACT, true);
     netdata_configured_user_config_dir = "/oracle/etc";
     is_health_thread = true;
+
+    // C's silencers, empty, and no file of theirs
+    snprintf(silencers_path, sizeof(silencers_path), "%s.silencers.json", records_path);
+    unlink(silencers_path);
+    health_globals.config.silencers_filename = string_strdupz(silencers_path);
+    health_initialize_global_silencers();
 
     host.hostname = string_strdupz("oracle-host");
     // not the hostname: a notification's third word is this one
@@ -992,6 +1106,30 @@ static void run_scenario(const char *out_path, const char *scenario_path, const 
             configs(whole);
             dump(whole);
         }
+        else if(strcmp(directive, "silencers-file") == 0) {
+            const char *text = rest ? rest : "";
+            if(strcmp(text, "-") == 0)
+                unlink(silencers_path);
+            else
+                file_write(text, strlen(text));
+        }
+        else if(strcmp(directive, "load") == 0) {
+            health_silencers_init();
+            row("list");
+            list_field(out);
+            fputc('\n', out);
+            dump(whole);
+        }
+        else if(strcmp(directive, "manage") == 0) {
+            char *token = word(&rest, whole);
+            row("reply");
+            manage_fields(out, token, rest ? rest : "");
+            fputc('\n', out);
+            row("file");
+            file_fields(out);
+            fputc('\n', out);
+            dump(whole);
+        }
         else
             die("unknown directive", whole);
 
@@ -1031,6 +1169,7 @@ static void messages(FILE *f) {
             *close = '\0';
         if(written++)
             fputs(" | ", f);
+        name_file(msg);
         oracle_esc(f, msg);
     }
     if(!written)
@@ -1111,6 +1250,458 @@ static void decide(const char *dir, const char *records_path) {
     if(ferror(f) || fclose(f) != 0) die("cannot write", path);
 }
 
+// ------------------------------------------------------------------------------------------------
+// the silencers' tables
+
+// A case runs in a child process, so that a crash of C is a row too: `label`, already escaped, then `signal <n>`.
+// The child appends its rows itself, each one whole; what it logged is its own.
+static void in_child(FILE *f, const char *label, void (*rows)(FILE *f, const void *arg), const void *arg) {
+    fflush(NULL);
+    pid_t pid = fork();
+    if(pid < 0) die("cannot fork", NULL);
+    if(pid == 0) {
+        struct rlimit none = { 0, 0 };
+        setrlimit(RLIMIT_CORE, &none);
+        rows(f, arg);
+        fflush(f);
+        _exit(ferror(f) ? 1 : 0);
+    }
+    int status = 0;
+    if(waitpid(pid, &status, 0) != pid) die("cannot wait for the process of", label);
+    if(WIFSIGNALED(status))
+        fprintf(f, "%s\tsignal %d\n", label, WTERMSIG(status));
+    else if(!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+        die("a row's process failed", label);
+    records_read = lseek(records_fd, 0, SEEK_END);
+}
+
+// a table: created empty with its two comment lines, then appended to by this process and its children
+static FILE *table(const char *dir, const char *name, const char *columns) {
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/%s", dir, name);
+    FILE *f = fopen(path, "w");
+    if(!f || fclose(f) != 0) die("cannot create", path);
+    f = fopen(path, "a");
+    if(!f) die("cannot append to", path);
+    fprintf(f, "# generated by tests/oracle/gen-loop-vectors.c from the C implementation; do not edit\n");
+    fprintf(f, "# columns: %s\n", columns);
+    return f;
+}
+
+static char *escaped(const void *bytes, size_t len) {
+    char *text = NULL;
+    size_t size = 0;
+    FILE *to = open_memstream(&text, &size);
+    oracle_esc_bytes(to, bytes, len);
+    fclose(to);
+    return text;
+}
+
+struct file_case {
+    const char *bytes;
+    size_t len;
+};
+
+static void file_row(FILE *f, const void *arg) {
+    const struct file_case *c = arg;
+    file_write(c->bytes, c->len);
+    errno = 0;
+    health_silencers_init();
+    oracle_esc_bytes(f, c->bytes, c->len);
+    list_field(f);
+    fputc('\t', f);
+    messages(f);
+    fputc('\n', f);
+}
+
+#define MANAGE_REQUESTS_MAX 48
+struct manage_case {
+    const char *name;
+    const char *requests[MANAGE_REQUESTS_MAX];      // each `<token> <query>`
+};
+
+static void manage_rows(FILE *f, const void *arg) {
+    const struct manage_case *c = arg;
+    bool unwritable = strcmp(c->name, "unwritable") == 0;
+    if(unwritable) {
+        // the file's path leads through a regular file
+        char path[4200];
+        file_write("", 0);
+        snprintf(path, sizeof(path), "%s/x", silencers_path);
+        health_globals.config.silencers_filename = string_strdupz(path);
+    }
+    for(size_t n = 0; n < MANAGE_REQUESTS_MAX && c->requests[n]; n++) {
+        char *request = strdupz(c->requests[n]);
+        char *query = request;
+        char *token = strsep(&query, " ");
+        if(!query) query = "";
+        if(!unwritable)
+            unlink(silencers_path);
+        errno = 0;
+        fprintf(f, "%s\t%zu\t%s", c->name, n, token);
+        field(f, query);
+        manage_fields(f, token, query);
+        file_fields(f);
+        fputc('\t', f);
+        messages(f);
+        fputc('\n', f);
+        fflush(f);
+        freez(request);
+    }
+}
+
+#define MATCH_REQUESTS_MAX 3
+struct match_case {
+    const char *requests[MATCH_REQUESTS_MAX + 1];   // each a query, sent with the management key
+};
+
+// a state's requests, joined by ` ; `
+static char *match_label(const struct match_case *c) {
+    char *text = NULL;
+    size_t size = 0;
+    FILE *label = open_memstream(&text, &size);
+    for(size_t n = 0; c->requests[n]; n++) {
+        fprintf(label, "%s", n ? " ; " : "");
+        oracle_esc(label, c->requests[n]);
+    }
+    fclose(label);
+    return text;
+}
+
+static const char *type_name(SILENCE_TYPE type) {
+    return type == STYPE_NONE ? "None" : type == STYPE_DISABLE_ALARMS ? "DISABLE" : "SILENCE";
+}
+
+static void match_rows(FILE *f, const void *arg) {
+    const struct match_case *c = arg;
+    static const struct {
+        const char *name, *chart, *context, *hostname;
+    } alerts[] = {
+        { "m_alert", "m.chart", "m.context", "m-host" },
+        { "m_alert", "m.chart", NULL, "m-host" },           // no chart: an alert between an unlink and its free
+        { "x_alert", "x.chart", "x.context", "x-host" },
+    };
+    static const uint32_t before[] = { 0, RRDCALC_FLAG_RUNNABLE, RRDCALC_FLAG_RUNNABLE | RRDCALC_FLAG_DISABLED,
+                                       RRDCALC_FLAG_RUNNABLE | RRDCALC_FLAG_SILENCED };
+
+    // the state, through the handler; its replies and records are of the other table
+    char *state = match_label(c);
+    FILE *sink = fopen("/dev/null", "w");
+    if(!sink) die("cannot open", "/dev/null");
+    for(size_t n = 0; c->requests[n]; n++)
+        manage_fields(sink, "ok", c->requests[n]);
+    fclose(sink);
+    unlink(silencers_path);
+    fflush(stderr);
+    records_read = lseek(records_fd, 0, SEEK_END);
+
+    for(size_t a = 0; a < sizeof(alerts) / sizeof(alerts[0]); a++)
+        for(size_t b = 0; b < sizeof(before) / sizeof(before[0]); b++) {
+            static RRDHOST h;
+            static RRDSET st;
+            static RRDCALC rc;
+            memset(&h, 0, sizeof(h));
+            memset(&st, 0, sizeof(st));
+            memset(&rc, 0, sizeof(rc));
+            h.hostname = string_strdupz(alerts[a].hostname);
+            // the registry's hostname is not asked
+            h.registry_hostname = string_strdupz("m-registry");
+            // the chart's name is not asked either
+            st.id = string_strdupz(alerts[a].chart);
+            st.name = string_strdupz("m.chart_name");
+            if(alerts[a].context) {
+                st.context = string_strdupz(alerts[a].context);
+                rc.rrdset = &st;
+            }
+            rc.config.name = string_strdupz(alerts[a].name);
+            rc.chart = string_strdupz(alerts[a].chart);
+            rc.run_flags = before[b];
+
+            errno = 0;
+            SILENCE_TYPE type = health_silencers_check_silenced(&rc, alerts[a].hostname);
+            int ret = health_silencers_update_disabled_silenced(&h, &rc);
+            fprintf(f, "%s", state);
+            field(f, alerts[a].name);
+            field(f, alerts[a].chart);
+            field(f, alerts[a].context);
+            field(f, alerts[a].hostname);
+            fprintf(f, "\t%08x\t%s\t%d\t%08x\t", (unsigned)before[b], type_name(type), ret, (unsigned)rc.run_flags);
+            messages(f);
+            fputc('\n', f);
+            fflush(f);
+        }
+}
+
+static void silencers_tables(const char *dir, const char *records_path) {
+    world_init(records_path);
+
+    // ---- the file
+    FILE *f = table(dir, "silencers-file.tsv", "the file's bytes, the state as health_silencers2json() prints it, "
+                                               "the records' messages; or the bytes and `signal <n>`");
+    static const char *const files[] = {
+        // what C itself writes
+        "{\n\t\"all\": false,\n\t\"type\": \"None\",\n\t\"silencers\": []\n}\n",
+        "{\n\t\"all\": true,\n\t\"type\": \"DISABLE\",\n\t\"silencers\": []\n}\n",
+        "{\n\t\"all\": false,\n\t\"type\": \"SILENCE\",\n\t\"silencers\": [\n\t\t{\n\t\t\t\"alarm\": \"a\""
+        "\n\t\t}\n\t]\n}\n",
+        "{\n\t\"all\": false,\n\t\"type\": \"DISABLE\",\n\t\"silencers\": [\n\t\t{\n\t\t\t\"alarm\": \"a b\",\n\t\t\t"
+        "\"chart\": \"c\"\n\t\t},\n\t\t{\n\t\t\t\"context\": \"x\",\n\t\t\t\"hosts\": \"h\"\n\t\t}\n\t]\n}\n",
+        "{\n\t\"all\": false,\n\t\"type\": \"SILENCE\",\n\t\"silencers\": [\n\t\t{\n\t\t\t\"alarm\": \"1\"\n\t\t},"
+        "\n\t\t{\n\t\t\t\"alarm\": \"2\"\n\t\t},\n\t\t{\n\t\t\t\"alarm\": \"3\"\n\t\t}\n\t]\n}\n",
+        // the type
+        "{\"type\":\"SILENCE\"}",
+        "{\"type\":\"DISABLE\"}",
+        "{\"type\":\"None\"}",
+        "{\"type\":\"silence\"}",
+        "{\"type\":\"\"}",
+        "{\"all\":true}",
+        "{\"type\":\"SILENCE\",\"type\":\"DISABLE\"}",
+        "{\"type\":\"SILENCE\",\"silencers\":[{\"type\":\"None\"}]}",
+        "{\"type\":\"SILENCE\",\"silencers\":[{\"type\":\"DISABLE\"}]}",
+        "{\"silencers\":[{\"type\":\"DISABLE\",\"alarm\":\"a\"}]}",
+        "{\"TYPE\":\"SILENCE\"}",
+        "{\"type\":true}",
+        "{\"type\":1}",
+        // the booleans
+        "{\"all\":false}",
+        "{\"foo\":true}",
+        "{\"all\":true,\"foo\":false}",
+        "{\"foo\":false,\"all\":true}",
+        "{\"zz\":true,\"aa\":false}",
+        "{\"aa\":true,\"zz\":false}",
+        "{\"aa\":true,\"zz\":false,\"aa\":true}",
+        "{\"zz\":false,\"aa\":true,\"zz\":true}",
+        "{\"silencers\":[{\"alarm\":\"a\",\"x\":true}]}",
+        "{\"all\":true,\"silencers\":[{\"alarm\":\"a\",\"x\":false}]}",
+        "{\"silencers\":[{\"alarm\":\"a\",\"x\":false}],\"all\":true}",
+        "{\"all\":1}",
+        "{\"all\":\"true\"}",
+        "{\"all\":null}",
+        // the arrays
+        "{\"silencers\":[]}",
+        "{\"silencers\":null}",
+        "{\"silencers\":{\"alarm\":\"a\"}}",
+        "{\"other\":[{\"alarm\":\"a\"}]}",
+        "{\"one\":[{\"alarm\":\"a\"}],\"two\":[{\"alarm\":\"b\"}]}",
+        "{\"silencers\":[{\"alarm\":\"a\",\"more\":[{\"chart\":\"c\"}]}]}",
+        "{\"silencers\":[{\"more\":[{\"chart\":\"c\"}],\"alarm\":\"a\"}]}",
+        "{\"silencers\":[{\"o\":{\"alarm\":\"x\",\"type\":\"DISABLE\",\"b\":true},\"chart\":\"c\"}]}",
+        "{\"o\":{\"alarm\":\"x\",\"type\":\"DISABLE\",\"b\":true}}",
+        "[{\"alarm\":\"a\"}]",
+        "{\"silencers\":[{}]}",
+        "{\"silencers\":[{},{}]}",
+        "{\"silencers\":[null]}",
+        "{\"silencers\":[null,{\"alarm\":\"a\"},null]}",
+        // the names
+        "{\"silencers\":[{\"ALARM\":\"a\"}]}",
+        "{\"silencers\":[{\"Alarm\":\"a\",\"CHART\":\"c\",\"Context\":\"x\",\"HOSTS\":\"h\"}]}",
+        "{\"silencers\":[{\"alarm\":\"a\",\"ALARM\":\"b\"}]}",
+        "{\"silencers\":[{\"ALARM\":\"b\",\"alarm\":\"a\"}]}",
+        "{\"silencers\":[{\"alarm\":\"a\",\"alarm\":\"b\"}]}",
+        "{\"silencers\":[{\"template\":\"t\"}]}",
+        "{\"silencers\":[{\"foo\":\"x\"}]}",
+        "{\"silencers\":[{\"host\":\"h\"}]}",
+        "{\"silencers\":[{\"families\":\"f\"}]}",
+        "{\"silencers\":[{\"hosts\":\"h\",\"context\":\"x\",\"chart\":\"c\",\"alarm\":\"a\"}]}",
+        "{\"alarm\":\"a\"}",
+        "{\"alarm\":\"a\",\"silencers\":[{\"chart\":\"c\"}]}",
+        // the values
+        "{\"silencers\":[{\"alarm\":5}]}",
+        "{\"silencers\":[{\"alarm\":1.5}]}",
+        "{\"silencers\":[{\"alarm\":null}]}",
+        "{\"silencers\":[{\"alarm\":\"\"}]}",
+        "{\"silencers\":[{\"alarm\":\" \"}]}",
+        "{\"silencers\":[{\"alarm\":\"!\"}]}",
+        "{\"silencers\":[{\"alarm\":\"a\\\\b\\\"c\"}]}",
+        "{\"silencers\":[{\"alarm\":\"a\\tb\\nc\"}]}",
+        "{\"silencers\":[{\"alarm\":\"a\\u0000b\"}]}",
+        "{\"silencers\":[{\"alarm\\u0000x\":\"a\"}]}",
+        "{\"silencers\":[{\"alarm\":\"\\u00e9\\u20ac\"}]}",
+        "{\"silencers\":[{\"alarm\":\"\xc3\xa9\"}]}",
+        "{\"silencers\":[{\"alarm\":\"\xff\"}]}",
+        // an element that is no object: C dies
+        "{\"silencers\":[\"x\"]}",
+        "{\"silencers\":[5]}",
+        "{\"silencers\":[true]}",
+        "{\"silencers\":[[{\"alarm\":\"a\"}]]}",
+        "{\"silencers\":[{\"alarm\":\"a\"},\"x\"]}",
+        // what is no JSON, or more than one value
+        "",
+        " ",
+        "{",
+        "not json",
+        "null",
+        "5",
+        "\"text\"",
+        "{\"all\":true} trailing",
+        "{\"all\":true}{\"all\":false}",
+        "{\"all\":true,}",
+        "{'all':true}",
+        "/* a comment */ {\"all\":true}",
+        "{\"all\":TRUE}",
+        "\xef\xbb\xbf{\"all\":true}",
+    };
+    for(size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+        struct file_case c = { files[i], strlen(files[i]) };
+        char *label = escaped(c.bytes, c.len);
+        in_child(f, label, file_row, &c);
+        free(label);
+    }
+    // a name of 300 bytes; a file of 9,999 bytes, and one of 10,000
+    {
+        char text[10001];
+        int n = snprintf(text, sizeof(text), "{\"silencers\":[{\"");
+        memset(text + n, 'n', 300);
+        snprintf(text + n + 300, sizeof(text) - n - 300, "\":\"v\",\"alarm\":\"a\"}]}");
+        struct file_case c = { text, strlen(text) };
+        char *label = escaped(c.bytes, c.len);
+        in_child(f, label, file_row, &c);
+        free(label);
+
+        static const size_t sizes[] = { 9999, 10000 };
+        for(size_t i = 0; i < 2; i++) {
+            n = snprintf(text, sizeof(text), "{\"all\":true,\"type\":\"DISABLE\",\"silencers\":[{\"alarm\":\"a\"}]}");
+            memset(text + n, ' ', sizes[i] - (size_t)n);
+            c = (struct file_case){ text, sizes[i] };
+            label = escaped(c.bytes, c.len);
+            in_child(f, label, file_row, &c);
+            free(label);
+        }
+    }
+    if(ferror(f) || fclose(f) != 0) die("cannot write", "silencers-file.tsv");
+
+    // ---- the requests
+    f = table(dir, "manage.tsv", "sequence, n, the token (ok, bad, -), the query, the reply's code, its content "
+                                 "type is JSON, its body, the file is there, the file's bytes, the records' "
+                                 "messages; or the sequence and `signal <n>`");
+    static const struct manage_case sequences[] = {
+        // C's own test (tests/health_mgmtapi/health-cmdapi-test.sh.in), each command and the LIST that follows it
+        { "script", {
+            "ok cmd=RESET", "ok cmd=LIST",
+            "bad cmd=DISABLE ALL", "bad cmd=LIST",
+            "ok cmd=DISABLE ALL", "ok cmd=LIST",
+            "ok cmd=RESET", "ok cmd=LIST",
+            "ok cmd=SILENCE ALL", "ok cmd=LIST",
+            "ok cmd=RESET", "ok cmd=LIST",
+            "ok cmd=SILENCE&alarm=*10min_cpu_usage *load_trigger", "ok cmd=LIST",
+            "ok cmd=DISABLE", "ok cmd=LIST",
+            "ok cmd=SILENCE", "ok cmd=LIST",
+            "ok alarm=*10min_cpu_iowait", "ok cmd=LIST",
+            "ok cmd=RESET", "ok cmd=LIST",
+            "ok cmd=DISABLE&chart=system.load", "ok cmd=LIST",
+            "ok context=system.cpu", "ok cmd=LIST",
+            "ok cmd=RESET", "ok cmd=LIST",
+            "ok cmd=SILENCE&alarm=*10min_cpu_usage *load_trigger&chart=system.load", "ok cmd=LIST",
+            "ok alarm=*10min_cpu_usage *load_trigger&context=system.cpu", "ok cmd=LIST",
+            "ok cmd=RESET", "ok cmd=LIST",
+            "ok cmd=SILENCE", "ok cmd=LIST",
+            "ok cmd=RESET", "ok cmd=LIST",
+            "ok cmd=SILENCE", "ok cmd=LIST",
+            "ok hosts=*", "ok cmd=LIST",
+            "ok cmd=RESET", "ok cmd=LIST",
+        } },
+        // the token
+        { "no-token", { "- cmd=SILENCE ALL", "- cmd=LIST", "- ", "ok cmd=LIST" } },
+        { "bad-token", { "bad cmd=SILENCE ALL", "bad alarm=a", "bad ", "ok cmd=LIST" } },
+        // what is no command and no selector
+        { "empty", { "ok ", "ok cmd=LIST" } },
+        { "separators", { "ok &&", "ok &=&", "ok =", "ok ==x", "ok cmd", "ok cmd=", "ok cmd=LIST" } },
+        { "unknown-cmd", { "ok cmd=FOO", "ok cmd=list", "ok cmd=Silence", "ok cmd=SILENCE ", "ok cmd= SILENCE",
+                           "ok cmd=SILENCE  ALL", "ok cmd=LIST" } },
+        { "cmd-case", { "ok CMD=SILENCE ALL", "ok Cmd=LIST", "ok cmd=LIST" } },
+        { "unknown-key", { "ok foo=bar", "ok cmd=LIST", "ok foo=bar&alarm=a", "ok cmd=LIST", "ok alarm=b&foo=bar",
+                           "ok cmd=LIST" } },
+        // LIST with other things
+        { "list-first", { "ok cmd=LIST&cmd=SILENCE ALL", "ok cmd=LIST" } },
+        { "list-last", { "ok cmd=SILENCE ALL&cmd=LIST", "ok cmd=LIST" } },
+        { "list-selector", { "ok alarm=a&cmd=LIST", "ok cmd=LIST&alarm=b", "ok cmd=LIST" } },
+        { "list-twice", { "ok cmd=SILENCE&alarm=a", "ok cmd=LIST&cmd=LIST" } },
+        { "list-warning", { "ok cmd=SILENCE", "ok cmd=LIST", "ok cmd=DISABLE&cmd=LIST" } },
+        // several commands in one request
+        { "commands", { "ok cmd=DISABLE ALL&cmd=SILENCE", "ok cmd=LIST", "ok cmd=SILENCE ALL&cmd=RESET", "ok cmd=LIST",
+                        "ok cmd=RESET&cmd=SILENCE ALL", "ok cmd=LIST", "ok cmd=SILENCE&cmd=DISABLE", "ok cmd=LIST" } },
+        { "all-stays", { "ok cmd=SILENCE ALL", "ok cmd=DISABLE", "ok cmd=LIST", "ok cmd=SILENCE", "ok cmd=LIST" } },
+        // a selector and a reset in one request
+        { "selector-reset", { "ok cmd=SILENCE&alarm=old", "ok alarm=x&cmd=RESET", "ok cmd=LIST",
+                              "ok cmd=RESET&alarm=y", "ok cmd=LIST" } },
+        // the selector's keys
+        { "keys", { "ok cmd=SILENCE&hosts=h&context=x&chart=c&alarm=a", "ok cmd=LIST" } },
+        { "key-case", { "ok cmd=SILENCE&ALARM=a&Chart=c&CONTEXT=x&hOsTs=h", "ok cmd=LIST" } },
+        { "key-repeat", { "ok cmd=SILENCE&alarm=a&alarm=b", "ok cmd=LIST" } },
+        { "key-empty", { "ok cmd=SILENCE&ALARM=", "ok cmd=LIST", "ok alarm=&chart=c", "ok cmd=LIST" } },
+        { "template", { "ok cmd=SILENCE&template=x", "ok cmd=LIST" } },
+        { "host", { "ok cmd=SILENCE&host=h", "ok cmd=LIST" } },
+        { "families", { "ok cmd=SILENCE&families=load", "ok cmd=LIST" } },
+        // the selector's values
+        { "value-equals", { "ok alarm=a=b", "ok chart==c", "ok cmd=LIST" } },
+        { "value-quote", { "ok cmd=SILENCE&alarm=a\"b", "ok cmd=LIST" } },
+        { "value-backslash", { "ok cmd=SILENCE&alarm=a\\b", "ok cmd=LIST" } },
+        { "value-control", { "ok cmd=SILENCE&alarm=a\tb\nc", "ok cmd=LIST" } },
+        { "value-space", { "ok cmd=SILENCE&alarm= ", "ok cmd=LIST" } },
+        { "value-negative", { "ok cmd=SILENCE&alarm=!", "ok cmd=LIST", "ok alarm=!a *", "ok cmd=LIST" } },
+        { "value-utf8", { "ok cmd=SILENCE&alarm=\xc3\xa9\xff", "ok cmd=LIST" } },
+        // the order of selectors, and the warnings
+        { "order", { "ok alarm=1", "ok alarm=2", "ok alarm=3", "ok cmd=LIST" } },
+        { "warnings", { "ok alarm=a", "ok cmd=SILENCE", "ok cmd=RESET", "ok cmd=DISABLE", "ok alarm=a",
+                        "ok cmd=SILENCE ALL&cmd=RESET&cmd=SILENCE", "ok cmd=LIST" } },
+        // the file cannot be written
+        { "unwritable", { "ok cmd=SILENCE ALL", "ok cmd=LIST", "ok ", "bad cmd=RESET" } },
+    };
+    for(size_t i = 0; i < sizeof(sequences) / sizeof(sequences[0]); i++)
+        in_child(f, sequences[i].name, manage_rows, &sequences[i]);
+    if(ferror(f) || fclose(f) != 0) die("cannot write", "manage.tsv");
+
+    // ---- the match
+    f = table(dir, "silencers-match.tsv", "the requests that made the state, the alert's name, its chart, its "
+                                          "chart's context, the hostname, run flags before, the type that "
+                                          "matches, the update's result, run flags after, the records' messages; "
+                                          "or the requests and `signal <n>`");
+    static const struct match_case states[] = {
+        { { NULL } },
+        { { "cmd=SILENCE" } },
+        { { "cmd=SILENCE ALL" } },
+        { { "cmd=DISABLE ALL" } },
+        { { "alarm=m_alert" } },
+        { { "cmd=SILENCE&alarm=m_alert" } },
+        { { "cmd=DISABLE&alarm=m_alert" } },
+        { { "cmd=SILENCE&alarm=m_*" } },
+        { { "cmd=SILENCE&alarm=*" } },
+        { { "cmd=SILENCE&alarm=other m_alert" } },
+        { { "cmd=SILENCE&alarm=!m_alert *" } },
+        { { "cmd=SILENCE&alarm=!other *" } },
+        { { "cmd=SILENCE&alarm=other" } },
+        { { "cmd=SILENCE&alarm= " } },
+        { { "cmd=SILENCE&alarm=!" } },
+        { { "cmd=SILENCE&alarm=M_ALERT" } },
+        { { "cmd=SILENCE&chart=m.chart" } },
+        { { "cmd=SILENCE&chart=m.chart_name" } },
+        { { "cmd=SILENCE&chart=other" } },
+        { { "cmd=SILENCE&context=m.context" } },
+        { { "cmd=SILENCE&context=other" } },
+        { { "cmd=SILENCE&hosts=m-host" } },
+        { { "cmd=SILENCE&hosts=m-registry" } },
+        { { "cmd=SILENCE&hosts=other" } },
+        { { "cmd=SILENCE&hosts=*" } },
+        { { "cmd=SILENCE&template=x" } },
+        { { "cmd=SILENCE&alarm=m_alert&chart=other" } },
+        { { "cmd=SILENCE&alarm=other&chart=m.chart" } },
+        { { "cmd=DISABLE&alarm=m_alert&chart=m.chart&context=m.context&hosts=m-host" } },
+        { { "cmd=SILENCE&alarm=other", "alarm=m_alert" } },
+        { { "cmd=SILENCE&alarm=m_alert", "alarm=other" } },
+        { { "cmd=DISABLE&alarm=x_alert", "chart=m.chart" } },
+        { { "cmd=SILENCE ALL", "alarm=other" } },
+        { { "cmd=DISABLE&alarm=other", "cmd=SILENCE ALL" } },
+        { { "cmd=SILENCE ALL", "cmd=DISABLE" } },
+        { { "cmd=SILENCE ALL", "cmd=RESET" } },
+    };
+    for(size_t i = 0; i < sizeof(states) / sizeof(states[0]); i++) {
+        char *label = match_label(&states[i]);
+        in_child(f, label, match_rows, &states[i]);
+        free(label);
+    }
+    if(ferror(f) || fclose(f) != 0) die("cannot write", "silencers-match.tsv");
+}
+
 int main(int argc, char **argv) {
     if(argc == 3 && strcmp(argv[1], "tables") == 0) {
         tables(argv[2]);
@@ -1120,11 +1711,16 @@ int main(int argc, char **argv) {
         decide(argv[2], argv[3]);
         return 0;
     }
+    if(argc == 4 && strcmp(argv[1], "silencers") == 0) {
+        silencers_tables(argv[2], argv[3]);
+        return 0;
+    }
     if(argc == 5 && strcmp(argv[1], "scenario") == 0) {
         run_scenario(argv[2], argv[3], argv[4]);
         return 0;
     }
     fprintf(stdout, "usage: %s tables <directory> | decide <directory> <records file> | "
-                    "scenario <loop.tsv> <scenario file> <records file>\n", argv[0]);
+                    "silencers <directory> <records file> | scenario <loop.tsv> <scenario file> <records file>\n",
+            argv[0]);
     return 1;
 }

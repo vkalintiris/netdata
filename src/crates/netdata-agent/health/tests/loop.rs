@@ -964,6 +964,10 @@ mod replay {
         /// step's rows are compared.
         body: Option<Vec<u8>>,
         configs: Vec<Fields>,
+        /// The rows a `load` or a `manage` step made (`list`, `reply`, `file`), until the step's rows are compared.
+        rows: Vec<(&'static str, Fields)>,
+        /// The silencers' file is in a directory of the scenario's own; C's rows name it `{file}`.
+        silencers_dir: tempfile::TempDir,
         host: Arc<Host>,
         world: World,
         step: usize,
@@ -988,6 +992,7 @@ mod replay {
                 if let Some(default_exec) = self.default_exec.take() {
                     config.default_exec = default_exec;
                 }
+                config.silencers_filename = self.silencers_file().into_os_string().into_encoded_bytes();
                 let meta = self.world.real.borrow().as_ref().map(|real| Arc::clone(&real.meta));
                 let store: StoreSink = match meta {
                     Some(meta) => Box::new(move |rule| {
@@ -1009,6 +1014,10 @@ mod replay {
                 self.health = Some(health);
             }
             Arc::clone(self.health.as_ref().expect("made above"))
+        }
+
+        fn silencers_file(&self) -> std::path::PathBuf {
+            self.silencers_dir.path().join("health.silencers.json")
         }
 
         /// A chart of the scenario, also one that left the host's index.
@@ -1344,6 +1353,35 @@ mod replay {
                     self.configs = configs;
                     self.dump(line, None, records);
                 }
+                // the silencers' file as the scenario leaves it for the next `load`
+                "silencers-file" => {
+                    let path = self.silencers_file();
+                    if rest == "-" {
+                        let _ = std::fs::remove_file(path);
+                    } else {
+                        std::fs::write(path, rest).expect("the silencers' file");
+                    }
+                }
+                // the file's read at health's start
+                "load" => {
+                    let health = self.health();
+                    let ((), records) = netdata_agent_log::capture(|| health.silencers().init());
+                    self.rows.push(("list", vec![health.silencers().to_json()]));
+                    self.dump(line, None, records);
+                }
+                // a request of `/api/v1/manage/health`: with the management key, another text, or no token
+                "manage" => {
+                    let health = self.health();
+                    let token = crate::management_token(args[0]);
+                    let query = rest.split_once(' ').map_or("", |(_, query)| query);
+                    let (reply, records) = netdata_agent_log::capture(|| {
+                        health.silencers().request(token, crate::MANAGEMENT_KEY, query.as_bytes())
+                    });
+                    self.rows.push(("reply", vec![text(reply.code), text(u8::from(reply.json)), reply.body]));
+                    let file = std::fs::read(self.silencers_file());
+                    self.rows.push(("file", vec![text(u8::from(file.is_ok())), file.unwrap_or_default()]));
+                    self.dump(line, None, records);
+                }
                 other => panic!("{}: directive {other}", self.name),
             }
         }
@@ -1486,6 +1524,9 @@ mod replay {
             for config in self.configs.drain(..) {
                 put("config", config);
             }
+            for (kind, fields) in self.rows.drain(..) {
+                put(kind, fields);
+            }
 
             let mut expected = self.expected.remove(&self.step).unwrap_or_default();
             if let Some(calls) = expected.get_mut("call") {
@@ -1510,6 +1551,10 @@ mod replay {
             let load_record = |record: &Record| record.3.ends_with(empty_load);
             let records: Vec<Captured> = self.reading.drain(..).chain(records).collect();
             let mut actual_records: Vec<Record> = records.iter().map(rust_record).collect();
+            let file = self.silencers_file();
+            for record in &mut actual_records {
+                record.3 = crate::name_file(&record.3, file.as_os_str().as_encoded_bytes());
+            }
             actual_records.retain(|record| !(scripted && load_record(record)));
             if expected_records != actual_records {
                 let first = expected_records.iter().zip(&actual_records).position(|(e, a)| e != a);
@@ -1678,6 +1723,8 @@ mod replay {
                 reading: Vec::new(),
                 body: None,
                 configs: Vec::new(),
+                rows: Vec::new(),
+                silencers_dir: tempfile::tempdir().expect("a directory"),
                 host,
                 world,
                 step: 0,
@@ -1729,6 +1776,242 @@ fn sql_matches_c() {
 #[test]
 fn notify_matches_c() {
     assert_eq!(replayed("notify"), 111);
+}
+
+/// Every scenario of `tests/corpus/silencers/` against C's pass with C's own `health_silencers.c`: requests through
+/// C's handler, the file's read, and what the silencers then do to each alert's flags, entries and notifications:
+/// SILENCE ALL and DISABLE ALL, selectors by alarm, chart, context and host, a selector without a command, a
+/// disabled alert that repeats, is obsolete, or lost its chart, and an entry made before or during a silence.
+#[test]
+fn silencers_match_c() {
+    assert_eq!(replayed("silencers"), 98);
+}
+
+/// The management key of the generator's world (`api_secret` of its stubs).
+const MANAGEMENT_KEY: &[u8] = b"oracle-key";
+
+/// A request's token as the vectors name it: the key, another text, none.
+fn management_token(name: &str) -> Option<&'static [u8]> {
+    match name {
+        "ok" => Some(MANAGEMENT_KEY),
+        "bad" => Some(b"another-key"),
+        "-" => None,
+        other => panic!("a token named {other}"),
+    }
+}
+
+/// `text` with every occurrence of the silencers' file's path written `{file}`, as C's rows have it.
+fn name_file(text: &[u8], path: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.windows(path.len()).position(|window| window == path) {
+        out.extend_from_slice(&rest[..at]);
+        out.extend_from_slice(b"{file}");
+        rest = &rest[at + path.len()..];
+    }
+    out.extend_from_slice(rest);
+    out
+}
+
+/// The messages of what `f` records, joined as the generator joins them (`-` for none), the file named `{file}`.
+fn messages_of<T>(path: &std::path::Path, f: impl FnOnce() -> T) -> (T, Vec<u8>) {
+    let (result, records) = netdata_agent_log::capture(f);
+    let messages: Vec<String> = records.into_iter().filter_map(|record| record.message).collect();
+    let joined = if messages.is_empty() { "-".to_owned() } else { messages.join(" | ") };
+    (result, name_file(joined.as_bytes(), path.as_os_str().as_encoded_bytes()))
+}
+
+/// C's `health_silencers_init()` over 93 file texts: the state it leaves, as the list prints it, and its records.
+/// Five texts kill C (an element of the list that is no object): Rust skips such an element (D210 F4). Six more are
+/// read differently by decision: what json-c takes and `serde_json` refuses is refused (D46.1), and a byte that is
+/// not UTF-8 is read as U+FFFD (D89).
+#[test]
+fn the_silencers_file_is_read_as_c() {
+    use netdata_agent_health::silencers::Silencers;
+    const NONE: &[u8] = b"{\n\t\"all\": false,\n\t\"type\": \"None\",\n\t\"silencers\": []\n}\n";
+    const ONE: &[u8] = b"{\n\t\"all\": false,\n\t\"type\": \"None\",\n\t\"silencers\": [\
+        \n\t\t{\n\t\t\t\"alarm\": \"a\"\n\t\t}\n\t]\n}\n";
+    const PARSED: &[u8] = b"Parsed health silencers file {file}";
+    const REFUSED: &[u8] = b"JSON: Invalid json string. | Parsed health silencers file {file}";
+    // the texts Rust reads otherwise than C, with what it makes of each
+    let decided: [(&[u8], &[u8], &[u8]); 11] = [
+        (b"{\"silencers\":[\"x\"]}", NONE, PARSED),
+        (b"{\"silencers\":[5]}", NONE, PARSED),
+        (b"{\"silencers\":[true]}", NONE, PARSED),
+        (b"{\"silencers\":[[{\"alarm\":\"a\"}]]}", NONE, PARSED),
+        (b"{\"silencers\":[{\"alarm\":\"a\"},\"x\"]}", ONE, PARSED),
+        (b"{\"all\":true,}", NONE, REFUSED),
+        (b"{'all':true}", NONE, REFUSED),
+        (b"/* a comment */ {\"all\":true}", NONE, REFUSED),
+        (b"{\"all\":TRUE}", NONE, REFUSED),
+        (b"{\"silencers\":[{\"alarm\\u0000x\":\"a\"}]}", NONE, REFUSED),
+        (
+            b"{\"silencers\":[{\"alarm\":\"\xff\"}]}",
+            b"{\n\t\"all\": false,\n\t\"type\": \"None\",\n\t\"silencers\": [\
+              \n\t\t{\n\t\t\t\"alarm\": \"\xef\xbf\xbd\"\n\t\t}\n\t]\n}\n",
+            PARSED,
+        ),
+    ];
+    let dir = tempfile::tempdir().expect("a directory");
+    let path = dir.path().join("health.silencers.json");
+    let (mut checked, mut crashes, mut differing, mut failures) = (0, 0, 0, Vec::new());
+    for row in rows("silencers-file.tsv") {
+        let text = row.bytes(0);
+        std::fs::write(&path, text).expect("the file");
+        let silencers = Silencers::new(path.clone().into_os_string().into_encoded_bytes());
+        let ((), messages) = messages_of(&path, || silencers.init());
+        let list = silencers.to_json();
+        let c_died = row.fields.len() == 2 && row.str(1).starts_with("signal ");
+        crashes += usize::from(c_died);
+        let (want_list, want_messages) = match decided.iter().find(|(decided, ..)| *decided == text) {
+            Some((_, list, messages)) => {
+                // a decided difference is one: C's answer is another, or C died
+                if !c_died && (row.bytes(1), row.bytes(2)) == (*list, *messages) {
+                    failures.push(format!("silencers-file.tsv:{}: C answers as Rust does: not a difference", row.line));
+                }
+                differing += 1;
+                (*list, *messages)
+            }
+            None => {
+                assert!(!c_died, "silencers-file.tsv:{}: C died and nothing is decided for the text", row.line);
+                (row.bytes(1), row.bytes(2))
+            }
+        };
+        if list != want_list || messages != want_messages {
+            failures.push(format!(
+                "silencers-file.tsv:{}: {:?}\n  want {:?} | {:?}\n  Rust {:?} | {:?}",
+                row.line,
+                String::from_utf8_lossy(&text[..text.len().min(120)]),
+                String::from_utf8_lossy(want_list),
+                String::from_utf8_lossy(want_messages),
+                String::from_utf8_lossy(&list),
+                String::from_utf8_lossy(&messages),
+            ));
+        }
+        checked += 1;
+    }
+    let shown = failures[..failures.len().min(12)].join("\n");
+    assert!(failures.is_empty(), "{} of {checked} differ:\n{shown}", failures.len());
+    assert_eq!((checked, crashes, differing), (93, 5, decided.len()));
+}
+
+/// C's request handler over 33 sequences of requests (C's own test script's among them): each reply's code, content
+/// type and body, the file the request wrote, if any, and its records. The file is removed before each request; in
+/// the sequence `unwritable` its path leads through a regular file.
+#[test]
+fn management_requests_answer_as_c() {
+    use netdata_agent_health::silencers::Silencers;
+    let dir = tempfile::tempdir().expect("a directory");
+    let path = dir.path().join("health.silencers.json");
+    let (mut checked, mut failures) = (0, Vec::new());
+    let mut sequence: Option<(String, Silencers)> = None;
+    for row in rows("manage.tsv") {
+        let name = row.str(0);
+        let unwritable = name == "unwritable";
+        if sequence.as_ref().is_none_or(|(known, _)| known != name) {
+            assert_eq!(row.str(1), "0", "manage.tsv:{}: a sequence starts at its first request", row.line);
+            let mut filename = path.clone().into_os_string().into_encoded_bytes();
+            if unwritable {
+                std::fs::write(&path, b"").expect("the file");
+                filename.extend_from_slice(b"/x");
+            }
+            sequence = Some((name.to_owned(), Silencers::new(filename)));
+        }
+        let silencers = &sequence.as_ref().expect("made above").1;
+        if !unwritable {
+            let _ = std::fs::remove_file(&path);
+        }
+        let (reply, messages) =
+            messages_of(&path, || silencers.request(management_token(row.str(2)), MANAGEMENT_KEY, row.bytes(3)));
+        let file = std::fs::read(&path);
+        let actual = [
+            reply.code.to_string().into_bytes(),
+            u8::from(reply.json).to_string().into_bytes(),
+            reply.body,
+            u8::from(file.is_ok()).to_string().into_bytes(),
+            file.unwrap_or_default(),
+            messages,
+        ];
+        if actual[..] != row.fields[4..] {
+            let shown = |fields: &[Vec<u8>]| -> Vec<String> {
+                fields.iter().map(|field| String::from_utf8_lossy(field).into_owned()).collect()
+            };
+            failures.push(format!(
+                "manage.tsv:{}: {name} request {} {:?}\n  C    {:?}\n  Rust {:?}",
+                row.line,
+                row.str(1),
+                String::from_utf8_lossy(row.bytes(3)),
+                shown(&row.fields[4..]),
+                shown(&actual),
+            ));
+        }
+        checked += 1;
+    }
+    let shown = failures[..failures.len().min(12)].join("\n");
+    assert!(failures.is_empty(), "{} of {checked} differ:\n{shown}", failures.len());
+    assert_eq!(checked, 155);
+}
+
+/// C's match over 36 states, three alerts and four sets of run flags: the type the selectors answer for the alert,
+/// and what the update makes of its flags, with its record.
+#[test]
+fn selectors_match_as_c() {
+    use netdata_agent_health::alert::run_flags;
+    use netdata_agent_health::silencers::{Silencers, Subject, changed_record};
+    let dir = tempfile::tempdir().expect("a directory");
+    let path = dir.path().join("health.silencers.json");
+    let (mut checked, mut failures) = (0, Vec::new());
+    let mut state: Option<(Vec<u8>, Silencers)> = None;
+    for row in rows("silencers-match.tsv") {
+        if state.as_ref().is_none_or(|(known, _)| known != row.bytes(0)) {
+            let silencers = Silencers::new(path.clone().into_os_string().into_encoded_bytes());
+            for query in row.str(0).split(" ; ").filter(|query| !query.is_empty()) {
+                assert_eq!(silencers.request(Some(MANAGEMENT_KEY), MANAGEMENT_KEY, query.as_bytes()).code, 200);
+            }
+            state = Some((row.bytes(0).to_vec(), silencers));
+        }
+        let silencers = &state.as_ref().expect("made above").1;
+        // an alert without a chart has no context: a selector that tests one does not take it
+        let context = (row.bytes(3) != [0]).then(|| row.bytes(3));
+        let subject = Subject {
+            name: row.bytes(1),
+            chart: row.bytes(2),
+            context: &|pattern| context.is_some_and(|context| pattern.matches(context)),
+            hostname: row.bytes(4),
+        };
+        let before = u32::from_str_radix(row.str(5), 16).expect("the flags");
+        let stype = silencers.check(&subject);
+        let after = silencers.update(&subject, before);
+        let ((), messages) = messages_of(&path, || {
+            if after != before {
+                changed_record(row.bytes(4), row.bytes(1), before, after);
+            }
+        });
+        let actual = [
+            stype.name().as_bytes().to_vec(),
+            u8::from(after & run_flags::DISABLED != 0).to_string().into_bytes(),
+            format!("{after:08x}").into_bytes(),
+            messages,
+        ];
+        if actual[..] != row.fields[6..] {
+            let shown = |fields: &[Vec<u8>]| -> Vec<String> {
+                fields.iter().map(|field| String::from_utf8_lossy(field).into_owned()).collect()
+            };
+            failures.push(format!(
+                "silencers-match.tsv:{}: {:?} alert {} flags {}\n  C    {:?}\n  Rust {:?}",
+                row.line,
+                row.str(0),
+                row.str(1),
+                row.str(5),
+                shown(&row.fields[6..]),
+                shown(&actual),
+            ));
+        }
+        checked += 1;
+    }
+    let shown = failures[..failures.len().min(12)].join("\n");
+    assert!(failures.is_empty(), "{} of {checked} differ:\n{shown}", failures.len());
+    assert_eq!(checked, 432);
 }
 
 /// The steps a family's replay compared; any difference from C's rows fails.

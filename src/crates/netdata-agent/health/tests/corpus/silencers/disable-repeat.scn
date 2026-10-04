@@ -1,0 +1,21 @@
+# A raised alert that repeats, disabled by a selector: while another alert of the host is runnable its repeats go on,
+# each with its command and an entry that is not silenced. Once every alert is disabled the repeats stop.
+rules tests/corpus/notify/repeat.conf
+rules tests/corpus/notify/two.conf
+chart loop.n loop.n_name loop.notify disks things 1
+var loop.n v 70
+clock 0
+pass 0
+manage ok cmd=DISABLE&alarm=n_repeat
+clock 2
+pass 2
+clock 4
+pass 4
+manage ok alarm=n_*
+clock 6
+pass 6
+clock 8
+pass 8
+manage ok cmd=RESET
+clock 10
+pass 10

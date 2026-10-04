@@ -37,6 +37,7 @@ pub mod notify;
 pub mod pass;
 pub mod prototype;
 pub mod readfile;
+pub mod silencers;
 pub mod sql;
 pub mod store;
 pub mod template;
@@ -57,6 +58,7 @@ use keywords::lossy;
 use notify::Executing;
 use pass::Env;
 use prototype::{Prototypes, Rule};
+use silencers::Silencers;
 
 /// The wall clock in seconds, read where C reads it (`now_realtime_sec()`); tests pass their own.
 pub type Clock<'a> = &'a dyn Fn() -> i64;
@@ -83,17 +85,24 @@ pub struct Health {
     /// `alarm_notifications_in_progress`: the started notifications of logged entries, of every host, in the order
     /// they started, until HEALTH waits for each. A leaf lock: nothing is called while it is held.
     executing: Mutex<VecDeque<Executing>>,
+    /// `silencers`: which alerts are disabled or silenced, for every host.
+    silencers: Silencers,
 }
 
 impl Health {
     /// `health_plugin_init()` up to the load: an empty store.
     pub fn init(config: HealthConfig, store: StoreSink) -> Arc<Health> {
         let prototypes = RwLock::new(Prototypes::default());
-        Arc::new(Health { config, prototypes, store, hosts: Mutex::default(), executing: Mutex::default() })
+        let silencers = Silencers::new(config.silencers_filename.clone());
+        Arc::new(Health { config, prototypes, store, hosts: Mutex::default(), executing: Mutex::default(), silencers })
     }
 
     pub fn config(&self) -> &HealthConfig {
         &self.config
+    }
+
+    pub fn silencers(&self) -> &Silencers {
+        &self.silencers
     }
 
     /// Taken to find or insert a host's alerts, never held across anything else.

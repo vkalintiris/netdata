@@ -22,6 +22,8 @@ pub struct HealthConfig {
     pub run_at_least_every_s: i32,
     pub postpone_s: i32,
     pub notification_execution_timeout_s: i32,
+    /// `silencers file`: read at health's start, written after a management request.
+    pub silencers_filename: Vec<u8>,
 }
 
 impl HealthConfig {
@@ -48,6 +50,7 @@ impl Default for HealthConfig {
             run_at_least_every_s: 10,
             postpone_s: 60,
             notification_execution_timeout_s: 120,
+            silencers_filename: Vec::new(),
         }
     }
 }

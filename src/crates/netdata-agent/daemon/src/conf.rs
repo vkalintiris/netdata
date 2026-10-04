@@ -88,6 +88,8 @@ pub struct Conf {
     pub threads: Threads,
     /// `legacy_multihost_db_space`: the backwards compatibility moved a legacy tier 0 disk space option.
     pub legacy_multihost_db_space: bool,
+    /// `health_globals.config.silencers_filename`: `[health] silencers file`, kept by the "silencers" step.
+    health_silencers_file: Vec<u8>,
     // FUNCTION_RUN_ONCE guards.
     loaded: bool,
     compat_done: bool,
@@ -1318,12 +1320,12 @@ impl Conf {
             .unwrap_or_else(|| "(null)".to_string())
     }
 
-    /// `health_set_silencers_filename()`, the "silencers" step, which creates `[health]`. The silencers are not
-    /// ported, so the file is not read yet.
+    /// `health_set_silencers_filename()`, the "silencers" step, which creates `[health]`: the file's name is kept for
+    /// `health_load_config_defaults()`; the file itself is read at health's start, when health is on.
     pub fn health_silencers_filename(&mut self) {
         let default = format!("{}/health.silencers.json", self.dirs.varlib);
-        self.netdata
-            .get_filename(SECTION_HEALTH, "silencers file", Some(&default));
+        let name = self.netdata.get_filename(SECTION_HEALTH, "silencers file", Some(&default));
+        self.health_silencers_file = name.unwrap_or_default();
     }
 
     /// `health_load_config_defaults()`, in `rrd_init()` before localhost is created: every `[health]` value with C's
@@ -1403,6 +1405,7 @@ impl Conf {
             run_at_least_every_s,
             postpone_s,
             notification_execution_timeout_s,
+            silencers_filename: self.health_silencers_file.clone(),
         }
     }
 

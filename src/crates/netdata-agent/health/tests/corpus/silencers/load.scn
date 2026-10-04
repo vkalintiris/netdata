@@ -1,0 +1,18 @@
+# The file's read at health's start: a type and two selectors with no request; the list has them in the reverse of
+# the file's order, and so has the file after the next request that saves. Then a start without a file, and one
+# with a file that is no JSON.
+rules tests/corpus/notify/two.conf
+chart loop.n loop.n_name loop.notify disks things 1
+var loop.n v 10
+silencers-file {"all": false, "type": "DISABLE", "silencers": [{"alarm": "n_one"}, {"alarm": "n_two", "chart": "loop.other"}]}
+load
+clock 0
+pass 0
+manage ok cmd=LIST
+manage ok
+silencers-file -
+load
+silencers-file {"all": true
+load
+clock 1
+pass 1

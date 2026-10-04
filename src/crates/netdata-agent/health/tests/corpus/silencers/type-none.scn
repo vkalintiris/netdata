@@ -1,0 +1,15 @@
+# A selector without a command changes nothing; a SILENCE that comes alone then applies it.
+rules tests/corpus/notify/two.conf
+chart loop.n loop.n_name loop.notify disks things 1
+var loop.n v 10
+clock 0
+pass 0
+manage ok alarm=n_one
+clock 1
+pass 1
+manage ok cmd=SILENCE
+clock 2
+pass 2
+var loop.n v 70
+clock 3
+pass 3
