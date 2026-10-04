@@ -3104,6 +3104,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "netdata-agent-health"
+version = "0.1.3"
+dependencies = [
+ "netdata-agent-eval",
+ "netdata-agent-text",
+]
+
+[[package]]
 name = "netdata-agent-ingest"
 version = "0.1.3"
 dependencies = [

@@ -1,0 +1,2 @@
+# byte-exact inputs of the C oracle (see README.md): no end-of-line or whitespace normalization
+*.conf -text

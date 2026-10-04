@@ -1,0 +1,13 @@
+[package]
+name = "netdata-agent-health"
+description = "Health of the netdata agent: alert configuration, prototypes and their hash"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+netdata-agent-eval = { workspace = true }
+netdata-agent-text = { workspace = true }

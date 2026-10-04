@@ -1,0 +1,18 @@
+# The configuration corpus
+
+`health.d` files written to make C's reader take every path: one directory per family, one item per file. A
+directory named `*.group` is one item whose files are read one after the other into the same prototype store.
+
+| Family | What it holds |
+|---|---|
+| `lines` | continuations, comments, reads around the 4,096-byte buffer, CRLF, tabs, a NUL, lines without a key or a value |
+| `keys` | every keyword, repeated keys, quotes, names, durations, `green` and `red`, `options`, `repeat`, unknown keys |
+| `labels` | `os`, `hosts`, `plugin`, `module`, `host labels`, `chart labels` and their special values |
+| `lookup` | the 149 inputs of C's unit table as rules, each option, method and duration; `*-every.conf` repeats them with an `every` after the lookup, so the rule is kept whatever the lookup did |
+| `delay` | the inputs of C's delay unit table, bad durations, multipliers |
+| `expr` | expressions that fail to parse, `green` and `red` replaced inside expressions |
+| `validate` | each reason a rule is refused, chains of rules under one name, the same name in two files |
+| `smoke` | a first small file |
+
+The files hold bytes on purpose (a NUL, bytes above 0x7F, CRLF, a missing final newline): do not reformat them.
+`../vectors/` is what C made of them; regenerate it with `../oracle/gen-health-vectors.sh` after any change here.
