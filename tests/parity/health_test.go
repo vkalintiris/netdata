@@ -34,8 +34,9 @@ import (
 // health never pass; then the candidate gets a bounded wait to show the same view. The views mask each side's clock
 // and id seeds (health_norm_test.go); beside the masks, two equal views must hold their events' times, and the
 // seconds a view of the variables' endpoints masked, within healthBound of each other (near), and the ids' seeds are
-// bound to the chart's first second (bases). While a case runs a watch samples /proc: the installed notifier must
-// never run (healthWatch).
+// bound to the chart's first second (bases). A candidate that serves no alert log has its ids read by its alarm ids'
+// base (settleNoLog; D198 F1). While a case runs a watch samples /proc: the installed notifier must never run
+// (healthWatch).
 
 const (
 	// healthConfFile is a case's one file under <run>/etc/health.d (one file: no readdir order)
@@ -81,8 +82,10 @@ type healthCase struct {
 	// off runs the case with health off: what C serves without it (the variables' endpoints, the chart's variables).
 	// The rails then want the oracle's health off.
 	off bool
-	// hostLabels are the lines of netdata.conf's [host labels] section
+	// hostLabels are the lines of netdata.conf's [host labels] section; logs those of its [logs] section
+	// (healthLogsDebug: the records C writes at debug level, the link entries' and HEALTH's own)
 	hostLabels string
+	logs       string
 	// grid, when set, is the length in seconds of the case's aligned lookup window: the chart is created and each
 	// value switched at the window's healthGridSecond, so the windows hold the same mix of values in every run
 	grid int64
@@ -115,7 +118,7 @@ type healthPair struct {
 // healthOptions are a case's options: the fake plugin's (one tier, ram children, pulse off), health on (off for a case
 // that says so) with the rails' notifier, a pass every second.
 func healthOptions(c healthCase) daemon.Options {
-	o := pluginsOptions(1, nil, nil, "")
+	o := pluginsOptions(1, nil, nil, c.logs)
 	o.HealthOn = !c.off
 	o.HostLabels = c.hostLabels
 	o.HealthExtra = "    script to execute on alarm = {run}/notify/stub\n    run at least every = 1s\n"
@@ -129,6 +132,9 @@ func healthOptions(c healthCase) daemon.Options {
 	}
 	return o
 }
+
+// healthLogsDebug is a healthCase.logs value: every record down to debug level.
+const healthLogsDebug = "    level = debug\n"
 
 // healthIdle is the plugin of a case without a chart.
 var healthIdle = plugin.Scenario{Starts: []plugin.Start{{Steps: []plugin.Step{{Hang: true}}}}}
@@ -433,6 +439,58 @@ func (h *healthPair) plain(i int, path string, headers ...string) string {
 	return healthView(r, h.n[i].paths(string(r.Body)))
 }
 
+// dataAlerts is side i's view of the alert members of a v2 data answer (`/api/v2/data?<query>`), one per line: the two
+// alert versions (`versions.alerts_hard_hash`: the host's alert dictionary's version; `alerts_soft_hash`: its
+// transitions' count, database/contexts/query_target.c:1352-1353), `summary.alerts` (each alert name with its
+// instances by status, formatters/jsonwrap-summary-alerts.c), and the alert counts of each node, context and instance
+// of the summary (jsonwrap.c:118-143), named by the item's first member; an item without counts prints `none`.
+// Everything else in the answer follows the data and the clock, and is left to the query checks.
+func (h *healthPair) dataAlerts(i int, query string) string {
+	r := healthGet(h.p.Each()[i].Daemon, "/api/v2/data?"+query)
+	return healthView(r, healthDataAlerts(r.Body))
+}
+
+// healthDataAlerts renders the alert members of a v2 data body (dataAlerts); a body that is no JSON object is its text.
+func healthDataAlerts(body []byte) string {
+	doc, err := ParseJSON(body)
+	if err != nil || doc.Kind != KindObject {
+		return fmt.Sprintf("not a JSON object (%v): %s", err, body)
+	}
+	member := func(v Value, keys ...string) (Value, bool) {
+		for _, m := range v.Members {
+			if slices.Contains(keys, m.Key) {
+				return m.Value, true
+			}
+		}
+		return Value{}, false
+	}
+	text := func(v Value, ok bool) string {
+		if !ok {
+			return "none"
+		}
+		return v.String()
+	}
+	var out []string
+	versions, _ := member(doc, "versions")
+	for _, key := range []string{"alerts_hard_hash", "alerts_soft_hash"} {
+		out = append(out, "versions."+key+": "+text(member(versions, key)))
+	}
+	summary, _ := member(doc, "summary")
+	out = append(out, "summary.alerts: "+text(member(summary, "alerts")))
+	for _, list := range []string{"nodes", "contexts", "instances"} {
+		items, _ := member(summary, list)
+		for k, item := range items.Items {
+			name := "?"
+			if len(item.Members) > 0 {
+				name = item.Members[0].Key + "=" + item.Members[0].Value.String()
+			}
+			// the member's key is short, or long with `options=long-json-keys` (libnetdata/json/json-keys.h)
+			out = append(out, fmt.Sprintf("summary.%s[%d] %s: %s", list, k, name, text(member(item, "al", "alerts"))))
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
 // healthMidSecond sleeps to the middle of a wall-clock second.
 func healthMidSecond() { healthMidSecondOn(0) }
 
@@ -519,8 +577,21 @@ func (h *healthPair) createChart(t *testing.T) int64 {
 // health started (sqlite_health.c:863-871), which the views print ids by. The oracle's are not before `first`, the
 // second its chart's data began (one or two seconds after it in R75's 48 sides), and the candidate's, once it showed
 // an id, within healthBound of the oracle's and not before `first` either: ids counted from anything else fail.
+//
+// The oracle's two bases must also be equal (D198 F1): a side that serves no alert log has its unique ids read by its
+// alarm ids' base (healthNorm.noLog), which stands on C seeding both with one second (sqlite_health.c:864-871: two
+// reads of the clock, one after the other). An oracle that shows two bases fails the case as `harness: …`: the run
+// cannot judge such a candidate, and says nothing about either agent. A candidate without a log shows one base, the
+// alarm ids', which is bound as any candidate's.
 func (h *healthPair) bases(t *testing.T, n [2]*healthNorm, first int64) {
 	t.Helper()
+	if err := healthBases(n, first); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// healthBases is bases' verdict: nil, or the failure's text.
+func healthBases(n [2]*healthNorm, first int64) error {
 	for _, b := range []struct {
 		what   string
 		set    [2]bool
@@ -528,13 +599,18 @@ func (h *healthPair) bases(t *testing.T, n [2]*healthNorm, first int64) {
 		cand   int64
 	}{{"unique", [2]bool{n[0].uSet, n[1].uSet}, n[0].uBase, n[1].uBase}, {"alarm", [2]bool{n[0].aSet, n[1].aSet}, n[0].aBase, n[1].aBase}} {
 		if !b.set[0] || b.oracle < first || b.oracle > first+10 {
-			t.Fatalf("oracle: its %s ids count from %d (seen: %v): the chart's first second is %d", b.what, b.oracle, b.set[0], first)
+			return fmt.Errorf("oracle: its %s ids count from %d (seen: %v): the chart's first second is %d", b.what, b.oracle, b.set[0], first)
 		}
 		if d := b.cand - b.oracle; b.set[1] && (d > healthBound || -d > healthBound || b.cand < first) {
-			t.Fatalf("the %s ids' bases: oracle %d, candidate %d, the chart's first second %d: more than %d s apart, or before the chart",
+			return fmt.Errorf("the %s ids' bases: oracle %d, candidate %d, the chart's first second %d: more than %d s apart, or before the chart",
 				b.what, b.oracle, b.cand, first, healthBound)
 		}
 	}
+	if n[0].uBase != n[0].aBase {
+		return fmt.Errorf("harness: the oracle's unique ids count from %d, its alarm ids from %d: a side without an alert log is read "+
+			"by one base for both, which this run's oracle does not have", n[0].uBase, n[0].aBase)
+	}
+	return nil
 }
 
 // the members of a hand-built v1 answer that hold the time of an event or a span between two events (not the time of
@@ -594,7 +670,8 @@ func (h *healthPair) near(oracle, candidate string) error {
 // stored by the metadata thread a few seconds later, after the first evaluations' (health_log.c:68-76). The log is
 // settled when its entries run without a hole from its lowest id to the last id the host gave
 // (`latest_alarm_log_unique_id`) and the lowest is an alert's first event. The oracle must get there (the case fails
-// as `oracle: …`); the candidate gets the bounded wait and is then compared as it is.
+// as `oracle: …`); the candidate gets the bounded wait and is then compared as it is. A candidate that does not serve
+// the log has no entries to wait for: its ids' base is taken from its alerts (settleNoLog).
 func (h *healthPair) settle(t *testing.T, n [2]*healthNorm, prefix string) {
 	t.Helper()
 	settled := func(i int) error {
@@ -612,9 +689,34 @@ func (h *healthPair) settle(t *testing.T, n [2]*healthNorm, prefix string) {
 	}
 	h.waitOracle(t, "the alert log's first entries"+prefix, func() (string, error) { return "", settled(0) })
 	for end := time.Now().Add(healthCandidateWait); settled(1) != nil && time.Now().Before(end); time.Sleep(250 * time.Millisecond) {
-		// a candidate that does not serve the log is compared at once
 		if r := healthGet(h.p.Candidate, prefix+"/api/v1/alarm_log"); r.Status != http.StatusOK {
+			h.settleNoLog(n, prefix)
 			break
+		}
+	}
+}
+
+// settleNoLog is settle for a candidate that does not serve the alert log (D198 F1: C's log is SQLite's): the side's
+// unique ids are read by its alarm ids' base (healthNorm.noLog), and that base comes from `/api/v1/alarms?all` once it
+// shows an alarm id, within the bounded wait: the lowest id the candidate lists is taken for the lowest id the
+// oracle lists (healthNorm.anchor), so the alerts listed are compared id for id and the base is bound to the oracle's
+// (bases). A candidate that does not answer the alerts with 200 is compared at once, and so is one whose oracle lists
+// no alert: its ids print `?`.
+func (h *healthPair) settleNoLog(n [2]*healthNorm, prefix string) {
+	n[1].noLog = true
+	path := prefix + "/api/v1/alarms?all"
+	listed, ok := healthLowestAlarm(string(healthGet(h.p.Oracle, path).Body))
+	if !ok || !n[0].aSet {
+		return
+	}
+	for end := time.Now().Add(healthCandidateWait); time.Now().Before(end); time.Sleep(250 * time.Millisecond) {
+		r := healthGet(h.p.Candidate, path)
+		if r.Status != http.StatusOK {
+			return
+		}
+		if lowest, ok := healthLowestAlarm(string(r.Body)); ok {
+			n[1].anchor(lowest, listed-n[0].aBase)
+			return
 		}
 	}
 }

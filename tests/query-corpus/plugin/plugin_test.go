@@ -362,20 +362,22 @@ func TestTheEngineServes(t *testing.T) {
 	}
 }
 
-// The engine's Values step: the chart with its context, one block per whole second with the current
+// The engine's Values step: the chart with its context, family and labels, one block per whole second with the current
 // phase's values (a dimension the phase leaves out gets no SET), a phase switched by its Until file at the next whole
-// second, the last phase held, and each phase's first second recorded as the second its first block names.
+// second, a phase's own lines written once before its first block, the last phase held, and each phase's first second
+// recorded as the second its first block names.
 func TestTheEngineCollectsValues(t *testing.T) {
 	engine, err := Engine()
 	if err != nil {
 		t.Fatal(err)
 	}
 	sc := Scenario{Starts: []Start{{Steps: []Step{{WaitFile: "create"}, {Values: &Values{
-		Chart: "difftest.v", Context: "difftest.ctx", Dims: []string{"a", "b"},
+		Chart: "difftest.v", Context: "difftest.ctx", Family: "fam one", Dims: []string{"a", "b"},
+		Labels: []string{"kind x y", "role db"},
 		Phases: []Phase{
-			{Set: map[string]int64{"a": 10, "b": 1}, Until: "p1"},
+			{Set: map[string]int64{"a": 10, "b": 1}, Until: "p1", Emit: "CHART difftest.w '' 't' 'u' '' '' line 1000 1 obsolete '' ''\n"},
 			{Set: map[string]int64{"a": 70}, Until: "p2"},
-			{Set: map[string]int64{"a": -95, "b": 3}, Until: "never-read"},
+			{Set: map[string]int64{"a": -95, "b": 3}, Until: "never-read", Emit: "CLABEL kind z 1\nCLABEL_COMMIT\nVARIABLE HOST at = {{sec}}\n"},
 		},
 	}}}}}}
 	l, err := Install(t.TempDir(), engine, sc)
@@ -396,11 +398,22 @@ func TestTheEngineCollectsValues(t *testing.T) {
 		}
 		return s
 	}
-	// block reads one block: its lines between BEGIN and END, and the second END names
+	// block reads one block: its lines between BEGIN and END, and the second END names; the lines before its BEGIN
+	// (a phase's own) are kept in `emitted`
+	var emitted []string
 	block := func() (string, int64) {
-		if got := line(); got != "BEGIN difftest.v\n" {
-			t.Fatalf("a block starts %q", got)
+		var before strings.Builder
+		for {
+			got := line()
+			if got == "BEGIN difftest.v\n" {
+				break
+			}
+			if strings.HasPrefix(got, "SET ") || strings.HasPrefix(got, "END ") || strings.HasPrefix(got, "BEGIN ") {
+				t.Fatalf("a block starts %q", got)
+			}
+			before.WriteString(got)
 		}
+		emitted = append(emitted, before.String())
 		var sets strings.Builder
 		for {
 			l := line()
@@ -430,9 +443,10 @@ func TestTheEngineCollectsValues(t *testing.T) {
 	if err := l.Release("create"); err != nil {
 		t.Fatal(err)
 	}
-	def := []string{line(), line(), line()}
-	wantDef := []string{"CHART difftest.v '' 'title' 'units' 'family' 'difftest.ctx' line 1000 1 '' '' ''\n",
-		"DIMENSION a '' absolute 1 1\n", "DIMENSION b '' absolute 1 1\n"}
+	def := []string{line(), line(), line(), line(), line(), line()}
+	wantDef := []string{"CHART difftest.v '' 'title' 'units' 'fam one' 'difftest.ctx' line 1000 1 '' '' ''\n",
+		"DIMENSION a '' absolute 1 1\n", "DIMENSION b '' absolute 1 1\n", "CLABEL 'kind' 'x y' 1\n", "CLABEL 'role' 'db' 1\n",
+		"CLABEL_COMMIT\n"}
 	if !slices.Equal(def, wantDef) {
 		t.Errorf("definition %q, want %q", def, wantDef)
 	}
@@ -443,6 +457,8 @@ func TestTheEngineCollectsValues(t *testing.T) {
 	firstSec := map[string]int64{}
 	var last int64
 	var released [2]int64
+	// each phase's own lines come once, before the phase's first block
+	wantEmit := map[int]string{0: "CHART difftest.w '' 't' 'u' '' '' line 1000 1 obsolete '' ''\n", 2: "CLABEL kind z 1\nCLABEL_COMMIT\nVARIABLE HOST at = %d\n"}
 	phase := 0
 	for i := 0; phase < 3; i++ {
 		sets, sec := block()
@@ -456,7 +472,18 @@ func TestTheEngineCollectsValues(t *testing.T) {
 		if sets != want[phase] {
 			t.Fatalf("block %d: %q, in phase %d", i, sets, phase)
 		}
+		if _, seen := firstSec[fmt.Sprint(phase)]; seen && emitted[len(emitted)-1] != "" {
+			t.Errorf("block %d of phase %d comes after the lines %q", i, phase, emitted[len(emitted)-1])
+		}
 		if _, seen := firstSec[fmt.Sprint(phase)]; !seen {
+			// `{{sec}}` in a phase's lines is the phase's first second
+			own := wantEmit[phase]
+			if strings.Contains(own, "%d") {
+				own = fmt.Sprintf(own, sec)
+			}
+			if got := emitted[len(emitted)-1]; got != own {
+				t.Errorf("phase %d's first block comes after the lines %q, want %q", phase, got, own)
+			}
 			firstSec[fmt.Sprint(phase)] = sec
 			switch phase {
 			case 0:

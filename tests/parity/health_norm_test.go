@@ -27,7 +27,8 @@ import (
 //   - a transition id is a random UUID (health/health_log.c:225): named after the rebased unique id of the entry the
 //     host's alert log first showed it for (`t+k`). Only the alert log names an id (observe): the notifier's argument,
 //     a health.log record and a spawn record are looked up, so an id the alert log never showed prints `t?`, another
-//     entry's id that entry's name, and an entry that shows a second id `t!k`;
+//     entry's id that entry's name, and an entry that shows a second id `t!k`. A check that reads no alert log prints
+//     a health.log's ids by the rank of their first appearance in the file (`t#k`, healthLogRanked);
 //   - every time field is a wall-clock second: `T` when set, 0 kept (set or not is compared), a lookup's window as its
 //     length (`db_before` as `T+<n>`). A notification's clock arguments print the name of the member of their own
 //     alert log entry they equal (`when`, `duration`, `non_clear_duration`);
@@ -36,6 +37,11 @@ import (
 // The masks are wider than C's variation (a second or two side to side), so two bounds stand beside them
 // (healthPair.near, healthPair.bases; D187 point 4): the times of events within healthBound side to side, and each
 // side's id bases within it and not before the chart's first second.
+//
+// A side that serves no alert log (healthNorm.noLog; D198 F1: C's log is SQLite's, a later commit of the Rust agent)
+// has no entry to name its unique ids' base: they print by its alarm ids' base. C seeds both with the same second on
+// a host whose health starts on an empty table (sqlite_health.c:864-871), and healthBases holds the oracle, which
+// has both, to that in every run.
 
 // healthNorm is one side's normalizer state.
 type healthNorm struct {
@@ -43,6 +49,9 @@ type healthNorm struct {
 	// uBase and aBase are the side's id bases: an id prints as its distance from its base; uSet and aSet once known
 	uBase, aBase int64
 	uSet, aSet   bool
+	// noLog: the side serves no alert log (healthPair.settle found none): until an entry names a unique base, its
+	// unique ids print by the alarm ids' base
+	noLog bool
 	// log is the path of the host's alert log (localhost's; a child's is under `/host/<name>`)
 	log string
 	// What the host's alert log showed (observe): entries are its entries by unique id; tids the unique id of the
@@ -105,9 +114,34 @@ func (n *healthNorm) observe(body string) {
 	}
 }
 
-// unique and alarm print an id as its distance from the side's base.
-func (n *healthNorm) unique(v int64) string { return healthRebase("u", v, n.uBase, n.uSet) }
-func (n *healthNorm) alarm(v int64) string  { return healthRebase("a", v, n.aBase, n.aSet) }
+// unique and alarm print an id as its distance from the side's base; a side without an alert log (noLog) has one
+// base for both.
+func (n *healthNorm) unique(v int64) string {
+	if n.noLog && !n.uSet {
+		return healthRebase("u", v, n.aBase, n.aSet)
+	}
+	return healthRebase("u", v, n.uBase, n.uSet)
+}
+func (n *healthNorm) alarm(v int64) string { return healthRebase("a", v, n.aBase, n.aSet) }
+
+// healthLowestAlarm is the lowest alarm id a body shows (an /api/v1/alarms answer's `id` members).
+func healthLowestAlarm(body string) (int64, bool) {
+	lowest, ok := int64(0), false
+	for _, m := range healthAlarmRe.FindAllStringSubmatch(body, -1) {
+		if v, _ := strconv.ParseInt(m[2], 10, 64); v > 0 && (!ok || v < lowest) {
+			lowest, ok = v, true
+		}
+	}
+	return lowest, ok
+}
+
+// anchor sets the alarm ids' base of a side without an alert log: `lowest`, the lowest alarm id its /api/v1/alarms?all
+// lists, is the `k`th id after the base, as the oracle's lowest listed id is after the oracle's base. Nothing but the
+// alert log shows the ids an alert of a never-collected chart took, and such a chart created first takes the seed's
+// first ids: the lowest listed id is then not the base's next. A lower id seen later still lowers the base (observe).
+func (n *healthNorm) anchor(lowest, k int64) {
+	n.aBase, n.aSet = lowest-k, true
+}
 
 func healthRebase(prefix string, v, base int64, set bool) string {
 	switch {
@@ -330,6 +364,29 @@ func healthDashed(u string) string {
 // directories replaced.
 func (n *healthNorm) healthLog(t *testing.T, d *daemon.Daemon) []string {
 	t.Helper()
+	return n.healthLogWith(t, d, func(dashed string) string { return n.tid(dashed) })
+}
+
+// healthLogRanked is healthLog for a check that reads no alert log (D198 F1): a transition id prints as the rank of
+// its first appearance in the file (`t#k`), so two records that share an id, or a record that repeats an earlier
+// one's, still show; the nil id and an empty one stay as they are.
+func (n *healthNorm) healthLogRanked(t *testing.T, d *daemon.Daemon) []string {
+	t.Helper()
+	ranks := map[string]int{}
+	return n.healthLogWith(t, d, func(dashed string) string {
+		if dashed == "" || dashed == "00000000-0000-0000-0000-000000000000" {
+			return dashed
+		}
+		if _, seen := ranks[dashed]; !seen {
+			ranks[dashed] = len(ranks) + 1
+		}
+		return fmt.Sprintf("t#%d", ranks[dashed])
+	})
+}
+
+// healthLogWith renders a side's health.log with `tid` naming each record's transition id (given dashed).
+func (n *healthNorm) healthLogWith(t *testing.T, d *daemon.Daemon, tid func(dashed string) string) []string {
+	t.Helper()
 	var out []string
 	for _, l := range logLines(t, d.Opts.RunDir, "health.log") {
 		l = healthLogUniqueRe.ReplaceAllStringFunc(l, func(m string) string {
@@ -341,7 +398,7 @@ func (n *healthNorm) healthLog(t *testing.T, d *daemon.Daemon) []string {
 			return " alert_id=" + n.alarm(v)
 		})
 		l = healthLogTidRe.ReplaceAllStringFunc(l, func(m string) string {
-			return " alert_transition_id=" + n.tid(healthDashed(strings.TrimPrefix(m, " alert_transition_id=")))
+			return " alert_transition_id=" + tid(healthDashed(strings.TrimPrefix(m, " alert_transition_id=")))
 		})
 		l = healthLogTimeRe.ReplaceAllStringFunc(l, func(m string) string {
 			g := healthLogTimeRe.FindStringSubmatch(m)
@@ -408,7 +465,9 @@ func (n *healthNorm) healthDump(t *testing.T, d *daemon.Daemon, more ...string) 
 // their distance from the side's base (0 kept), a set time as T (0 kept), a lookup's window by its length. A
 // transition id is named only by the alert log: a notifier's argument, a health.log record or a spawn record that
 // carries another id does not print as the entry's. The bounds beside the masks fail clocks more than healthBound
-// apart: the events' times, and the seconds the variables' endpoints' masks replaced.
+// apart: the events' times, and the seconds the variables' endpoints' masks replaced. A side without an alert log
+// prints its unique ids by its alarm ids' base and a health.log's transition ids by their rank; the bases' bound
+// holds the oracle to one base for both. The alert members of a v2 data answer are taken as they are.
 func TestHealthNorm(t *testing.T) {
 	run := filepath.Join(t.TempDir(), "oracle")
 	blank := func() *healthNorm {
@@ -615,6 +674,142 @@ func TestHealthNorm(t *testing.T) {
 		if (err == nil) != (c.want == "") || (err != nil && !strings.Contains(err.Error(), c.want)) {
 			t.Errorf("the masked seconds, %s: %v, want %q", name, err, c.want)
 		}
+	}
+
+	// a side that serves no alert log (noLog): its unique ids print by its alarm ids' base, which is set from the lowest
+	// alarm id its /api/v1/alarms?all lists (anchor); a side with a log never borrows that base
+	if lowest, ok := healthLowestAlarm("\t\t\t\"id\": 508,\n\t\t\t\"id\": 507,\n\t\"latest_alarm_log_unique_id\": 3,\n\t\t\"alarm_event_id\": 2,\n"); !ok || lowest != 507 {
+		t.Errorf("the lowest alarm id listed: %d %v, want 507", lowest, ok)
+	}
+	if lowest, ok := healthLowestAlarm("\t\"latest_alarm_log_unique_id\": 0,\n\t\"alarms\": {\n\n\t}\n"); ok {
+		t.Errorf("an answer that lists no alert shows the alarm id %d", lowest)
+	}
+	listed := "\t\"latest_alarm_log_unique_id\": 520,\n\t\t\t\"id\": 507,\n\t\t\t\"id\": 508,\n"
+	for name, c := range map[string]struct {
+		noLog  bool
+		anchor [2]int64
+		entry  string
+		want   string
+	}{
+		// the oracle lists its first alarm id first: the candidate's lowest is its base's next
+		"no log, the first id listed": {true, [2]int64{507, 1}, "", "\t\"latest_alarm_log_unique_id\": u+14,\n\t\t\t\"id\": a+1,\n\t\t\t\"id\": a+2,\n"},
+		// seven alerts of a chart that was never collected took the ids before the first one listed
+		"no log, the eighth id listed": {true, [2]int64{507, 8}, "", "\t\"latest_alarm_log_unique_id\": u+21,\n\t\t\t\"id\": a+8,\n\t\t\t\"id\": a+9,\n"},
+		"no log, no alarm id seen":     {true, [2]int64{}, "", "\t\"latest_alarm_log_unique_id\": u+14,\n\t\t\t\"id\": a+1,\n\t\t\t\"id\": a+2,\n"},
+		// an entry's unique id, once one shows, is the unique ids' base again
+		"no log, then an entry": {true, [2]int64{507, 1}, `{"unique_id":511,"alarm_id":507}`, "\t\"latest_alarm_log_unique_id\": u+10,\n\t\t\t\"id\": a+1,\n\t\t\t\"id\": a+2,\n"},
+		"a log, no entry yet":   {false, [2]int64{507, 1}, "", "\t\"latest_alarm_log_unique_id\": u?,\n\t\t\t\"id\": a+1,\n\t\t\t\"id\": a+2,\n"},
+	} {
+		side := blank()
+		side.noLog = c.noLog
+		if c.anchor[0] != 0 {
+			side.anchor(c.anchor[0], c.anchor[1])
+		}
+		if c.entry != "" {
+			side.observe(c.entry)
+		}
+		if got := side.json(listed); got != c.want {
+			t.Errorf("%s:\n got %q\nwant %q", name, got, c.want)
+		}
+	}
+	if got := func() string { side := blank(); side.noLog = true; return side.unique(520) }(); got != "u?" {
+		t.Errorf("without a log and before any alarm id, a unique id prints %q", got)
+	}
+
+	// the bound on the bases, and the ground of the fallback: the oracle's two bases are one
+	bases := func(u, a int64, uSet, aSet, noLog bool) *healthNorm {
+		side := blank()
+		side.uBase, side.aBase, side.uSet, side.aSet, side.noLog = u, a, uSet, aSet, noLog
+		return side
+	}
+	for name, c := range map[string]struct {
+		oracle, candidate *healthNorm
+		want              string
+	}{
+		"the same second":              {bases(1001, 1001, true, true, false), bases(1001, 1001, true, true, false), ""},
+		"two seconds later":            {bases(1001, 1001, true, true, false), bases(1003, 1003, true, true, false), ""},
+		"three seconds later":          {bases(1001, 1001, true, true, false), bases(1004, 1001, true, true, false), "the unique ids' bases: oracle 1001, candidate 1004"},
+		"before the chart":             {bases(1001, 1001, true, true, false), bases(1001, 999, true, true, false), "the alarm ids' bases: oracle 1001, candidate 999"},
+		"a candidate that shows no id": {bases(1001, 1001, true, true, false), bases(0, 0, false, false, false), ""},
+		"an oracle that shows no id":   {bases(0, 1001, false, true, false), bases(1001, 1001, true, true, false), "oracle: its unique ids count from 0 (seen: false)"},
+		"an oracle before the chart":   {bases(999, 999, true, true, false), bases(999, 999, true, true, false), "oracle: its unique ids count from 999"},
+		"an oracle long after it":      {bases(1011, 1011, true, true, false), bases(1011, 1011, true, true, false), "oracle: its unique ids count from 1011"},
+		// the fallback's ground, whatever the candidate
+		"the oracle's bases are two": {bases(1001, 1002, true, true, false), bases(1001, 1002, true, true, false), "harness: the oracle's unique ids count from 1001, its alarm ids from 1002"},
+		// a candidate without a log has one base, the alarm ids': bound as any
+		"no log, the same second":   {bases(1001, 1001, true, true, false), bases(0, 1001, false, true, true), ""},
+		"no log, two seconds later": {bases(1001, 1001, true, true, false), bases(0, 1003, false, true, true), ""},
+		"no log, seven ids later":   {bases(1001, 1001, true, true, false), bases(0, 1008, false, true, true), "the alarm ids' bases: oracle 1001, candidate 1008"},
+		"no log, no alarm id":       {bases(1001, 1001, true, true, false), bases(0, 0, false, false, true), ""},
+		"no log, the oracle's two":  {bases(1002, 1001, true, true, false), bases(0, 1001, false, true, true), "harness: the oracle's unique ids count from 1002, its alarm ids from 1001"},
+	} {
+		err := healthBases([2]*healthNorm{c.oracle, c.candidate}, 1000)
+		if (err == nil) != (c.want == "") || (err != nil && !strings.Contains(err.Error(), c.want)) {
+			t.Errorf("the bases, %s: %v, want %q", name, err, c.want)
+		}
+	}
+
+	// health.log without an alert log: a transition id prints as the rank of its first appearance in the file, the
+	// nil id as it is; the unique id by the alarm ids' base
+	ranked := blank()
+	ranked.noLog = true
+	ranked.anchor(501, 1)
+	lines = fmt.Sprintf(record, strings.Repeat("a", 32), "0") + fmt.Sprintf(record, strings.Repeat("b", 32), "12") +
+		fmt.Sprintf(record, strings.Repeat("a", 32), "3") + fmt.Sprintf(record, strings.Repeat("0", 32), "0")
+	if err := os.WriteFile(filepath.Join(run, "log", "health.log"), []byte(lines), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rankedLine := "time=T comm=netdata source=health level=warning tid=N thread=HEALTH alert_id=a+1 alert_unique_id=u+501 alert_transition_id=%s alert_duration=%s alert=a msg=x"
+	wantLog = []string{fmt.Sprintf(rankedLine, "t#1", "0"), fmt.Sprintf(rankedLine, "t#2", "T"), fmt.Sprintf(rankedLine, "t#1", "T"),
+		fmt.Sprintf(rankedLine, "00000000-0000-0000-0000-000000000000", "0")}
+	if got := ranked.healthLogRanked(t, d); !slices.Equal(got, wantLog) {
+		t.Errorf("health.log, ranked:\n got %q\nwant %q", got, wantLog)
+	}
+	// the same file through the alert log's names: no entry showed these ids
+	if got := ranked.healthLog(t, d); !strings.Contains(got[0], " alert_transition_id=t? ") || !strings.Contains(got[2], " alert_transition_id=t? ") {
+		t.Errorf("health.log, looked up: %q", got)
+	}
+
+	// the alert members of a v2 data answer: the two versions, the summary's alerts, each node's, context's and
+	// instance's counts under their short or long key; nothing else of the answer
+	data := `{"api":2,"versions":{"routing_hard_hash":1,"nodes_hard_hash":2,"contexts_hard_hash":5,"contexts_soft_hash":9,` +
+		`"alerts_hard_hash":4,"alerts_soft_hash":12},"summary":{"nodes":[{"mg":"g1","nd":"n1","nm":"h","ni":0,"al":{"cl":2,"wr":1},"sts":{"min":1}}],` +
+		`"contexts":[{"id":"c","is":{"sl":2},"al":{"cl":2,"wr":1}}],"instances":[{"id":"c.a","ni":0,"al":{"cl":2,"wr":1}},{"id":"c.b","ni":0},` +
+		`{"id":"c.c","alerts":{"other":1}}],"alerts":[{"nm":"x","cl":2},{"nm":"y","wr":1}]},"result":{"data":[[1790000000,1]]}}`
+	wantData := "versions.alerts_hard_hash: 4\nversions.alerts_soft_hash: 12\n" +
+		`summary.alerts: [{"nm":"x","cl":2},{"nm":"y","wr":1}]` + "\n" +
+		`summary.nodes[0] mg="g1": {"cl":2,"wr":1}` + "\n" + `summary.contexts[0] id="c": {"cl":2,"wr":1}` + "\n" +
+		`summary.instances[0] id="c.a": {"cl":2,"wr":1}` + "\n" + `summary.instances[1] id="c.b": none` + "\n" +
+		`summary.instances[2] id="c.c": {"other":1}`
+	if got := healthDataAlerts([]byte(data)); got != wantData {
+		t.Errorf("the alert members of a v2 data answer:\n got %s\nwant %s", got, wantData)
+	}
+	if got, want := healthDataAlerts([]byte(`{"versions":{},"summary":{}}`)), "versions.alerts_hard_hash: none\nversions.alerts_soft_hash: none\nsummary.alerts: none"; got != want {
+		t.Errorf("a v2 data answer without alert members:\n got %s\nwant %s", got, want)
+	}
+	if got := healthDataAlerts([]byte("Unsupported API command")); !strings.HasPrefix(got, "not a JSON object") {
+		t.Errorf("an answer that is no JSON: %s", got)
+	}
+
+	// the guard on /api/v1/alarms_values: each alert's status by its key, and no other alert
+	values := "HTTP 200, application/json\n{\n\t\"hostname\": \"h\",\n\t\"alarms\": {\n\t\t\"c.a.x\": {\n\t\t\t\"id\": a+1,\n\t\t\t\"value\":70,\n" +
+		"\t\t\t\"last_updated\":T,\n\t\t\t\"status\": \"WARNING\"\n\t\t},\n\t\t\"c.a.y\": {\n\t\t\t\"id\": a+2,\n\t\t\t\"value\":null,\n" +
+		"\t\t\t\"last_updated\":0,\n\t\t\t\"status\": \"UNDEFINED\"\n\t\t}\n\t}\n}\n"
+	for name, c := range map[string]struct {
+		want map[string]string
+		ok   bool
+	}{
+		"both":        {map[string]string{"c.a.x": "WARNING", "c.a.y": "UNDEFINED"}, true},
+		"one missing": {map[string]string{"c.a.x": "WARNING"}, false},
+		"one other":   {map[string]string{"c.a.x": "WARNING", "c.a.y": "CLEAR"}, false},
+		"none wanted": {map[string]string{}, false},
+	} {
+		if err := healthValuesWant(c.want)(values); (err == nil) != c.ok {
+			t.Errorf("the guard on alarms_values, %s: %v", name, err)
+		}
+	}
+	if err := healthValuesWant(map[string]string{})("HTTP 404, text/plain\nUnsupported API command: alarms_values"); err == nil {
+		t.Errorf("the guard on alarms_values passes a 404")
 	}
 
 	// a passing comparison logs a transcript without its environment; a failing one keeps the lines that differ

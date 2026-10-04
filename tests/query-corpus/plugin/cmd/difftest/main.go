@@ -428,13 +428,20 @@ func collect(rec *recorder, c *plugin.Collect) {
 	}
 }
 
-// values writes the chart's definition, then one block per whole wall-clock second with the current phase's values,
-// until the process ends (plugin.Values).
+// values writes the chart's definition (with its labels), then one block per whole wall-clock second with the current
+// phase's values, a phase's own lines before its first block, until the process ends (plugin.Values).
 func values(rec *recorder, dir string, v *plugin.Values) {
 	var def strings.Builder
-	fmt.Fprintf(&def, "CHART %s '' 'title' 'units' 'family' '%s' line 1000 1 '' '' ''\n", v.Chart, v.Context)
+	fmt.Fprintf(&def, "CHART %s '' 'title' 'units' '%s' '%s' line 1000 1 '' '' ''\n", v.Chart, cmp.Or(v.Family, "family"), v.Context)
 	for _, d := range v.Dims {
 		fmt.Fprintf(&def, "DIMENSION %s '' absolute 1 1\n", d)
+	}
+	for _, l := range v.Labels {
+		name, value, _ := strings.Cut(l, " ")
+		fmt.Fprintf(&def, "CLABEL '%s' '%s' 1\n", name, value)
+	}
+	if len(v.Labels) > 0 {
+		def.WriteString("CLABEL_COMMIT\n")
 	}
 	emit(def.String())
 	if len(v.Phases) == 0 {
@@ -451,6 +458,10 @@ func values(rec *recorder, dir string, v *plugin.Values) {
 			phase, first = phase+1, true
 		}
 		var b strings.Builder
+		if first {
+			// the phase's own lines, whole, before its first block
+			b.WriteString(strings.ReplaceAll(v.Phases[phase].Emit, "{{sec}}", strconv.FormatInt(next.Unix(), 10)))
+		}
 		fmt.Fprintf(&b, "BEGIN %s\n", v.Chart)
 		for _, d := range v.Dims {
 			if value, ok := v.Phases[phase].Set[d]; ok {

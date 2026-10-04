@@ -123,7 +123,8 @@ type Collect struct {
 }
 
 // Values is CHART and DIMENSION lines for Chart (type.id; Context empty: the agent names it after the chart; each
-// dimension absolute, multiplier 1, divisor 1), then one block per whole wall-clock second until stdin's
+// dimension absolute, multiplier 1, divisor 1; the family `family` unless Family names one), a `CLABEL` line per
+// label and `CLABEL_COMMIT` when Labels has any, then one block per whole wall-clock second until stdin's
 // end: `BEGIN`, a `SET` per dimension the current phase gives a value, `END <sec> 0`, so the agent stores the second
 // the block names. The phases play in order: one ends at the first whole second that finds its Until file in the
 // engine's directory (Release; released at mid-second, two engines switch at the same second), the last one, or one
@@ -131,15 +132,22 @@ type Collect struct {
 type Values struct {
 	Chart   string   `json:"chart"`
 	Context string   `json:"context,omitempty"`
+	Family  string   `json:"family,omitempty"`
 	Dims    []string `json:"dims"`
-	Phases  []Phase  `json:"phases"`
+	// Labels are the chart's labels, each `name value` (the value may hold spaces), written in this order
+	Labels []string `json:"labels,omitempty"`
+	Phases []Phase  `json:"phases"`
 }
 
-// Phase is one span of a Values step: the collected value of each dimension it sets (one left out gets no SET), and
-// the file that ends it.
+// Phase is one span of a Values step: the collected value of each dimension it sets (one left out gets no SET), the
+// file that ends it, and lines of its own.
 type Phase struct {
 	Set   map[string]int64 `json:"set"`
 	Until string           `json:"until,omitempty"`
+	// Emit is written once, at the phase's first second, in one write with that second's block and before it: a
+	// chart's new definition (`obsolete`), labels of a chart that is being collected, another chart's block.
+	// `{{sec}}` in it is that second (`END {{sec}} 0`: two engines name the same one).
+	Emit string `json:"emit,omitempty"`
 }
 
 // ExitCode is a step's exit code.
