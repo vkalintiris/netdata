@@ -9,15 +9,22 @@
 // health_event_loop.c define themselves is left out of it.
 //
 // Stubbed here, each with what the scenario scripts of it:
-//   - the gate (rrdhost_should_run_health) and service_running;
+//   - the gate (rrdhost_should_run_health) and service_running, which is also false once the exit began, as C's;
 //   - the chart index: a plain dictionary whose values are the hand-built RRDSETs;
 //   - a chart's first and last entry, and the database lookup (rrdset2value_api_v1_with_owa), which records its
 //     arguments and answers what the scenario says;
 //   - the silencers (never disabled, never silenced: they come with their own commit);
-//   - SQLite: the load of the alert log (C's result on an empty table, or none), the save (it marks the entry SAVED
-//     or not), the alarm id lookup; the metadata queue; the ACLK queue; the sending of a host variable to a parent;
+//   - SQLite: the load of the alert log (C's ids for an empty table, or none; C's load also looks at the running
+//     service once and logs a record, which come with the alert log's tables), the save (it marks the entry SAVED
+//     or not), the alarm id lookup; the metadata queue (it never takes an entry, so an asynchronous save is made at
+//     once, as on the HEALTH thread); the ACLK queue; the sending of a host variable to a parent;
 //   - health_send_notification, by a #define in the copies of health_notifications.c and health_event_loop.c: it
-//     records the entry, marks it PROCESSED and saves it, which is what every path of C's function does;
+//     records the entry, marks it PROCESSED and saves it. C's function marks the entry on every path and saves it
+//     on every path but one (a command too long to prepare); what it does beside (the flags and times of an
+//     executed command) comes with the notifications;
+//   - health_alarm_wait_for_execution, by a #define in the copy of health_event_loop.c: nothing. C's own, over an
+//     entry no command was started for, logs an error and marks the entry as failed, which a daemon that runs its
+//     notifications does not do;
 //   - the walk over a context's charts for the variable lookup;
 //   - the wall clock: the program defines clock_gettime(), so every reader of CLOCK_REALTIME, in the health objects
 //     and in libnetdata alike, gets the scenario's clock. (A --wrap of now_realtime_sec does nothing here: the
@@ -87,8 +94,11 @@ bool rrdhost_should_run_health(RRDHOST *host) {
     return oracle.gate;
 }
 
+// C: src/daemon/daemon-service.c, service_running(): the thread is not cancelled and the exit has not begun.
 bool service_running(SERVICE_TYPE service) {
     (void)service;
+    if(exit_initiated_get())
+        return false;
     if(oracle.running_for) {
         if(--oracle.running_for == 0)
             oracle.running = false;
@@ -168,7 +178,7 @@ int rrdcontext_foreach_instance_with_rrdset_in_context(RRDHOST *host, const char
 
 // C: src/web/api/formatters/rrd2json.c. 500 leaves the value and the window untouched and sets the null flag; 400
 // zeroes the window and sets the null flag; 200 writes the window, the value and the null flag. The window of a 200
-// is the one an aligned query of a chart collected every second reports at the scenario's clock.
+// is made up from the clock and the two arguments: it shows that the alert takes it, not what a query answers.
 int rrdset2value_api_v1_with_owa(
     ONEWAYALLOC *owa, RRDSET *st, BUFFER *wb, NETDATA_DOUBLE *n, const char *dimensions, size_t points,
     time_t after, time_t before, RRDR_TIME_GROUPING group_method, const char *group_options,
@@ -307,6 +317,11 @@ void oracle_health_send_notification(RRDHOST *host, ALARM_ENTRY *ae, struct heal
 
     ae->flags |= HEALTH_ENTRY_FLAG_PROCESSED;
     health_alarm_log_save(host, ae, false);
+}
+
+// C: src/health/health_notifications.c. See the top of this file.
+void oracle_health_alarm_wait_for_execution(ALARM_ENTRY *ae) {
+    (void)ae;
 }
 
 // ------------------------------------------------------------------------------------------------

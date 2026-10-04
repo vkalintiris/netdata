@@ -2615,6 +2615,7 @@ tests/corpus/loop/names.conf	copy	s_self	0	$v	${v}	$s_self > 50 && $this > 50	((
 tests/corpus/loop/names.conf	copy	t_times	0	$now - $last_collected_t	(${now} - ${last_collected_t})	$update_every != 1	(${update_every} != 1)	\x00	\x00
 tests/corpus/loop/names.conf	copy	z_last	0	$v	${v}	\x00	\x00	\x00	\x00
 tests/corpus/loop/names.conf	copy	zz_after	0	$z_last + $a_first	(${z_last} + ${a_first})	\x00	\x00	\x00	\x00
+tests/corpus/loop/names.conf	copy	w_window	0	$before - $after	(${before} - ${after})	$this != $before - $after	(${this} != (${before} - ${after}))	\x00	\x00
 tests/corpus/loop/obsolete.conf	copy	o_plain	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/loop/obsolete.conf	copy	o_repeat	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/loop/obsolete.conf	copy	o_live	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
@@ -2622,6 +2623,8 @@ tests/corpus/loop/obsolete.conf	copy	o_never	0	$v	${v}	\x00	\x00	\x00	\x00
 tests/corpus/loop/relink.conf	copy	x_tier	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/loop/relink.conf	copy	x_tier	1	$v	${v}	$this > 60	(${this} > 60)	\x00	\x00
 tests/corpus/loop/relink.conf	copy	x_kind	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/loop/repeat-idle.conf	copy	i_slow	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/loop/repeat-idle.conf	copy	i_fast	0	$v	${v}	\x00	\x00	\x00	\x00
 tests/corpus/loop/repeat.conf	copy	p_both	0	$v	${v}	$this > 50	(${this} > 50)	$this > 90	(${this} > 90)
 tests/corpus/loop/repeat.conf	copy	p_warn	0	$v	${v}	$this > 50	(${this} > 50)	$this > 90	(${this} > 90)
 tests/corpus/loop/repeat.conf	copy	p_delay	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
@@ -2629,6 +2632,9 @@ tests/corpus/loop/repeat.conf	copy	p_plain	0	$v	${v}	$this > 50	(${this} > 50)	\
 tests/corpus/loop/runnable.conf	copy	r_calc	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/loop/runnable.conf	copy	r_lookup	0	\x00	\x00	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/loop/statuses.conf	copy	level	0	\x00	\x00	$this > 50	(${this} > 50)	$this > 90	(${this} > 90)
+tests/corpus/loop/stop-eval.conf	copy	v_one	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/loop/stop-eval.conf	copy	v_two	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/loop/stop-eval.conf	copy	v_three	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/loop/stop.conf	copy	s_one	0	$v	${v}	\x00	\x00	\x00	\x00
 tests/corpus/loop/stop.conf	copy	s_two	0	$v	${v}	\x00	\x00	\x00	\x00
 tests/corpus/loop/stop.conf	copy	s_three	0	$v	${v}	\x00	\x00	\x00	\x00

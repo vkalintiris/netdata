@@ -30,7 +30,7 @@ pass 130
 entries loop.r 142 142
 clock 140
 pass 140
-# the lookup's window ends 15 seconds back: the first entry is later than that by more than the chart's update
+# the lookup's window starts 15 seconds back: the first entry is later than that by more than the chart's update
 # every, then by exactly that
 entries loop.r 138 150
 clock 150

@@ -1,11 +1,16 @@
-# Once the agent's exit has begun, an unlink logs nothing.
+# Once the agent's exit has begun, the service is stopping and an unlink logs nothing: neither the one a freed
+# chart causes, nor the one of a label recheck in the pass, which then links nothing again.
 rules tests/corpus/loop/exit.conf
 chart loop.e loop.e_name loop.exit - things 1
+chart loop.e2 loop.e2_name loop.exit - things 1
 var loop.e v 70
+var loop.e2 v 70
 clock 0
 pass 0
 exiting
 clock 1
 unlink loop.e
+pending chart-recheck loop.e2
+pending host-init
 clock 2
 pass 2

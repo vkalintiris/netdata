@@ -1,0 +1,26 @@
+# A repeat is due while its alert is not: with no alert of the host to evaluate in the pass nothing repeats; with
+# another alert to evaluate, it does.
+rules tests/corpus/loop/repeat-idle.conf
+chart loop.i loop.i_name loop.repeatidle - things 1
+var loop.i v 10
+clock 0
+pass 0
+var loop.i v 70
+clock 5
+pass 5
+clock 7
+pass 7
+clock 9
+pass 9
+clock 10
+pass 10
+chart loop.i2 loop.i2_name loop.repeatidle.fast - things 1
+var loop.i2 v 1
+clock 12
+pass 12
+clock 13
+pass 13
+clock 14
+pass 14
+clock 15
+pass 15

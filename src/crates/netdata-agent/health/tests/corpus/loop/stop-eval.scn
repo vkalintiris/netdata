@@ -1,0 +1,52 @@
+# The service stops inside a pass that evaluates: among the alerts of the first walk, before the second walk,
+# inside it, before the third, and before the notifications. The value flips at every pass.
+rules tests/corpus/loop/stop-eval.conf
+chart loop.v loop.v_name loop.stopeval - things 1
+var loop.v v 10
+clock 0
+pass 0
+# the service stops after 1 look of the pass
+var loop.v v 70
+clock 1
+running-for 1
+pass 1
+running 1
+# the service stops after 3 looks of the pass
+var loop.v v 10
+clock 2
+running-for 3
+pass 2
+running 1
+# the service stops after 4 looks of the pass
+var loop.v v 70
+clock 3
+running-for 4
+pass 3
+running 1
+# the service stops after 5 looks of the pass
+var loop.v v 10
+clock 4
+running-for 5
+pass 4
+running 1
+# the service stops after 7 looks of the pass
+var loop.v v 70
+clock 5
+running-for 7
+pass 5
+running 1
+# the service stops after 10 looks of the pass
+var loop.v v 10
+clock 6
+running-for 10
+pass 6
+running 1
+# the service stops after 11 looks of the pass
+var loop.v v 70
+clock 7
+running-for 11
+pass 7
+running 1
+var loop.v v 10
+clock 8
+pass 8

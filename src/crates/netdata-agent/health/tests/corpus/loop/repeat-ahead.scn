@@ -1,0 +1,52 @@
+# The repeats again, with the wall clock 2 seconds ahead of each pass's `now`: what is stamped and what is due by
+# the clock comes apart from what the pass decides by its `now`.
+rules tests/corpus/loop/repeat.conf
+chart loop.p loop.p_name loop.repeat - things 1
+var loop.p v 10
+clock 2
+pass 0
+var loop.p v 70
+clock 3
+pass 1
+var loop.p v 75
+clock 4
+pass 2
+var loop.p v 80
+clock 5
+pass 3
+clock 6
+pass 4
+var loop.p v 85
+clock 7
+pass 5
+clock 8
+pass 6
+var loop.p v 95
+clock 9
+pass 7
+clock 10
+pass 8
+clock 11
+pass 9
+clock 12
+pass 10
+var loop.p v 10
+clock 13
+pass 11
+clock 14
+pass 12
+clock 15
+pass 13
+var loop.p v 70
+clock 16
+pass 14
+clock 18
+pass 16
+clock 19
+unlink loop.p
+clock 20
+pending chart-init loop.p
+pending host-init
+pass 18
+clock 22
+pass 20

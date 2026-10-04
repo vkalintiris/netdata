@@ -3,7 +3,6 @@
 rules tests/corpus/loop/trim.conf
 saved 1
 chart loop.t loop.t_name loop.trim - things 1
-chart loop.t2 loop.t2_name loop.trim.other - things 1
 var loop.t v 10
 clock 0
 pass 0

@@ -1,0 +1,39 @@
+# The delays again, with the wall clock 2 seconds ahead of each pass's `now`: what is stamped and what is due by the
+# clock comes apart from what the pass decides by its `now`.
+rules tests/corpus/loop/delay.conf
+chart loop.d loop.d_name loop.delay - things 1
+var loop.d v 10
+clock 2
+pass 0
+# up, inside the first window: the delays are multiplied
+var loop.d v 70
+clock 3
+pass 1
+# down, inside the window: multiplied again, the down delay reaches its maximum
+var loop.d v 10
+clock 4
+pass 2
+var loop.d v 95
+clock 5
+pass 3
+# nothing changes while the window runs; at its last second the entry is due
+clock 24
+pass 22
+clock 25
+pass 23
+# one second past the window: the delays are reset
+var loop.d v 10
+clock 26
+pass 24
+# exactly at the window's end: not reset
+var loop.d v 70
+clock 32
+pass 30
+var loop.d v 10
+clock 33
+pass 31
+clock 62
+pass 60
+var loop.d v 70
+clock 102
+pass 100

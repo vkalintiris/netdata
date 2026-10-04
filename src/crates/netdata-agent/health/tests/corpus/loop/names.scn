@@ -1,20 +1,24 @@
 # Alerts whose expressions name another alert of the chart (one that is evaluated later in the pass, so its value
 # is the last pass's; two that are evaluated earlier), themselves, a dimension by id and by name, a chart variable,
-# a host variable, and the times an expression can ask for.
+# a host variable, the lookup's window, and the times an expression can ask for: the wall clock is 3 seconds ahead
+# of each pass's `now`, and the chart was last collected at second 1.
 rules tests/corpus/loop/names.conf
 chart loop.n loop.n_name loop.names - things 1
+live loop.n 0
+collected loop.n 2 1
 dim loop.n in in_name 3
 dim loop.n out out_name 4
 var loop.n v 10
 var host hv 5
-clock 0
+lookup loop.n 200 1 0
+clock 3
 pass 0
 var loop.n v 70
 var host hv 10
-clock 1
+clock 4
 pass 1
 var loop.n v 95
-clock 2
+clock 5
 pass 2
-clock 3
+clock 6
 pass 3

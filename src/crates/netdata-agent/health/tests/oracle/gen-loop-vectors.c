@@ -17,7 +17,9 @@
 //         next_run   after a pass: the pass's next_run
 //         host       pending flags (i = initialization, r = label recheck), health_transitions,
 //                    health_last_processed_id, next_log_id, next_alarm_id, pending_transitions, delay_up_to, then
-//                    the status snapshot: valid, clear, warning, critical, undefined, uninitialized
+//                    the status snapshot: valid, clear, warning, critical, undefined, uninitialized, its
+//                    generation (two more at every publication), then the charts with a pending flag as
+//                    <chart>=<flags> separated by spaces (`-` for none)
 //         alert      per alert in the host's dictionary order: key, chart, id, next_event_id, status, old_status,
 //                    value, old_value, last_status_change_value, run_flags, last_updated, next_update,
 //                    last_status_change, db_after, db_before, delay_up_to_timestamp, delay_last, delay_up_current,
@@ -33,14 +35,16 @@
 //                    name, chart, chart_context, chart_name, units, summary, info, classification, component,
 //                    type, exec, recipient, source, config hash
 //         call       what the step called of what is stubbed, in call order (health-loop-stubs.c writes them)
-//         record     each log record the step wrote, as C's logfmt line with the thread id and the transition id
-//                    (a random UUID) blanked
+//         record     each log record the step wrote, as C's logfmt line with the record's time, the thread id and
+//                    the transition id (a random UUID) blanked; the dates in it are UTC
 //
 // A scenario file holds a directive per line (`#` starts a comment). Seconds are offsets from T0 = 2000000000.
 //   rules <path>                       reads a health.d file (relative to the crate's directory, where this runs)
 //   database <0|1>                     the alert log's load: C's result on an empty table (1, default), or none
 //   hostlabel <name> <value>           the value is the rest of the line
-//   chart <id> <name> <context> <family> <units> <update every>     `-` for an empty text
+//   chart <id> <name> <context> <family> <units> <update every>     `-` for an empty text. The chart gets the two
+//                                      labels every chart of the daemon has, of the plugin `loop.plugin` and
+//                                      the module `loop`
 //   label <chart> <name> <value>       the value is the rest of the line
 //   dim <chart> <id> <name> <stored value>
 //   var host|<chart> <name> <value>
@@ -107,7 +111,7 @@ static void tables(const char *dir) {
                 fprintf(f, "%d\t%08x\t%d\t%d\n", delays[d], (unsigned)bits, maxima[x],
                         health_delay_apply_multiplier(delays[d], multipliers[m], maxima[x]));
             }
-    fclose(f);
+    if(ferror(f) || fclose(f) != 0) die("cannot write", path);
 
     snprintf(path, sizeof(path), "%s/units.tsv", dir);
     f = fopen(path, "w");
@@ -141,7 +145,7 @@ static void tables(const char *dir) {
             oracle_esc(f, text);
             fputc('\n', f);
         }
-    fclose(f);
+    if(ferror(f) || fclose(f) != 0) die("cannot write", path);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -223,10 +227,10 @@ static void records(void) {
 
     char *save = NULL;
     for(char *line = strtok_r(text, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
-        // blank the value of ` tid=` and of ` alert_transition_id=`
-        static const char *blanked[] = { " tid=", " alert_transition_id=" };
-        for(size_t b = 0; b < 2; b++) {
-            char *at = strstr(line, blanked[b]);
+        // blank the value of `time=` (the line starts with it), of ` tid=` and of ` alert_transition_id=`
+        static const char *blanked[] = { "time=", " tid=", " alert_transition_id=" };
+        for(size_t b = 0; b < 3; b++) {
+            char *at = (b == 0) ? ((strncmp(line, blanked[0], 5) == 0) ? line : NULL) : strstr(line, blanked[b]);
             if(!at)
                 continue;
             char *value = at + strlen(blanked[b]);
@@ -264,7 +268,7 @@ static void dump(const char *directive) {
 
     RRDHOST_FLAGS flags = rrdhost_flag_get(&host);
     row("host");
-    fprintf(out, "\t%s%s\t%zu\t%u\t%u\t%u\t%d\t%ld\t%u\t%u\t%u\t%u\t%u\t%u\n",
+    fprintf(out, "\t%s%s\t%zu\t%u\t%u\t%u\t%d\t%ld\t%u\t%u\t%u\t%u\t%u\t%u\t%llu\t",
             (flags & RRDHOST_FLAG_PENDING_HEALTH_INITIALIZATION) ? "i" : "",
             (flags & RRDHOST_FLAG_PENDING_LABEL_RECHECK) ? "r" : "",
             host.health_transitions, host.health_last_processed_id, host.health_log.next_log_id,
@@ -272,7 +276,19 @@ static void dump(const char *directive) {
             (unsigned)host.health.alert_status_snapshot.valid, host.health.alert_status_snapshot.counts.clear,
             host.health.alert_status_snapshot.counts.warning, host.health.alert_status_snapshot.counts.critical,
             host.health.alert_status_snapshot.counts.undefined,
-            host.health.alert_status_snapshot.counts.uninitialized);
+            host.health.alert_status_snapshot.counts.uninitialized,
+            (unsigned long long)host.health.alert_status_snapshot.generation);
+    bool pending = false;
+    for(size_t i = 0; i < oracle.charts_used; i++) {
+        RRDSET_FLAGS chart_flags = rrdset_flag_get(oracle.charts[i].st);
+        if(!(chart_flags & (RRDSET_FLAG_PENDING_HEALTH_INITIALIZATION | RRDSET_FLAG_PENDING_LABEL_RECHECK)))
+            continue;
+        fprintf(out, "%s%s=%s%s", pending ? " " : "", string2str(oracle.charts[i].st->id),
+                (chart_flags & RRDSET_FLAG_PENDING_HEALTH_INITIALIZATION) ? "i" : "",
+                (chart_flags & RRDSET_FLAG_PENDING_LABEL_RECHECK) ? "r" : "");
+        pending = true;
+    }
+    fprintf(out, "%s\n", pending ? "" : "-");
 
     if(host.rrdcalc_root_index) {
         RRDCALC *rc;
@@ -461,6 +477,13 @@ static void run_scenario(const char *out_path, const char *scenario_path, const 
             st->units = string_strdupz(text_or_empty(word(&rest, whole)));
             st->update_every = atoi(word(&rest, whole));
             st->rrdlabels = rrdlabels_create();
+            // rrdset_update_permanent_labels()
+            st->plugin_name = string_strdupz("loop.plugin");
+            st->module_name = string_strdupz("loop");
+            rrdlabels_add(st->rrdlabels, "_collect_plugin", rrdset_plugin_name(st),
+                          RRDLABEL_SRC_AUTO | RRDLABEL_FLAG_DONT_DELETE);
+            rrdlabels_add(st->rrdlabels, "_collect_module", rrdset_module_name(st),
+                          RRDLABEL_SRC_AUTO | RRDLABEL_FLAG_DONT_DELETE);
             st->rrdvars = rrdvariables_create();
             st->rrdhost = &host;
             rw_spinlock_init(&st->alerts.spinlock);
@@ -563,6 +586,7 @@ static void run_scenario(const char *out_path, const char *scenario_path, const 
         else if(strcmp(directive, "pass") == 0) {
             time_t now = T0 + strtol(word(&rest, whole), NULL, 10);
             bool hibernate = rest && strcmp(rest, "hibernate") == 0;
+            if(rest && *rest && !hibernate) die("an unknown word after the pass's second", whole);
             for(size_t i = 0; i < oracle.charts_used; i++)
                 if(oracle.charts[i].live) {
                     oracle.charts[i].st->last_collected_time.tv_sec = oracle.clock_s;
@@ -589,7 +613,7 @@ static void run_scenario(const char *out_path, const char *scenario_path, const 
     }
     free(line);
     fclose(input);
-    fclose(out);
+    if(ferror(out) || fclose(out) != 0) die("cannot write", out_path);
 }
 
 int main(int argc, char **argv) {

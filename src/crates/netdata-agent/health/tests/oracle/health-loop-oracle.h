@@ -11,6 +11,10 @@
 // the static per-host pass of src/health/health_event_loop.c, reached through health-loop-splice.inc
 void oracle_health_event_loop_for_host(RRDHOST *host, bool apply_hibernation_delay, time_t now, time_t *next_run, ONEWAYALLOC *owa);
 
+// what the copies of C's sources call for a notification and for the wait after a repeat's
+void oracle_health_send_notification(RRDHOST *host, ALARM_ENTRY *ae, struct health_raised_summary *hrm);
+void oracle_health_alarm_wait_for_execution(ALARM_ENTRY *ae);
+
 // health_event_loop.c defines it; health_event_loop() sets it for the thread the pass runs on
 extern __thread bool is_health_thread;
 
