@@ -415,6 +415,10 @@ mod tests {
         assert_eq!(value(&this, b"this", false), None);
         assert_eq!(value(&this, b"hv_one", false), None);
         assert_eq!(candidates(&This::of(&one, &one.run())), Some(2));
+        // nor is it one when a chart of that id exists again: the alert hangs on the old chart object
+        let again = crate::testing::chart_every(&host, "hv.c", None, Some("hv.ctx"), 1, &[]);
+        assert!(!Arc::ptr_eq(&again, &same.chart));
+        assert_eq!(candidates(&This::of(&one, &one.run())), Some(2));
         health.chart_freed(host.machine_guid(), &same.chart, &|| NOW, false);
         assert_eq!(alerts.by_name(b"hv_same").len(), 2);
         assert_eq!(candidates(&This::of(&one, &one.run())), Some(2));
