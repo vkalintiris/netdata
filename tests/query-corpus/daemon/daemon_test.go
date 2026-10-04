@@ -161,10 +161,12 @@ func TestPluginsExtraCannotEnableTemplatePlugins(t *testing.T) {
 	}
 }
 
-// Health's rails: HealthOn is the only switch (no `enabled` in HealthExtra, no [health] in ConfExtra), and it is refused
-// without a notifier script, whose default is the installed alarm-notify.sh.
+// Health's rails: HealthOn is the only switch, and it is refused without a notifier script. The netdata.conf an agent
+// would read is what is checked, so no option's text can reopen [health] (C takes a later duplicate of the section and
+// of a key).
 func TestHealthOnRails(t *testing.T) {
 	const script = "    script to execute on alarm = {run}/notify/stub\n"
+	const reopen = "[health]\n    enabled = yes\n"
 	cases := map[string]struct {
 		o    Options
 		want string // a part of the error; empty: accepted
@@ -175,13 +177,26 @@ func TestHealthOnRails(t *testing.T) {
 		"on without a script":       {Options{HealthOn: true, HealthExtra: "    run at least every = 1s\n"}, "HealthOn without"},
 		"on, no extra":              {Options{HealthOn: true}, "HealthOn without"},
 		"on, an empty script":       {Options{HealthOn: true, HealthExtra: "    script to execute on alarm =\n"}, "HealthOn without"},
-		"enabled yes in the extra":  {Options{HealthExtra: "    enabled = yes\n" + script}, "HealthExtra sets `enabled`"},
-		"enabled no in the extra":   {Options{HealthOn: true, HealthExtra: script + "enabled=no"}, "HealthExtra sets `enabled`"},
-		"conf extra reopens health": {Options{ConfExtra: "[health]\n    enabled = yes\n"}, "ConfExtra reopens [health]"},
+		"enabled yes in the extra":  {Options{HealthExtra: "    enabled = yes\n" + script}, "HealthOn is the switch"},
+		"enabled no in the extra":   {Options{HealthOn: true, HealthExtra: script + "enabled=no"}, "HealthOn is the switch"},
+		"conf extra reopens health": {Options{ConfExtra: reopen}, "2 [health] sections"},
+		// the other texts rendered after the template's [health]
+		"logs extra reopens health":    {Options{LogsExtra: "    level = debug\n" + reopen}, "2 [health] sections"},
+		"plugins extra reopens health": {Options{PluginsExtra: "    difftest = yes\n" + reopen}, "2 [health] sections"},
+		"host labels reopen health":    {Options{HostLabels: "    a = b\n" + reopen}, "2 [health] sections"},
+		"reopened with a script, on":   {Options{HealthOn: true, HealthExtra: script, LogsExtra: reopen + script}, "2 [health] sections"},
+		// rendered before the template's [health]: its `enabled` is not health's
+		"global extra sets enabled": {Options{GlobalExtra: "    enabled = yes\n"}, ""},
+		// C does not trim a section's name: `[ health ]` is another section
+		"another section's name": {Options{ConfExtra: "[ health ]\n    enabled = yes\n"}, ""},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
+			c.o.RunDir, c.o.Port, c.o.StorageTiers = "/r", 1, 1
 			err := validateOptions(c.o)
+			if err == nil {
+				err = validateHealthConf(renderNetdataConf(c.o, "h"), c.o.HealthOn)
+			}
 			switch {
 			case c.want == "" && err != nil:
 				t.Errorf("refused: %v", err)

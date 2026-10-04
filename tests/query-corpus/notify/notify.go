@@ -15,7 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 
 	"github.com/netdata/netdata/tests/query-corpus/gobuild"
 )
@@ -58,7 +57,9 @@ func (r Rule) Matches(argv []string) bool {
 // Call is one call's record. The program writes it in two parts: what it was given, when it starts; End, when it
 // ends by itself or by SIGTERM. A call without End was killed (SIGKILL), or still runs.
 type Call struct {
-	// Seq is the call's number on its side, from 1, in the order the calls started
+	// Seq is the call's number on its side, from 1, in the order the calls started. C spawns a pass's notifications
+	// newest entry first and waits afterwards (health_notifications.c:516-519, :562), so that order follows each
+	// agent's pass phase: a check orders the calls by what they are for (parity's healthNorm.calls: argument 3)
 	Seq  int      `json:"seq"`
 	Argv []string `json:"argv"`
 	Env  []string `json:"env"` // sorted
@@ -119,7 +120,8 @@ func ReadControl(dir string) (Control, error) {
 	return ctl, json.Unmarshal(b, &ctl)
 }
 
-// Calls reads a side's records in call order. A record whose first part is still being written is left out.
+// Calls reads a side's records in the order the calls started (Seq). A record whose first part is still being
+// written is left out.
 func Calls(runDir string) ([]Call, error) {
 	files, err := filepath.Glob(filepath.Join(Dir(runDir), "call-*.json"))
 	if err != nil {
@@ -152,19 +154,4 @@ func Calls(runDir string) ([]Call, error) {
 		}
 	}
 	return out, nil
-}
-
-// Summary is a call in one line for a failure text: its number, the alert, the transition and how it ended.
-func (c Call) Summary() string {
-	arg := func(i int) string {
-		if i < len(c.Argv) {
-			return c.Argv[i]
-		}
-		return "?"
-	}
-	end := c.End
-	if end == "" {
-		end = "no end"
-	}
-	return fmt.Sprintf("#%d %s %s->%s (%s)", c.Seq, arg(ArgName), arg(ArgStatus+1), arg(ArgStatus), strings.TrimSpace(end))
 }

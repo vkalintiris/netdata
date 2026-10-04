@@ -123,7 +123,7 @@ type Collect struct {
 }
 
 // Values is CHART and DIMENSION lines for Chart (type.id; Context empty: the agent names it after the chart; each
-// dimension absolute, multiplier 1, divisor Div, 1 when 0), then one block per whole wall-clock second until stdin's
+// dimension absolute, multiplier 1, divisor 1), then one block per whole wall-clock second until stdin's
 // end: `BEGIN`, a `SET` per dimension the current phase gives a value, `END <sec> 0`, so the agent stores the second
 // the block names. The phases play in order: one ends at the first whole second that finds its Until file in the
 // engine's directory (Release; released at mid-second, two engines switch at the same second), the last one, or one
@@ -132,7 +132,6 @@ type Values struct {
 	Chart   string   `json:"chart"`
 	Context string   `json:"context,omitempty"`
 	Dims    []string `json:"dims"`
-	Div     int      `json:"div,omitempty"`
 	Phases  []Phase  `json:"phases"`
 }
 

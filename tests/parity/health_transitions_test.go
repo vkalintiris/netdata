@@ -46,8 +46,12 @@ lookup: average -5s of a
 
 // healthSigHold is how long each value of the transition cases is held: an aligned lookup over W seconds shows a held
 // value whole only in a window that starts after the change, up to W-1 s later, and both agents need a pass after it:
-// 2W+3 s for hs_avg's W of 5 (plan §5.3).
-const healthSigHold = 13 * time.Second
+// 2W+3 s for hs_avg's W of 5 (plan §5.3). healthSigGrid is that W: the cases with hs_avg switch their values at a
+// fixed second of its window (healthCase.grid), so a switch comes three windows after the one before it.
+const (
+	healthSigHold = 13 * time.Second
+	healthSigGrid = 5
+)
 
 // healthSigPhases are the values of `a` the transition cases play: CLEAR, WARNING, CRITICAL, CLEAR.
 var healthSigPhases = []map[string]int64{{"a": 10}, {"a": 70}, {"a": 95}, {"a": 10}}
@@ -77,15 +81,16 @@ func healthPlaySig(t *testing.T, h *healthPair, hold time.Duration, phase func(k
 }
 
 // TestHealthTransitions (check `health.transitions`, M9 commit 0, D183): three alerts on one chart of the fake plugin
-// through CLEAR, WARNING, CRITICAL and CLEAR, each value switched on both agents at the same second and held 13 s. At
-// each phase `/api/v1/alarms?all` is compared (the hand-built body's bytes, healthNorm.json), then each alert's
-// transitions with their values from `/api/v1/alarm_log`, that answer's whole body, and, both stopped, health.log in
-// file order.
+// through CLEAR, WARNING, CRITICAL and CLEAR, each value switched on both agents at the same second, the third of
+// hs_avg's aligned window, and held 15 s. At each phase `/api/v1/alarms?all` is compared (the hand-built body's bytes,
+// healthNorm.json), then each alert's transitions with their values from `/api/v1/alarm_log`, that answer's whole
+// body, and, both stopped, health.log in file order.
 func TestHealthTransitions(t *testing.T) {
 	names := []string{"hs_avg", "hs_calc", "hs_max"}
 	runHealthCases(t, map[string]healthCase{
 		"basic": {
 			conf: healthSigConf,
+			grid: healthSigGrid,
 			sc:   healthValues("hsig.values", "hsig.ctx", []string{"a"}, healthSigPhases...),
 			play: func(t *testing.T, h *healthPair) {
 				healthPlaySig(t, h, healthSigHold, func(k int) {
@@ -95,19 +100,19 @@ func TestHealthTransitions(t *testing.T) {
 				h.compareNow(t, "the alert log's transitions", func(i int) string { return h.transitions(i, "") },
 					func(oracle string) error {
 						lines := strings.Split(oracle, "\n")
-						// each alert is linked three times at HEALTH's first pass (healthPair.create); then a step shows
-						// whole in the last value and in the unaligned maximum
+						// each alert is linked, unlinked and linked again at HEALTH's first pass (healthPair.create); then
+						// a step shows whole in the last value and in the unaligned maximum, and in the aligned average
+						// too: its window that holds a switch (two old values, three new ones: healthGridSecond) averages
+						// 46, 85 and 44, the status before the switch or the one after it
 						step := []string{"REMOVED", "UNINITIALIZED", "REMOVED", "UNINITIALIZED", "CLEAR", "WARNING", "CRITICAL", "CLEAR"}
-						for _, name := range []string{"hs_calc", "hs_max"} {
+						for _, name := range names {
 							if got := healthSequence(lines, name); !slices.Equal(got, step) {
 								return fmt.Errorf("%s went through %v, want %v", name, got, step)
 							}
 						}
-						// an aligned window that cuts a step holds a value between the two: hs_avg may pass through
-						// WARNING again on its way down (or up); the rest of its path is fixed
-						got := healthSequence(lines, "hs_avg")
-						if len(got) < len(step) || !slices.Equal(got[:6], step[:6]) || !slices.Contains(got, "CRITICAL") || got[len(got)-1] != "CLEAR" {
-							return fmt.Errorf("hs_avg went through %v", got)
+						// hs_avg leaves CRITICAL on the window that holds the last switch
+						if want := "hs_avg: CRITICAL->CLEAR 44 things"; !slices.Contains(lines, want) {
+							return fmt.Errorf("no %q", want)
 						}
 						return nil
 					})

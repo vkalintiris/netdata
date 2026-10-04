@@ -24,6 +24,7 @@ func TestHealthSQLite(t *testing.T) {
 	runHealthCases(t, map[string]healthCase{
 		"dump": {
 			conf: healthSigConf,
+			grid: healthSigGrid,
 			sc:   healthValues("hsig.values", "hsig.ctx", []string{"a"}, healthSigPhases...),
 			play: func(t *testing.T, h *healthPair) {
 				healthPlaySig(t, h, healthSigHold, func(k int) {
@@ -54,6 +55,11 @@ func TestHealthSQLite(t *testing.T) {
 						if rules, logs, details := count("alert_hash"), count("health_log"), count("health_log_detail"); rules != len(names) ||
 							logs != len(names) || details < 7*len(names) {
 							return fmt.Errorf("%d alert_hash, %d health_log and %d health_log_detail rows for %d alerts", rules, logs, details, len(names))
+						}
+						// the unclaimed queue: past the hold every transition was moved on, and aclk_queue holds a row
+						// per alert (its last one: the rows are unique by host and alert, sqlite_aclk_alert.c:728-778)
+						if queued, moved := count("alert_queue"), count("aclk_queue"); queued != 0 || moved != len(names) {
+							return fmt.Errorf("%d alert_queue and %d aclk_queue rows for %d alerts, want 0 and %d", queued, moved, len(names), len(names))
 						}
 						return nil
 					})

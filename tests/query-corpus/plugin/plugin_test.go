@@ -362,7 +362,7 @@ func TestTheEngineServes(t *testing.T) {
 	}
 }
 
-// The engine's Values step: the chart with its context and divisor, one block per whole second with the current
+// The engine's Values step: the chart with its context, one block per whole second with the current
 // phase's values (a dimension the phase leaves out gets no SET), a phase switched by its Until file at the next whole
 // second, the last phase held, and each phase's first second recorded as the second its first block names.
 func TestTheEngineCollectsValues(t *testing.T) {
@@ -371,7 +371,7 @@ func TestTheEngineCollectsValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	sc := Scenario{Starts: []Start{{Steps: []Step{{WaitFile: "create"}, {Values: &Values{
-		Chart: "difftest.v", Context: "difftest.ctx", Dims: []string{"a", "b"}, Div: 10,
+		Chart: "difftest.v", Context: "difftest.ctx", Dims: []string{"a", "b"},
 		Phases: []Phase{
 			{Set: map[string]int64{"a": 10, "b": 1}, Until: "p1"},
 			{Set: map[string]int64{"a": 70}, Until: "p2"},
@@ -432,7 +432,7 @@ func TestTheEngineCollectsValues(t *testing.T) {
 	}
 	def := []string{line(), line(), line()}
 	wantDef := []string{"CHART difftest.v '' 'title' 'units' 'family' 'difftest.ctx' line 1000 1 '' '' ''\n",
-		"DIMENSION a '' absolute 1 10\n", "DIMENSION b '' absolute 1 10\n"}
+		"DIMENSION a '' absolute 1 1\n", "DIMENSION b '' absolute 1 1\n"}
 	if !slices.Equal(def, wantDef) {
 		t.Errorf("definition %q, want %q", def, wantDef)
 	}

@@ -93,9 +93,9 @@ func (c *fanoutChild) run() {
 }
 
 // define sends the chart's definition to both agents and starts collecting `values`, at the middle of a second: the
-// first block is the next whole second's on both.
-func (c *fanoutChild) define(chart, context string, dims []string, values map[string]int64) {
-	healthMidSecond()
+// first block is the next whole second's on both. It returns that second.
+func (c *fanoutChild) define(chart, context string, dims []string, values map[string]int64) int64 {
+	first := healthMidSecondOn(0)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.chart, c.dims, c.values = chart, dims, values
@@ -106,6 +106,7 @@ func (c *fanoutChild) define(chart, context string, dims []string, values map[st
 		}
 		_ = conn.Flush()
 	}
+	return first
 }
 
 // set switches the values at the middle of a second: both agents get them from the next whole second on.
@@ -143,7 +144,8 @@ func (c *fanoutChild) close() {
 // on connect. The child's value goes 10, 70, 10; at each phase the child's `/api/v1/alarms?all` is compared, then its
 // alert log's transitions, the notifier's transcripts (the calls name the child: its hostname and machine GUID), and,
 // after the child disconnects, its alert log again (C removes a disconnected child's alerts, stream-receiver.c:
-// 1482-1505).
+// 1482-1505) and the transcripts once more (the removal is not notified: a status below CLEAR never is,
+// health_notifications.c:392).
 func TestHealthChild(t *testing.T) {
 	base := "/host/" + healthChild.Hostname
 	runHealthCases(t, map[string]healthCase{
@@ -154,14 +156,16 @@ func TestHealthChild(t *testing.T) {
 				// the child's ids count from its own seeds
 				var cn [2]*healthNorm
 				for i, s := range h.p.Each() {
-					cn[i] = newHealthNorm(s.Daemon)
+					cn[i] = newHealthNorm(s.Daemon, base)
 				}
 				child := startFanoutChild(t, h.p, healthChild)
 				// the child's host exists on both before its chart does; C runs no health on a child that collected
-				// nothing yet (database/rrdhost-status.c:176-185), so its alerts are linked once its data comes
+				// nothing yet (it counts as replicating, database/rrdhost-status.c:176-185), so its alerts are linked
+				// once its data comes
 				time.Sleep(2 * time.Second)
-				child.define("hchild.values", "hchild.ctx", []string{"a"}, map[string]int64{"a": 10})
+				first := child.define("hchild.values", "hchild.ctx", []string{"a"}, map[string]int64{"a": 10})
 				h.settle(t, cn, base)
+				h.bases(t, cn, first)
 				all := func(i int) string { return h.getAs(cn[i], i, base+"/api/v1/alarms?all") }
 				transcript := func(i int) string { return strings.Join(cn[i].calls(t, h.p.Each()[i].Daemon), "\n") }
 				log := func(i int) string { return h.transitionsAs(cn[i], i, base+"/api/v1/alarm_log") }
@@ -184,7 +188,8 @@ func TestHealthChild(t *testing.T) {
 					}
 				}
 				h.compareNow(t, "the child's alert log", log, sequence("REMOVED", "UNINITIALIZED", "CLEAR", "WARNING", "CLEAR"))
-				h.compareNow(t, "the notifier's calls", transcript, func(oracle string) error {
+				// two calls, whenever they are read: for WARNING and for the return to CLEAR
+				twoCalls := func(oracle string) error {
 					for _, w := range []string{
 						fmt.Sprintf("call 1: argv[%d]=%s\n", healthArgHost, healthChild.Hostname),
 						fmt.Sprintf("call 1: argv[%d]=WARNING\n", notify.ArgStatus),
@@ -199,13 +204,15 @@ func TestHealthChild(t *testing.T) {
 						return fmt.Errorf("more than 2 calls")
 					}
 					return nil
-				})
+				}
+				h.compareNow(t, "the notifier's calls", transcript, twoCalls)
 				if err := child.failed(); err != nil {
 					t.Fatalf("harness: the child's connection: %v", err)
 				}
 				child.close()
 				h.compareNow(t, "the child's alert log after it disconnected", log,
 					sequence("REMOVED", "UNINITIALIZED", "CLEAR", "WARNING", "CLEAR", "REMOVED"))
+				h.compareNow(t, "the notifier's calls after the child disconnected", transcript, twoCalls)
 			},
 		},
 	})

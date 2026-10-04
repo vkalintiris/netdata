@@ -32,6 +32,21 @@ func (h *healthPair) flags(i int) string {
 	return strings.Join(out, "\n")
 }
 
+// healthSilencersList is what the oracle must answer LIST with (health_silencers.c:237-288, the text the silencers
+// file holds too): whether everything is silenced or disabled, how, and the selectors, the last added first
+// (:47-58).
+func healthSilencersList(all, kind string, selectors ...string) string {
+	list := "[]"
+	if len(selectors) > 0 {
+		var items []string
+		for _, s := range selectors {
+			items = append(items, "\t\t{\n\t\t\t"+s+"\n\t\t}")
+		}
+		list = "[\n" + strings.Join(items, ",\n") + "\n\t]"
+	}
+	return "HTTP 200, application/json; charset=utf-8\n{\n\t\"all\": " + all + ",\n\t\"type\": \"" + kind + "\",\n\t\"silencers\": " + list + "\n}\n"
+}
+
 // TestHealthSilencers (check `health.silencers`, M9 commit 0, D183): the management API (`/api/v1/manage/health`,
 // health_silencers.c:316-409) driven with the same fixed key on both agents: a request without a token and one with a
 // wrong token, LIST, SILENCE ALL, RESET, a SILENCE and a DISABLE with selectors, and the two paths the endpoint
@@ -60,13 +75,13 @@ func TestHealthSilencers(t *testing.T) {
 				}{
 					{"no token", mgmt + "cmd=LIST", nil, "HTTP 403, text/plain; charset=utf-8\nAuth Error\n", ""},
 					{"a wrong token", mgmt + "cmd=LIST", []string{"X-Auth-Token: " + strings.Repeat("0", 36)}, "HTTP 403, text/plain; charset=utf-8\nAuth Error\n", ""},
-					{"LIST at the start", mgmt + "cmd=LIST", []string{token}, "HTTP 200, application/json; charset=utf-8\n", ""},
+					{"LIST at the start", mgmt + "cmd=LIST", []string{token}, healthSilencersList("false", "None"), ""},
 					{"SILENCE ALL", mgmt + "cmd=" + url.QueryEscape("SILENCE ALL"), []string{token}, "HTTP 200, text/plain; charset=utf-8\nAll alarm notifications are silenced\n", "hs_calc disabled=false silenced=true"},
-					{"LIST after SILENCE ALL", mgmt + "cmd=LIST", []string{token}, "HTTP 200, application/json; charset=utf-8\n", ""},
+					{"LIST after SILENCE ALL", mgmt + "cmd=LIST", []string{token}, healthSilencersList("true", "SILENCE"), ""},
 					{"RESET", mgmt + "cmd=RESET", []string{token}, "HTTP 200, text/plain; charset=utf-8\nAll health checks and notifications are enabled\n", "hs_calc disabled=false silenced=false"},
 					{"SILENCE with a selector", mgmt + "cmd=SILENCE&alarm=hs_calc", []string{token}, "HTTP 200, text/plain; charset=utf-8\nAlarm notifications silenced for alarms matching the selectors\nAlarm selector added\n", "hs_calc disabled=false silenced=true"},
 					{"DISABLE with a selector", mgmt + "cmd=DISABLE&context=hsig.ctx", []string{token}, "HTTP 200, text/plain; charset=utf-8\nHealth checks disabled for alarms matching the selectors\nAlarm selector added\n", "hs_calc disabled=true silenced=false"},
-					{"LIST with selectors", mgmt + "cmd=LIST", []string{token}, "HTTP 200, application/json; charset=utf-8\n", ""},
+					{"LIST with selectors", mgmt + "cmd=LIST", []string{token}, healthSilencersList("false", "DISABLE", `"context": "hsig.ctx"`, `"alarm": "hs_calc"`), ""},
 					{"RESET with selectors", mgmt + "cmd=RESET", []string{token}, "HTTP 200, text/plain; charset=utf-8\nAll health checks and notifications are enabled\n", "hs_calc disabled=false silenced=false"},
 					{"another path under manage", "/api/v1/manage/other?cmd=LIST", []string{token}, "HTTP 404, text/plain; charset=utf-8\nInvalid management request. Curently only 'health' is supported.", ""},
 					{"a longer path", "/api/v1/manage/health/more?cmd=LIST", []string{token}, "HTTP 404, text/plain; charset=utf-8\nInvalid management request. Currently only 'health' is supported.", ""},

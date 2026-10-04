@@ -47,6 +47,17 @@ func dbengineInspect(t *testing.T) string {
 // dumpDB prints a database as metadata-dump does (on a copy: a read-only open of a WAL database needs its -shm).
 func dumpDB(t *testing.T, db string, args ...string) string {
 	t.Helper()
+	out, err := dumpLiveDB(t, db, args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// dumpLiveDB is dumpDB for a database an agent may be writing: a copy taken in the middle of a write may not open,
+// which is an error for the caller to poll over.
+func dumpLiveDB(t *testing.T, db string, args ...string) (string, error) {
+	t.Helper()
 	dir := t.TempDir()
 	for _, suffix := range []string{"", "-wal", "-shm"} {
 		if b, err := os.ReadFile(db + suffix); err == nil {
@@ -57,9 +68,9 @@ func dumpDB(t *testing.T, db string, args ...string) string {
 	}
 	out, err := exec.Command(metadataDump(t), append([]string{filepath.Join(dir, "db")}, args...)...).CombinedOutput()
 	if err != nil {
-		t.Fatalf("metadata-dump %s: %v: %s", db, err, out)
+		return "", fmt.Errorf("metadata-dump %s: %v: %s", db, err, out)
 	}
-	return string(out)
+	return string(out), nil
 }
 
 // execDB runs statements on a database through metadata-dump.

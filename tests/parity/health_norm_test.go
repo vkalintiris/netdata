@@ -3,9 +3,14 @@
 package parity
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -19,11 +24,18 @@ import (
 //   - an alert log's unique ids and alarm ids count from a wall-clock seed taken when the host's health starts
 //     (database/sqlite/sqlite_health.c:863-871, database/rrd.h:91-93): rebased per side (`u+k`, `a+k`; 0 stays 0), so the
 //     +1 steps and the links between entries (`updated_by_id`, `updates_id`) stay compared;
-//   - a transition id is a random UUID (health/health_log.c:225): named after its entry's rebased unique id (`t+k`), so
-//     the same transition is the same name in the alert log, the notifier's arguments and health.log;
+//   - a transition id is a random UUID (health/health_log.c:225): named after the rebased unique id of the entry the
+//     host's alert log first showed it for (`t+k`). Only the alert log names an id (observe): the notifier's argument,
+//     a health.log record and a spawn record are looked up, so an id the alert log never showed prints `t?`, another
+//     entry's id that entry's name, and an entry that shows a second id `t!k`;
 //   - every time field is a wall-clock second: `T` when set, 0 kept (set or not is compared), a lookup's window as its
-//     length (`db_before` as `T+<n>`);
+//     length (`db_before` as `T+<n>`). A notification's clock arguments print the name of the member of their own
+//     alert log entry they equal (`when`, `duration`, `non_clear_duration`);
 //   - each side's run directory and runtime directory: `{run}`, `{rt}`.
+//
+// The masks are wider than C's variation (a second or two side to side), so two bounds stand beside them
+// (healthPair.near, healthPair.bases; D187 point 4): the times of events within healthBound side to side, and each
+// side's id bases within it and not before the chart's first second.
 
 // healthNorm is one side's normalizer state.
 type healthNorm struct {
@@ -31,21 +43,25 @@ type healthNorm struct {
 	// uBase and aBase are the side's id bases: an id prints as its distance from its base; uSet and aSet once known
 	uBase, aBase int64
 	uSet, aSet   bool
-	// tids are the side's transition ids by the unique id of their entries
-	tids map[string]int64
+	// log is the path of the host's alert log (localhost's; a child's is under `/host/<name>`)
+	log string
+	// What the host's alert log showed (observe): entries are its entries by unique id; tids the unique id of the
+	// entry a transition id was first shown for; moved the unique id of an entry that showed the id after another one
+	entries     map[int64]healthEntry
+	tids, moved map[string]int64
 }
 
-func newHealthNorm(d *daemon.Daemon) *healthNorm {
-	return &healthNorm{run: d.Opts.RunDir, tids: map[string]int64{}}
+func newHealthNorm(d *daemon.Daemon, prefix string) *healthNorm {
+	return &healthNorm{run: d.Opts.RunDir, log: prefix + "/api/v1/alarm_log", entries: map[int64]healthEntry{},
+		tids: map[string]int64{}, moved: map[string]int64{}}
 }
 
 var (
 	healthUniqueRe = regexp.MustCompile(`"(unique_id|latest_alarm_log_unique_id|updated_by_id|updates_id)":\s*(\d+)`)
 	healthAlarmRe  = regexp.MustCompile(`"(alarm_id|id)":\s*(\d+)`)
-	// an alert log entry's unique id, then its transition id (sqlite_health.c:1160-1164: the members between are the
-	// alarm id, the event id and the config hash)
-	healthEntryRe = regexp.MustCompile(`"unique_id":\s*(\d+),\s*"alarm_id":\s*\d+,\s*"alarm_event_id":\s*\d+,\s*"config_hash_id":\s*"[^"]*",\s*"transition_id":\s*"([0-9a-f-]{36})"`)
-	healthTidRe   = regexp.MustCompile(`"transition_id":\s*"([0-9a-f-]{36})"`)
+	// an alert log entry's transition id (sqlite_health.c:1157-1161: after its unique id, alarm id, event id and
+	// config hash)
+	healthTidRe = regexp.MustCompile(`"transition_id":\s*"([^"]*)"`)
 	// the time members of /api/v1/alarms and /api/v1/alarm_log (health/health_json.c:53-103, sqlite_health.c:1160-1200);
 	// last_repeat is a quoted number in the first and a number in the second
 	healthTimeRe = regexp.MustCompile(`"(now|when|exec_run|delay_up_to_timestamp|last_repeat|last_status_change|last_updated|next_update|duration|non_clear_duration)":(\s*)("?)(\d+)("?)`)
@@ -54,7 +70,8 @@ var (
 
 // observe takes what a body shows of the side's ids: a base is the smallest id seen, less one (the first id is the
 // seed plus one; healthPair.settle waits for the alert log's first entries, so the bases are the seeds before
-// anything is compared), and each entry's transition id is tied to its unique id.
+// anything is compared). An alert log (a list of entries) also gives each entry's members and its transition id:
+// the first id an entry shows is the entry's, and the first entry that shows an id owns it.
 func (n *healthNorm) observe(body string) {
 	for _, m := range healthUniqueRe.FindAllStringSubmatch(body, -1) {
 		if v, _ := strconv.ParseInt(m[2], 10, 64); v > 0 && m[1] == "unique_id" && (!n.uSet || v-1 < n.uBase) {
@@ -66,9 +83,25 @@ func (n *healthNorm) observe(body string) {
 			n.aBase, n.aSet = v-1, true
 		}
 	}
-	for _, m := range healthEntryRe.FindAllStringSubmatch(body, -1) {
-		v, _ := strconv.ParseInt(m[1], 10, 64)
-		n.tids[m[2]] = v
+	var entries []healthEntry
+	if json.Unmarshal([]byte(body), &entries) != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.UniqueID == 0 {
+			continue
+		}
+		_, owned := n.tids[e.Tid]
+		if first, seen := n.entries[e.UniqueID]; seen && first.Tid != "" {
+			// the entry keeps the id it first showed
+			if e.Tid != first.Tid && e.Tid != "" && !owned {
+				n.moved[e.Tid] = e.UniqueID
+			}
+			e.Tid = first.Tid
+		} else if e.Tid != "" && !owned {
+			n.tids[e.Tid] = e.UniqueID
+		}
+		n.entries[e.UniqueID] = e
 	}
 }
 
@@ -86,10 +119,14 @@ func healthRebase(prefix string, v, base int64, set bool) string {
 	return fmt.Sprintf("%s%+d", prefix, v-base)
 }
 
-// tid names a transition id after its entry's unique id; one no entry showed prints `t?`.
+// tid names a transition id after the unique id of the entry the alert log first showed it for (`t+k`); the id an
+// entry showed after another one prints `t!k`, one no entry showed `t?` (none and the nil id as they are).
 func (n *healthNorm) tid(uuid string) string {
 	if v, ok := n.tids[uuid]; ok {
 		return "t" + strings.TrimPrefix(n.unique(v), "u")
+	}
+	if v, ok := n.moved[uuid]; ok {
+		return "t!" + strings.TrimLeft(n.unique(v), "u+")
 	}
 	if uuid == "" || uuid == "00000000-0000-0000-0000-000000000000" {
 		return uuid
@@ -151,26 +188,17 @@ const (
 	healthArgWhen     = 6
 	healthArgDuration = 14
 	healthArgNonClear = 15
-	healthArgWarnList = 24
-	healthArgCritList = 25
 	healthArgGUID     = 28
 	healthArgTid      = 29
 )
 
-var healthListEpochRe = regexp.MustCompile(`=\d+`)
-
-// call renders one notifier call as two agents must agree on it: its arguments (arg), the environment (the side's
+// call renders one notifier call as two agents must agree on it: its arguments (args), the environment (the side's
 // directories replaced, then maskEnv: each agent's invocation id), the directory, the parent's name, the rule it
 // matched and how it ended. The call's number is its position in the transcript.
 func (n *healthNorm) call(c notify.Call) []string {
-	if len(c.Argv) > healthArgTid {
-		if v, err := strconv.ParseInt(c.Argv[healthArgUnique], 10, 64); err == nil {
-			n.tids[c.Argv[healthArgTid]] = v
-		}
-	}
 	out := []string{}
-	for i, a := range c.Argv {
-		out = append(out, fmt.Sprintf("argv[%d]=%s", i, n.arg(i, a)))
+	for i, a := range n.args(c.Argv) {
+		out = append(out, fmt.Sprintf("argv[%d]=%s", i, a))
 	}
 	var env []string
 	for _, e := range c.Env {
@@ -187,53 +215,91 @@ func (n *healthNorm) call(c notify.Call) []string {
 	return append(out, "cwd "+n.paths(c.Cwd), "parent "+c.ParentComm, fmt.Sprintf("rule %d", c.Rule), "end "+end)
 }
 
-// arg renders a notification's argument i (argv[0] is the script): the ids rebased, the transition id named, the
-// clock masked (the transition's time, the two durations, and each `name=<last status change>` item of the
-// raised-alert lists, health_notifications.c:348), the side's directories replaced.
-func (n *healthNorm) arg(i int, a string) string {
-	switch i {
-	case healthArgUnique:
-		if v, err := strconv.ParseInt(a, 10, 64); err == nil {
-			a = n.unique(v)
+// args renders a notification's arguments (the first is the script): the ids rebased, the transition id named
+// (tid), the side's directories replaced, and the three clock arguments (the transition's time and its two durations,
+// health_notifications.c:107-150) by the name of the member they equal in the alert log's entry of the call's unique
+// id: `when`, `duration`, `non_clear_duration`. 0, and a value that is not the entry's, print as they are.
+func (n *healthNorm) args(argv []string) []string {
+	var e healthEntry
+	known := false
+	if len(argv) > healthArgUnique {
+		if v, err := strconv.ParseInt(argv[healthArgUnique], 10, 64); err == nil {
+			e, known = n.entries[v]
 		}
-	case healthArgAlarm:
-		if v, err := strconv.ParseInt(a, 10, 64); err == nil {
-			a = n.alarm(v)
-		}
-	case healthArgWhen, healthArgDuration, healthArgNonClear:
-		if a != "0" {
-			a = "T"
-		}
-	case healthArgWarnList, healthArgCritList:
-		a = healthListEpochRe.ReplaceAllString(a, "=T")
-	case healthArgTid:
-		a = n.tid(a)
 	}
-	return n.paths(a)
+	own := func(a string, member int64, name string) string {
+		if known && a != "0" && a == strconv.FormatInt(member, 10) {
+			return name
+		}
+		return a
+	}
+	out := make([]string, len(argv))
+	for i, a := range argv {
+		switch i {
+		case healthArgUnique:
+			if v, err := strconv.ParseInt(a, 10, 64); err == nil {
+				a = n.unique(v)
+			}
+		case healthArgAlarm:
+			if v, err := strconv.ParseInt(a, 10, 64); err == nil {
+				a = n.alarm(v)
+			}
+		case healthArgWhen:
+			a = own(a, e.When, "when")
+		case healthArgDuration:
+			a = own(a, e.Duration, "duration")
+		case healthArgNonClear:
+			a = own(a, e.NonClear, "non_clear_duration")
+		case healthArgTid:
+			a = n.tid(a)
+		}
+		out[i] = n.paths(a)
+	}
+	return out
 }
 
 // healthCommandRe is a notification's command in a record (the spawn server's, about a call that failed or was
 // killed): `exec '<script>' '<a1>' … '<a33>'`, up to the quote that closes the logged `/bin/sh -c "…"`.
 var healthCommandRe = regexp.MustCompile(`exec '(.*)'\\"`)
 
-// command renders the notification's command inside a record with each argument as arg does.
+// command renders the notification's command inside a record with its arguments as args does.
 func (n *healthNorm) command(record string) string {
 	return healthCommandRe.ReplaceAllStringFunc(record, func(m string) string {
-		words := strings.Split(healthCommandRe.FindStringSubmatch(m)[1], "' '")
-		for i, w := range words {
-			words[i] = n.arg(i, w)
-		}
+		words := n.args(strings.Split(healthCommandRe.FindStringSubmatch(m)[1], "' '"))
 		return "exec '" + strings.Join(words, "' '") + `'\"`
 	})
 }
 
-// calls renders a side's notifier transcript in call order.
+// calls renders a side's notifier transcript. The record files are read first, then the host's alert log: C saves an
+// entry before it spawns its notification (health_event_loop.c:756, health_notifications.c:516), so every call read
+// has its entry. The calls are in the order of their entries' unique ids (argument 3), a repeat after the call before
+// it: C spawns a pass's notifications newest entry first and waits afterwards (health_notifications.c:516-519,
+// :562), so the order the stubs started in is each side's pass phase.
 func (n *healthNorm) calls(t *testing.T, d *daemon.Daemon) []string {
 	t.Helper()
 	calls, err := notify.Calls(d.Opts.RunDir)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if r := healthGet(d, n.log); r.Status == http.StatusOK {
+		n.observe(string(r.Body))
+	}
+	unique := func(c notify.Call) int64 {
+		if len(c.Argv) <= healthArgUnique {
+			return 0
+		}
+		v, _ := strconv.ParseInt(c.Argv[healthArgUnique], 10, 64)
+		return v
+	}
+	slices.SortStableFunc(calls, func(a, b notify.Call) int {
+		switch ua, ub := unique(a), unique(b); {
+		case ua < ub:
+			return -1
+		case ua > ub:
+			return 1
+		}
+		return 0
+	})
 	var out []string
 	for i, c := range calls {
 		for _, l := range n.call(c) {
@@ -260,17 +326,12 @@ func healthDashed(u string) string {
 }
 
 // healthLog renders a side's health.log in file order: each record with its time, thread id, unique id, alarm id,
-// transition id, duration and notification time normalized and the side's directories replaced.
+// transition id (looked up: tid), duration and notification time (`T` when set, 0 kept) normalized and the side's
+// directories replaced.
 func (n *healthNorm) healthLog(t *testing.T, d *daemon.Daemon) []string {
 	t.Helper()
 	var out []string
 	for _, l := range logLines(t, d.Opts.RunDir, "health.log") {
-		if m := healthLogUniqueRe.FindStringSubmatch(l); m != nil {
-			if tid := healthLogTidRe.FindStringSubmatch(l); tid != nil {
-				v, _ := strconv.ParseInt(m[1], 10, 64)
-				n.tids[healthDashed(tid[1])] = v
-			}
-		}
 		l = healthLogUniqueRe.ReplaceAllStringFunc(l, func(m string) string {
 			v, _ := strconv.ParseInt(strings.TrimPrefix(m, " alert_unique_id="), 10, 64)
 			return " alert_unique_id=" + n.unique(v)
@@ -282,7 +343,13 @@ func (n *healthNorm) healthLog(t *testing.T, d *daemon.Daemon) []string {
 		l = healthLogTidRe.ReplaceAllStringFunc(l, func(m string) string {
 			return " alert_transition_id=" + n.tid(healthDashed(strings.TrimPrefix(m, " alert_transition_id=")))
 		})
-		l = healthLogTimeRe.ReplaceAllString(l, " ${1}=T")
+		l = healthLogTimeRe.ReplaceAllStringFunc(l, func(m string) string {
+			g := healthLogTimeRe.FindStringSubmatch(m)
+			if g[2] == "0" {
+				return m
+			}
+			return " " + g[1] + "=T"
+		})
 		out = append(out, n.paths(normalizeLog(l, d.Opts.RunDir, "")))
 	}
 	return out
@@ -296,7 +363,7 @@ var (
 	// integer ids and clocks in a metadata-dump row (`name=value`)
 	healthSQLUniqueRe = regexp.MustCompile(` (unique_id|updated_by_id|updates_id)=(\d+)`)
 	healthSQLAlarmRe  = regexp.MustCompile(` (alarm_id)=(\d+)`)
-	healthSQLTimeRe   = regexp.MustCompile(` (when_key|duration|non_clear_duration|exec_run_timestamp|delay_up_to_timestamp|last_repeat|date_updated|date_scheduled|date_submitted|date_cloud_ack)=(\d+)`)
+	healthSQLTimeRe   = regexp.MustCompile(` (when_key|duration|non_clear_duration|exec_run_timestamp|delay_up_to_timestamp|last_repeat|date_updated)=(\d+)`)
 )
 
 // healthDump prints a side's health tables with metadata-dump (the transition ids aliased by first appearance, the
@@ -338,22 +405,33 @@ func (n *healthNorm) healthDump(t *testing.T, d *daemon.Daemon, more ...string) 
 }
 
 // The normalizers change what follows the clock, the seeds and the side's directories, and nothing else: ids print by
-// their distance from the side's base (0 kept), a transition id by its entry's unique id, a set time as T (0 kept), a
-// lookup's window by its length.
+// their distance from the side's base (0 kept), a set time as T (0 kept), a lookup's window by its length. A
+// transition id is named only by the alert log: a notifier's argument, a health.log record or a spawn record that
+// carries another id does not print as the entry's. The bounds beside the masks fail clocks more than healthBound
+// apart.
 func TestHealthNorm(t *testing.T) {
-	n := &healthNorm{run: "/ndt/x/oracle", tids: map[string]int64{}}
-	tid := "11111111-2222-4333-8444-555555555555"
-	log := `[{"unique_id":1001,"alarm_id":501,"alarm_event_id":2,"config_hash_id":"aaaaaaaa-0000-4000-8000-000000000001",` +
-		`"transition_id":"` + tid + `","name":"a","exec":"/ndt/x/oracle/notify/stub","when":1790000000,"duration":0,` +
-		`"non_clear_duration":7,"delay":0,"delay_up_to_timestamp":1790000000,"updated_by_id":0,"updates_id":1000,` +
-		`"last_repeat":0,"value":70}]`
-	want := `[{"unique_id":u+2,"alarm_id":a+1,"alarm_event_id":2,"config_hash_id":"aaaaaaaa-0000-4000-8000-000000000001",` +
-		`"transition_id":"t+2","name":"a","exec":"{run}/notify/stub","when":T,"duration":0,` +
-		`"non_clear_duration":T,"delay":0,"delay_up_to_timestamp":T,"updated_by_id":0,"updates_id":u+1,` +
-		`"last_repeat":0,"value":70}]`
+	run := filepath.Join(t.TempDir(), "oracle")
+	blank := func() *healthNorm {
+		return &healthNorm{run: run, log: "/api/v1/alarm_log", entries: map[int64]healthEntry{}, tids: map[string]int64{},
+			moved: map[string]int64{}}
+	}
+	n := blank()
+	tid, other := "11111111-2222-4333-8444-555555555555", "99999999-2222-4333-8444-555555555555"
+	entry := func(unique int, tid string) string {
+		return fmt.Sprintf(`{"unique_id":%d,"alarm_id":501,"alarm_event_id":2,"config_hash_id":"aaaaaaaa-0000-4000-8000-000000000001",`+
+			`"transition_id":"%s","name":"a","exec":"%s/notify/stub","when":1790000000,"duration":0,`+
+			`"non_clear_duration":7,"delay":0,"delay_up_to_timestamp":1790000000,"updated_by_id":0,"updates_id":1000,`+
+			`"last_repeat":0,"value":70}`, unique, tid, run)
+	}
+	rendered := func(unique, tid string) string {
+		return `{"unique_id":` + unique + `,"alarm_id":a+1,"alarm_event_id":2,"config_hash_id":"aaaaaaaa-0000-4000-8000-000000000001",` +
+			`"transition_id":"` + tid + `","name":"a","exec":"{run}/notify/stub","when":T,"duration":0,` +
+			`"non_clear_duration":T,"delay":0,"delay_up_to_timestamp":T,"updated_by_id":0,"updates_id":u+1,` +
+			`"last_repeat":0,"value":70}`
+	}
 	// the base is the lowest unique id seen, less one: an older entry (the link's, stored later) moves it
 	n.observe(`{"unique_id":1000,"alarm_id":501}`)
-	if got := n.json(log); got != want {
+	if got, want := n.json("["+entry(1001, tid)+"]"), "["+rendered("u+2", "t+2")+"]"; got != want {
 		t.Errorf("alarm_log:\n got %s\nwant %s", got, want)
 	}
 	alarms := "\t\"latest_alarm_log_unique_id\": 1001,\n\t\"now\": 1790000001,\n\t\t\t\"id\": 502,\n\t\t\t\"delay_up_duration\": 3,\n" +
@@ -365,35 +443,134 @@ func TestHealthNorm(t *testing.T) {
 	if got := n.json(alarms); got != wantAlarms {
 		t.Errorf("alarms:\n got %q\nwant %q", got, wantAlarms)
 	}
-	args := map[int][2]string{
-		healthArgUnique:   {"1001", "u+2"},
-		healthArgAlarm:    {"501", "a+1"},
-		5:                 {"2", "2"},
-		healthArgWhen:     {"1790000000", "T"},
-		healthArgDuration: {"0", "0"},
-		healthArgNonClear: {"7", "T"},
-		13:                {"line=2,file=/ndt/x/oracle/etc/health.d/parity.conf", "line=2,file={run}/etc/health.d/parity.conf"},
-		healthArgWarnList: {"b=1790000003,a=1790000002", "b=T,a=T"},
-		healthArgTid:      {tid, "t+2"},
-		30:                {"1790000000", "1790000000"},
+
+	// a notification's arguments: the clock arguments by the name of the entry's member they equal, the transition id
+	// by the entry the alert log showed it for
+	argv := func(set map[int]string) []string {
+		out := make([]string, 34)
+		for i := range out {
+			out[i] = fmt.Sprintf("w%d", i)
+		}
+		for i, v := range map[int]string{healthArgUnique: "1001", healthArgAlarm: "501", 5: "2", healthArgWhen: "1790000000",
+			13: "line=2,file=" + run + "/etc/health.d/parity.conf", healthArgDuration: "0", healthArgNonClear: "7",
+			24: "b=1790000003,a=1790000002", healthArgTid: tid, 30: "1790000000"} {
+			out[i] = v
+		}
+		for i, v := range set {
+			out[i] = v
+		}
+		return out
 	}
-	for i, c := range args {
-		if got := n.arg(i, c[0]); got != c[1] {
-			t.Errorf("arg %d %q: got %q, want %q", i, c[0], got, c[1])
+	for name, c := range map[string]struct {
+		set  map[int]string
+		want map[int]string
+	}{
+		"the entry's own": {nil, map[int]string{healthArgUnique: "u+2", healthArgAlarm: "a+1", 5: "2", healthArgWhen: "when",
+			13: "line=2,file={run}/etc/health.d/parity.conf", healthArgDuration: "0", healthArgNonClear: "non_clear_duration",
+			24: "b=1790000003,a=1790000002", healthArgTid: "t+2", 30: "1790000000"}},
+		// what a self-named id hid (R75 F1): any text printed as the call's own entry
+		"an id no entry showed":  {map[int]string{healthArgTid: other}, map[int]string{healthArgTid: "t?"}},
+		"no id":                  {map[int]string{healthArgTid: ""}, map[int]string{healthArgTid: ""}},
+		"not an id":              {map[int]string{healthArgTid: "garbage"}, map[int]string{healthArgTid: "t?"}},
+		"the id without dashes":  {map[int]string{healthArgTid: strings.ReplaceAll(tid, "-", "")}, map[int]string{healthArgTid: "t?"}},
+		"another time":           {map[int]string{healthArgWhen: "1790000003"}, map[int]string{healthArgWhen: "1790000003"}},
+		"another duration":       {map[int]string{healthArgDuration: "5", healthArgNonClear: "0"}, map[int]string{healthArgDuration: "5", healthArgNonClear: "0"}},
+		"an entry nobody showed": {map[int]string{healthArgUnique: "1005"}, map[int]string{healthArgUnique: "u+6", healthArgWhen: "1790000000", healthArgNonClear: "7", healthArgTid: "t+2"}},
+	} {
+		got := n.args(argv(c.set))
+		for i, want := range c.want {
+			if got[i] != want {
+				t.Errorf("%s: argument %d prints %q, want %q", name, i, got[i], want)
+			}
 		}
 	}
-	if got := n.tid("99999999-2222-4333-8444-555555555555"); got != "t?" {
-		t.Errorf("an unknown transition id prints %q", got)
-	}
 	record := `msg="SPAWN SERVER: child with pid P exited with exit code 3: /bin/sh -c \"exec '<RUN>/notify/stub' 'root' 'h' '1001' '501' '2' '1790000000' 'a'\""`
-	wantRecord := `msg="SPAWN SERVER: child with pid P exited with exit code 3: /bin/sh -c \"exec '<RUN>/notify/stub' 'root' 'h' 'u+2' 'a+1' '2' 'T' 'a'\""`
+	wantRecord := `msg="SPAWN SERVER: child with pid P exited with exit code 3: /bin/sh -c \"exec '<RUN>/notify/stub' 'root' 'h' 'u+2' 'a+1' '2' 'when' 'a'\""`
 	if got := n.command(record); got != wantRecord {
 		t.Errorf("command:\n got %s\nwant %s", got, wantRecord)
 	}
+
+	// an id belongs to the entry that showed it first, and an entry keeps the id it showed first
+	if got, want := n.json("["+entry(1002, tid)+"]"), "["+rendered("u+3", "t+2")+"]"; got != want {
+		t.Errorf("another entry with the first one's id:\n got %s\nwant %s", got, want)
+	}
+	if got, want := n.json("["+entry(1001, other)+"]"), "["+rendered("u+2", "t!2")+"]"; got != want {
+		t.Errorf("an entry with another id at a later read:\n got %s\nwant %s", got, want)
+	}
+	if got := n.tid(tid); got != "t+2" {
+		t.Errorf("the first id prints %q after the entry showed another", got)
+	}
 	// a side that showed no id yet prints `?`, never a number another side could match by chance
-	if got := (&healthNorm{tids: map[string]int64{}}).unique(1001); got != "u?" {
+	if got := blank().unique(1001); got != "u?" {
 		t.Errorf("an id without a base prints %q", got)
 	}
+
+	// health.log: the transition id is looked up, a duration of 0 stays 0
+	d := &daemon.Daemon{Opts: daemon.Options{RunDir: run}}
+	if err := os.MkdirAll(filepath.Join(run, "log"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	record = "time=2026-10-04T00:00:00.000Z comm=netdata source=health level=warning tid=7 thread=HEALTH alert_id=501 alert_unique_id=1001 " +
+		"alert_transition_id=%s alert_duration=%s alert=a msg=x\n"
+	lines := fmt.Sprintf(record, strings.ReplaceAll(tid, "-", ""), "0") + fmt.Sprintf(record, strings.Repeat("9", 32), "12")
+	if err := os.WriteFile(filepath.Join(run, "log", "health.log"), []byte(lines), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wantLog := []string{
+		"time=T comm=netdata source=health level=warning tid=N thread=HEALTH alert_id=a+1 alert_unique_id=u+2 alert_transition_id=t+2 alert_duration=0 alert=a msg=x",
+		"time=T comm=netdata source=health level=warning tid=N thread=HEALTH alert_id=a+1 alert_unique_id=u+2 alert_transition_id=t? alert_duration=T alert=a msg=x",
+	}
+	if got := n.healthLog(t, d); !slices.Equal(got, wantLog) {
+		t.Errorf("health.log:\n got %q\nwant %q", got, wantLog)
+	}
+
+	// a transcript: the record files, then the alert log (the ids' names), in the order of the unique ids
+	log := "[" + entry(1002, other) + "," + entry(1001, tid) + "]"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, log) }))
+	defer srv.Close()
+	d.BaseURL = srv.URL
+	if err := os.MkdirAll(notify.Dir(run), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// started newest first, as C spawns a pass's notifications
+	for k, c := range []notify.Call{{Seq: 1, Argv: argv(map[int]string{healthArgUnique: "1002", healthArgTid: other})}, {Seq: 2, Argv: argv(nil)}} {
+		b, _ := json.Marshal(c)
+		if err := os.WriteFile(filepath.Join(notify.Dir(run), fmt.Sprintf("call-%05d.json", k+1)), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fresh := blank()
+	fresh.observe(`{"unique_id":1000,"alarm_id":501}`)
+	var ids []string
+	for _, l := range fresh.calls(t, d) {
+		if strings.Contains(l, fmt.Sprintf(": argv[%d]=", healthArgUnique)) || strings.Contains(l, fmt.Sprintf(": argv[%d]=", healthArgTid)) {
+			ids = append(ids, l)
+		}
+	}
+	if want := []string{"call 1: argv[3]=u+2", "call 1: argv[29]=t+2", "call 2: argv[3]=u+3", "call 2: argv[29]=t+3"}; !slices.Equal(ids, want) {
+		t.Errorf("a transcript's ids: %q, want %q", ids, want)
+	}
+
+	// the bound beside the clock masks: the times of events side to side, not the times of the read
+	body := func(when, updated int) string {
+		return fmt.Sprintf(`[{"when":%d,"last_updated":%d,"duration":4,"delay_up_duration":3,"exec_run":"%d"}]`, when, updated, when+1)
+	}
+	for name, c := range map[string]struct {
+		candidate string
+		want      string
+	}{
+		"the same":            {body(1790000000, 1790000000), ""},
+		"two seconds later":   {body(1790000002, 1790000009), ""},
+		"three seconds later": {body(1790000003, 1790000000), "event time 1: `when` is 1790000000 on the oracle"},
+		"earlier":             {body(1789999997, 1790000000), "event time 1: `when`"},
+		"one member less":     {`[{"when":1790000000}]`, "3 event times on the oracle, 1 on the candidate"},
+	} {
+		err := healthNear(body(1790000000, 1790000000), c.candidate)
+		if (err == nil) != (c.want == "") || (err != nil && !strings.Contains(err.Error(), c.want)) {
+			t.Errorf("near, %s: %v, want %q", name, err, c.want)
+		}
+	}
+
 	// a passing comparison logs a transcript without its environment; a failing one keeps the lines that differ
 	o, c := "call 1: argv[0]=x\ncall 1: env A=1\ncall 1: env B=2", "call 1: argv[0]=x\ncall 1: env A=1\ncall 1: env B=3"
 	if got := healthBrief(o); got != "call 1: argv[0]=x\n(and 2 environment lines)" {

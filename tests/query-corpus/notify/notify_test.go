@@ -92,9 +92,6 @@ func TestTheStubRecordsACall(t *testing.T) {
 			t.Errorf("call %d: %+v", i, c)
 		}
 	}
-	if s := calls[1].Summary(); s != "#2 an alert a10->WARNING (exit 0)" {
-		t.Errorf("summary %q", s)
-	}
 }
 
 // The first rule matching the alert and the status decides the call: its exit code and its sleep.
@@ -196,9 +193,6 @@ func TestTheStubRecordsItsSignals(t *testing.T) {
 	}
 	if calls[0].End != "signal SIGTERM" || calls[0].Rule != 0 || calls[1].End != "" || calls[1].Rule != 1 {
 		t.Errorf("ends %q and %q, rules %d and %d", calls[0].End, calls[1].End, calls[0].Rule, calls[1].Rule)
-	}
-	if s := calls[1].Summary(); s != "#2 stubborn a10->WARNING (no end)" {
-		t.Errorf("summary %q", s)
 	}
 }
 

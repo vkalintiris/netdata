@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -39,9 +40,24 @@ const healthAPIConf = `# the endpoint check's alerts on hsig.values
   info: a above 200
 `
 
-// healthVarsRe are the clock values of /api/v1/alarm_variables (health/rrdvar.c:159-323): the alert's window and the
-// times of the last collection.
-var healthVarsRe = regexp.MustCompile(`"(after|before|[a-z0-9_]*last_collected_t)":\d+`)
+// The clock values of /api/v1/alarm_variables (health/rrdvar.c:159-323): the window of the read (`after` is the
+// second before `before`, rrdvar.c:179-180: `before` prints as its distance from `after`) and the times of the last
+// collection.
+var (
+	healthVarsWindowRe = regexp.MustCompile(`"after":(\d+),(\s*)"before":(\d+)`)
+	healthVarsRe       = regexp.MustCompile(`"([a-z0-9_]*last_collected_t)":\d+`)
+)
+
+// healthVars masks the clock values of an /api/v1/alarm_variables view.
+func healthVars(view string) string {
+	view = healthVarsWindowRe.ReplaceAllStringFunc(view, func(m string) string {
+		g := healthVarsWindowRe.FindStringSubmatch(m)
+		after, _ := strconv.ParseInt(g[1], 10, 64)
+		before, _ := strconv.ParseInt(g[3], 10, 64)
+		return fmt.Sprintf(`"after":T,%s"before":T%+d`, g[2], before-after)
+	})
+	return healthVarsRe.ReplaceAllString(view, `"${1}":T`)
+}
 
 var healthHashRe = regexp.MustCompile(`"config_hash_id": "([0-9a-f-]{36})",\s*"name": "ha_low"`)
 
@@ -101,10 +117,10 @@ func TestHealthAPI(t *testing.T) {
 				}
 				// the chart's variables: the lookup window and the collection times are the clock's
 				vars := "/api/v1/alarm_variables?chart=hsig.values"
-				h.compareNow(t, vars, func(i int) string { return healthVarsRe.ReplaceAllString(h.get(i, vars), `"${1}":T`) },
-					holds(`"chart":"hsig.values"`, `"ha_low":{`))
+				h.compareNow(t, vars, func(i int) string { return healthVars(h.get(i, vars)) },
+					holds(`"chart":"hsig.values"`, `"ha_low":{`, `"after":T,`, `"before":T+1,`))
 				one := "/api/v1/variable?chart=hsig.values&variable=a"
-				h.compareNow(t, one, get(one), ok)
+				h.compareNow(t, one, get(one), holds(`"variable":"a"`, `"found":true`, `"value":70`))
 				// after=<id>: the entries logged after it, each side's own first id
 				h.compareNow(t, "/api/v1/alarm_log?after=<the first unique id>", func(i int) string {
 					return h.get(i, fmt.Sprintf("/api/v1/alarm_log?after=%d", h.n[i].uBase+1))

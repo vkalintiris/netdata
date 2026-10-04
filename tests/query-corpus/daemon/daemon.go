@@ -83,7 +83,9 @@ type Options struct {
 	// may not set `enabled`: HealthOn is the switch.
 	HealthExtra string
 	// HealthOn renders `[health] enabled = yes`. HealthExtra must then name `script to execute on alarm`: the default
-	// is the primary plugins directory's alarm-notify.sh (health/health.c:76-78), which may send mail.
+	// is the primary plugins directory's alarm-notify.sh (health/health.c:76-78), which may send mail. The rendered
+	// netdata.conf is checked before an agent reads it (validateHealthConf): no other option's text can reopen
+	// [health].
 	HealthOn bool
 	// HostLabels, when set, is written as a [host labels] section at the end of netdata.conf (one "key = value"
 	// per line).
@@ -285,24 +287,6 @@ func validateOptions(o Options) error {
 		return errors.New("daemon: ConfExtra reopens [plugins] or [directories]: use PluginsExtra or PluginsDir")
 	}
 
-	// health runs the notifier it is configured with: the switch and its script stay where they can be checked
-	if strings.Contains(o.ConfExtra, "[health]") {
-		return errors.New("daemon: ConfExtra reopens [health]: use HealthOn and HealthExtra")
-	}
-	script := false
-	for _, line := range strings.Split(o.HealthExtra, "\n") {
-		key, value, _ := strings.Cut(line, "=")
-		switch strings.TrimSpace(key) {
-		case "enabled":
-			return errors.New("daemon: HealthExtra sets `enabled`: use HealthOn")
-		case healthScriptKey:
-			script = strings.TrimSpace(value) != ""
-		}
-	}
-	if o.HealthOn && !script {
-		return fmt.Errorf("daemon: HealthOn without `%s` in HealthExtra: the default notifier may send mail", healthScriptKey)
-	}
-
 	for _, line := range strings.Split(o.PluginsExtra, "\n") {
 		key, _, _ := strings.Cut(line, "=")
 		if key = strings.TrimSpace(key); key != "" && slices.Contains(templatePluginKeys(o.PluginsStock), key) {
@@ -310,6 +294,44 @@ func validateOptions(o Options) error {
 		}
 	}
 
+	return nil
+}
+
+// validateHealthConf checks the netdata.conf an agent is about to read: health runs the notifier it is configured
+// with, so the switch and the script stay where they can be checked. The text has one [health] section, whatever
+// option it came from (C takes a section's later duplicate, and a key's: inicfg_conf_file.c:199-236, :277-298; a
+// section line is `[name]` once trimmed, the name as written); its last `enabled` is HealthOn's; and with health on
+// its last `script to execute on alarm` names a script (the default is the installed alarm-notify.sh).
+func validateHealthConf(conf string, on bool) error {
+	sections, in := 0, false
+	enabled, script := "", ""
+	for _, line := range strings.Split(conf, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			if in = line == "[health]"; in {
+				sections++
+			}
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !in || !ok || strings.HasPrefix(line, "#") {
+			continue
+		}
+		switch strings.TrimSpace(key) {
+		case "enabled":
+			enabled = strings.TrimSpace(value)
+		case healthScriptKey:
+			script = strings.TrimSpace(value)
+		}
+	}
+	switch {
+	case sections != 1:
+		return fmt.Errorf("daemon: netdata.conf has %d [health] sections: an option's text reopens it; use HealthOn and HealthExtra", sections)
+	case enabled != yesNo(on):
+		return fmt.Errorf("daemon: netdata.conf's [health] `enabled` is %q, HealthOn says %q: HealthOn is the switch", enabled, yesNo(on))
+	case on && script == "":
+		return fmt.Errorf("daemon: HealthOn without `%s`: the default notifier may send mail", healthScriptKey)
+	}
 	return nil
 }
 
@@ -609,6 +631,9 @@ func renderNetdataConf(o Options, hostname string) string {
 
 func startAttempt(o Options, hostname, streamKey string) (*Daemon, error) {
 	conf := renderNetdataConf(o, hostname)
+	if err := validateHealthConf(conf, o.HealthOn); err != nil {
+		return nil, err
+	}
 	confPath := filepath.Join(o.RunDir, "etc", "netdata.conf")
 	if err := os.WriteFile(confPath, []byte(conf), 0o644); err != nil {
 		return nil, fmt.Errorf("daemon: write netdata.conf: %w", err)

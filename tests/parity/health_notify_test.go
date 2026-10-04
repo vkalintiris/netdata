@@ -31,7 +31,7 @@ const healthCalcHold = 4 * time.Second
 // healthExecView is side i's alert log as each entry's notification state: `name: OLD->NEW exec_run=T|0 exec_code=N
 // exec_failed=… processed=… updated=…`, oldest first.
 func (h *healthPair) execView(i int) string {
-	entries, err := h.entries(i, "")
+	entries, raw, err := h.logAs(h.n[i], i, "/api/v1/alarm_log")
 	if err != nil {
 		return err.Error()
 	}
@@ -44,7 +44,7 @@ func (h *healthPair) execView(i int) string {
 		out = append(out, fmt.Sprintf("%s: %s->%s exec_run=%s exec_code=%d exec_failed=%t processed=%t updated=%t", e.Name,
 			e.OldStatus, e.Status, run, e.ExecCode, e.ExecFailed, e.Processed, e.Updated))
 	}
-	return strings.Join(out, "\n")
+	return h.keep(i, strings.Join(out, "\n"), raw)
 }
 
 var (
@@ -169,7 +169,8 @@ func TestHealthNotify(t *testing.T) {
 			extra: "    notification execution timeout = 2s\n",
 			ctl:   notify.Control{Rules: []notify.Rule{{Alert: "hs_calc", Status: "CRITICAL", SleepMs: 30000, IgnoreTerm: true}}},
 			play:  play("call 2: end none", has("hs_calc: WARNING->CRITICAL exec_run=T exec_code=128 exec_failed=true")),
-			after: after("is still running past its execution timeout - killing it"),
+			// a call without an end was killed or still runs: the spawn server's record says which
+			after: after("is still running past its execution timeout - killing it", "killed by signal 9"),
 		},
 	})
 }
