@@ -557,9 +557,9 @@ func TestHealthLoop(t *testing.T) {
 				h.compareNow(t, "/api/v1/info's alarms", func(i int) string { return h.plainMember(i, "/api/v1/info", "alarms") },
 					healthIs(`{"normal":9,"warning":4,"critical":1}`))
 				h.compareNow(t, "the alert members of /api/v2/data", func(i int) string {
-					return h.dataAlerts(i, "scope_contexts=hf.ctx&points=1")
+					return h.dataAlerts(i, "scope_contexts=hf.ctx&after=-4&points=1&options=details,unaligned")
 				}, healthHolds(fmt.Sprintf("versions.alerts_hard_hash: %d\nversions.alerts_soft_hash: %d\n", 14*3, entries),
-					`{"nm":"hf_calc_only","ot":1}`, `{"cl":7,"wr":4,"cr":1,"ot":2}`))
+					`{"nm":"hf_calc_only","ot":1}`, `{"cl":7,"wr":4,"cr":1,"ot":2}`, `detailed hf.ctx hf.values: {"hf_`))
 			},
 			after: healthLoopLog(func(oracle []string) error {
 				// hf_base, hf_after and hf_crit_only change in the pass that reads 70; hf_before, computed before hf_base, a
@@ -748,8 +748,9 @@ func TestHealthLoop(t *testing.T) {
 				h.compareNow(t, "/api/v1/info's alarms", func(i int) string { return h.plainMember(i, "/api/v1/info", "alarms") },
 					healthIs(`{"normal":0,"warning":0,"critical":0}`))
 				h.compareNow(t, "the alert members of /api/v2/data", func(i int) string {
-					return h.dataAlerts(i, "scope_contexts=hsig.ctx&points=1")
-				}, healthHolds("versions.alerts_hard_hash: 0\nversions.alerts_soft_hash: 0\nsummary.alerts: []\n", "summary.instances[0] "))
+					return h.dataAlerts(i, "scope_contexts=hsig.ctx&after=-4&points=1&options=details,unaligned")
+				}, healthHolds("versions.alerts_hard_hash: 0\nversions.alerts_soft_hash: 0\nsummary.alerts: []\n", "summary.instances[0] ",
+					"detailed hsig.ctx hsig.values: none"))
 			},
 			after: healthLoopLog(healthLogWant(0)),
 		},

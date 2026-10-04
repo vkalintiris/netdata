@@ -787,6 +787,15 @@ func TestHealthNorm(t *testing.T) {
 	if got, want := healthDataAlerts([]byte(`{"versions":{},"summary":{}}`)), "versions.alerts_hard_hash: none\nversions.alerts_soft_hash: none\nsummary.alerts: none"; got != want {
 		t.Errorf("a v2 data answer without alert members:\n got %s\nwant %s", got, want)
 	}
+	// with the detailed tree: each instance's alerts, or none
+	tree := `{"versions":{},"summary":{},"detailed":{"nodes":{"g1":{"nd":"n1","contexts":{"c":{"instances":{` +
+		`"c.a":{"nm":"c.a","labels":{},"alerts":{"x":{"st":"CLEAR","vl":1.5,"un":"u"}},"dimensions":{"d":{"nm":"d"}}},` +
+		`"c.b":{"nm":"c.b","labels":{},"dimensions":{}},"c.c":{"nm":"c.c","alerts":{},"dimensions":{}}}}}}}}}`
+	wantTree := "versions.alerts_hard_hash: none\nversions.alerts_soft_hash: none\nsummary.alerts: none\n" +
+		`detailed c c.a: {"x":{"st":"CLEAR","vl":1.5,"un":"u"}}` + "\ndetailed c c.b: none\ndetailed c c.c: {}"
+	if got := healthDataAlerts([]byte(tree)); got != wantTree {
+		t.Errorf("the alerts of a v2 data answer's detailed tree:\n got %s\nwant %s", got, wantTree)
+	}
 	if got := healthDataAlerts([]byte("Unsupported API command")); !strings.HasPrefix(got, "not a JSON object") {
 		t.Errorf("an answer that is no JSON: %s", got)
 	}

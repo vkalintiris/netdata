@@ -444,6 +444,11 @@ func (h *healthPair) plain(i int, path string, headers ...string) string {
 // transitions' count, database/contexts/query_target.c:1352-1353), `summary.alerts` (each alert name with its
 // instances by status, formatters/jsonwrap-summary-alerts.c), and the alert counts of each node, context and instance
 // of the summary (jsonwrap.c:118-143), named by the item's first member; an item without counts prints `none`.
+// With `options=details` the answer has a tree of nodes, contexts and instances: each instance's `alerts` member (its
+// chart's alerts at CLEAR or above, each with status, value and units, formatters/jsonwrap-objects-tree.c:6-30) is a
+// line too, `none` for an instance without the member. The tree holds only instances with a queried dimension: a
+// request without a window (ten minutes, aligned) queries none of a chart that is seconds old, so the checks that
+// want the tree ask for the last seconds, unaligned.
 // Everything else in the answer follows the data and the clock, and is left to the query checks.
 func (h *healthPair) dataAlerts(i int, query string) string {
 	r := healthGet(h.p.Each()[i].Daemon, "/api/v2/data?"+query)
@@ -486,6 +491,17 @@ func healthDataAlerts(body []byte) string {
 			}
 			// the member's key is short, or long with `options=long-json-keys` (libnetdata/json/json-keys.h)
 			out = append(out, fmt.Sprintf("summary.%s[%d] %s: %s", list, k, name, text(member(item, "al", "alerts"))))
+		}
+	}
+	detailed, _ := member(doc, "detailed")
+	nodes, _ := member(detailed, "nodes")
+	for _, node := range nodes.Members {
+		contexts, _ := member(node.Value, "contexts")
+		for _, context := range contexts.Members {
+			instances, _ := member(context.Value, "instances")
+			for _, instance := range instances.Members {
+				out = append(out, fmt.Sprintf("detailed %s %s: %s", context.Key, instance.Key, text(member(instance.Value, "alerts"))))
+			}
 		}
 	}
 	return strings.Join(out, "\n")
