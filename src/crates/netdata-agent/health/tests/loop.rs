@@ -100,6 +100,9 @@ mod replay {
         text(u128::from_be_bytes(*id))
     }
 
+    /// An alarm the table knows: its chart, its name, its alarm id and its next event id.
+    type KnownAlarm = (Vec<u8>, Vec<u8>, u32, u32);
+
     /// What a scenario says of one chart, beside the chart's own state.
     struct ChartScript {
         chart: Arc<Chart>,
@@ -125,6 +128,12 @@ mod replay {
         running_for: Cell<usize>,
         exiting: Cell<bool>,
         saved: Cell<bool>,
+        /// Whether the metadata queue takes a save, and whether the thread at work is HEALTH's.
+        queue_accepts: Cell<bool>,
+        health_thread: Cell<bool>,
+        sql_alarms: RefCell<Vec<KnownAlarm>>,
+        /// The saves the metadata queue took, in arrival order, until a scenario's `store`.
+        queued: RefCell<Vec<(Arc<HostAlerts>, u32)>>,
         charts: RefCell<Vec<ChartScript>>,
         /// The `call` rows of the step so far.
         calls: RefCell<Vec<Fields>>,
@@ -251,24 +260,35 @@ mod replay {
         }
 
         fn is_health_thread(&self) -> bool {
-            true
+            self.health_thread.get()
         }
 
         fn service_running(&self) -> bool {
             self.is_running()
         }
 
-        /// The stub of `sql_get_alarm_id()`: the table knows no alarm.
+        /// The stub of `sql_get_alarm_id()`: the alarm of that chart and name the scenario put in the table, the
+        /// last one when several match.
         fn sql_alarm_id(&self, _: &Host, chart: &[u8], name: Option<&[u8]>) -> Option<(u32, u32)> {
-            let call = [&b"sql_get_alarm_id"[..], chart, name.unwrap_or(b""), b"0", b"0"];
-            self.calls.borrow_mut().push(call.map(<[u8]>::to_vec).to_vec());
-            None
+            let name = name.unwrap_or(b"");
+            let alarms = self.sql_alarms.borrow();
+            let known = alarms.iter().rev().find(|(of_chart, of_name, ..)| of_chart == chart && of_name == name);
+            let (alarm_id, next_event_id) = known.map_or((0, 0), |known| (known.2, known.3));
+            let answer = [text(alarm_id), text(next_event_id)];
+            let call = [b"sql_get_alarm_id".to_vec(), chart.to_vec(), name.to_vec()].into_iter().chain(answer);
+            self.calls.borrow_mut().push(call.collect());
+            (alarm_id != 0).then_some((alarm_id, next_event_id))
         }
 
-        /// The stub of `metadata_queue_ae_save()`: the queue never takes a save.
-        fn queue_save(&self, _: &Arc<HostAlerts>, unique_id: u32) -> bool {
-            self.calls.borrow_mut().push(vec![b"queue".to_vec(), text(unique_id), b"0".to_vec()]);
-            false
+        /// The stub of `metadata_queue_ae_save()`: the queue takes the save, keeping the host's alerts and the
+        /// entry's id for the scenario's `store`, or refuses it.
+        fn queue_save(&self, alerts: &Arc<HostAlerts>, unique_id: u32) -> bool {
+            let accepts = self.queue_accepts.get();
+            self.calls.borrow_mut().push(vec![b"queue".to_vec(), text(unique_id), text(u8::from(accepts))]);
+            if accepts {
+                self.queued.borrow_mut().push((Arc::clone(alerts), unique_id));
+            }
+            accepts
         }
 
         /// The stub of `sql_health_alarm_log_save()`: it records the entry as it stands, and marks it as saved
@@ -649,6 +669,17 @@ mod replay {
                 "running" => self.world.running.set(flag(args[0])),
                 "running-for" => self.world.running_for.set(args[0].parse().expect("a count")),
                 "saved" => self.world.saved.set(flag(args[0])),
+                "queue" => self.world.queue_accepts.set(flag(args[0])),
+                "thread" => self.world.health_thread.set(match args[0] {
+                    "health" => true,
+                    "other" => false,
+                    other => panic!("{}: thread {other}", self.name),
+                }),
+                "sql-alarm" => {
+                    let (alarm_id, next_event_id) = (args[2].parse().expect("an id"), args[3].parse().expect("an id"));
+                    let known = (args[0].as_bytes().to_vec(), args[1].as_bytes().to_vec(), alarm_id, next_event_id);
+                    self.world.sql_alarms.borrow_mut().push(known);
+                }
                 "exiting" => self.world.exiting.set(true),
                 "delay-up-to" => self.host.set_health_delay_up_to(second(args[0])),
                 "pending" => match args[0] {
@@ -700,6 +731,19 @@ mod replay {
                     let ((), records) = netdata_agent_log::capture(|| {
                         health.apply_prototypes_to_host(&self.host, world, &|| world.clock(), &|| world.is_running());
                     });
+                    self.dump(line, None, records);
+                }
+                // `store_alert_transitions()` on a worker of the metadata thread: the queued saves in arrival order
+                "store" => {
+                    let world = &self.world;
+                    let health_thread = world.health_thread.replace(false);
+                    let queued = std::mem::take(&mut *world.queued.borrow_mut());
+                    let ((), records) = netdata_agent_log::capture(|| {
+                        for (alerts, unique_id) in queued {
+                            alerts.save_queued(unique_id, &|entry| world.sql_save(entry));
+                        }
+                    });
+                    world.health_thread.set(health_thread);
                     self.dump(line, None, records);
                 }
                 other => panic!("{}: directive {other}", self.name),
@@ -951,17 +995,19 @@ mod replay {
         }
     }
 
-    /// Every scenario of the corpus, replayed; returns the steps compared and the differences found.
-    pub fn run() -> (usize, Vec<String>) {
+    /// Every scenario of a family (`tests/corpus/<family>/`, C's rows in `<family>.tsv`), replayed; returns the
+    /// steps compared and the differences found.
+    pub fn run(family: &str) -> (usize, Vec<String>) {
         // C's rows by scenario
+        let vectors = format!("{family}.tsv");
         let mut expected: BTreeMap<String, BTreeMap<usize, BTreeMap<String, Vec<Fields>>>> = BTreeMap::new();
-        for row in rows("loop.tsv") {
+        for row in rows(&vectors) {
             let (scenario, step, kind) = (row.str(0).to_owned(), row.num::<usize>(1), row.str(2).to_owned());
             let steps = expected.entry(scenario).or_default();
             steps.entry(step).or_default().entry(kind).or_default().push(row.fields[3..].to_vec());
         }
 
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/loop");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus").join(family);
         let entries = std::fs::read_dir(&dir).expect("the scenarios");
         let mut scenarios: Vec<_> = entries.map(|entry| entry.expect("an entry").path()).collect();
         scenarios.retain(|path| path.extension().is_some_and(|extension| extension == "scn"));
@@ -982,12 +1028,16 @@ mod replay {
                 running_for: Cell::new(0),
                 exiting: Cell::new(false),
                 saved: Cell::new(false),
+                queue_accepts: Cell::new(false),
+                health_thread: Cell::new(true),
+                sql_alarms: RefCell::new(Vec::new()),
+                queued: RefCell::new(Vec::new()),
                 charts: RefCell::new(Vec::new()),
                 calls: RefCell::new(Vec::new()),
                 transition_ids: Cell::new(0),
             };
             let mut replay = Replay {
-                expected: expected.remove(&name).unwrap_or_else(|| panic!("loop.tsv has no scenario {name}")),
+                expected: expected.remove(&name).unwrap_or_else(|| panic!("{vectors} has no scenario {name}")),
                 name,
                 health: None,
                 rules: Vec::new(),
@@ -1005,7 +1055,7 @@ mod replay {
             steps += replay.step;
             failures.append(&mut replay.failures);
         }
-        assert!(expected.is_empty(), "loop.tsv has scenarios without a file: {:?}", expected.keys());
+        assert!(expected.is_empty(), "{vectors} has scenarios without a file: {:?}", expected.keys());
         (steps, failures)
     }
 }
@@ -1015,8 +1065,21 @@ mod replay {
 /// records.
 #[test]
 fn loop_matches_c() {
-    let (steps, failures) = replay::run();
+    assert_eq!(replayed("loop"), 218);
+}
+
+/// Every scenario of `tests/corpus/queue/` against C's pass with its save queue in play: the metadata queue takes
+/// the saves of the entries that links and unlinks log, or refuses them; the store job saves them later, off the
+/// HEALTH thread; the table knows some alarms' ids.
+#[test]
+fn queue_matches_c() {
+    assert_eq!(replayed("queue"), 39);
+}
+
+/// The steps a family's replay compared; any difference from C's rows fails.
+fn replayed(family: &str) -> usize {
+    let (steps, failures) = replay::run(family);
     let shown = failures[..failures.len().min(12)].join("\n");
-    assert!(failures.is_empty(), "{} differences over {steps} steps:\n{shown}", failures.len());
-    assert_eq!(steps, 218);
+    assert!(failures.is_empty(), "{family}: {} differences over {steps} steps:\n{shown}", failures.len());
+    steps
 }
