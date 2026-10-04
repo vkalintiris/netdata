@@ -6,8 +6,9 @@
 #                                          files under tests/corpus/
 #   tests/vectors/labels.tsv, link.tsv     from gen-link-vectors.c, over tests/corpus/match/scenarios.txt
 #   tests/vectors/delay.tsv, units.tsv,    from gen-loop-vectors.c: two tables, and C's own per-host pass run over
-#   loop.tsv, queue.tsv                    each scenario under tests/corpus/loop/ and, with the metadata queue and
-#                                          its store job in play, under tests/corpus/queue/
+#   loop.tsv, queue.tsv, sql.tsv           each scenario under tests/corpus/loop/; with the metadata queue and its
+#                                          store job in play, under tests/corpus/queue/; and with C's own
+#                                          sqlite_health.c over a real database file, under tests/corpus/sql/
 #   tests/vectors/c_unittest.tsv           from C's own unit test (health-config-unittest.c), which must pass, with
 #                                          health-unittest-dump.inc and health-unittest-main.inc spliced into a copy
 #
@@ -57,19 +58,45 @@ run cc "${CFLAGS[@]}" "${SCRIPT_DIR}/gen-link-vectors.c" "${OBJECTS[@]}" -o "${W
 
 # the evaluation loop: C's alert instances, alert log, variable lookup and per-host pass, with what the daemon gives
 # them stubbed (health-loop-stubs.c)
+# and the alert log's SQL: C's sqlite_health.c and sqlite_functions.c with the build's SQLite, for the scenarios
+# that run over a real database file (health-sql-stubs.c)
 LOOP_SOURCES=(
     health/health_log.c health/rrdcalc.c health/health_variable.c health/rrdvar.c
     web/api/v1/api_v1_badge/web_buffer_svg.c
+    database/sqlite/sqlite_health.c database/sqlite/sqlite_functions.c
 )
+[[ -f "${BUILD}/libsqlite3.a" ]] || die "no ${BUILD}/libsqlite3.a"
 for source in "${LOOP_SOURCES[@]}"; do
     [[ -f "${SRC}/src/${source}" ]] || die "missing ${SRC}/src/${source}"
     object="${WORK}/$(basename -- "${source}" .c).o"
-    # an entry's transition id is a random UUID: health_log.c gets the stubs' counted one instead
     defines=()
+    # an entry's transition id is a random UUID: health_log.c gets the stubs' counted one instead
     [[ "${source}" == health/health_log.c ]] && defines=(-Dos_uuid_generate_random=oracle_uuid_generate_random)
+    # the stubs of these four record the call and, with a real database, call C's own under its new name; the
+    # transition id of a REMOVED row injected at a restart is counted out too
+    [[ "${source}" == database/sqlite/sqlite_health.c ]] && defines=(
+        -Dos_uuid_generate_random=oracle_uuid_generate_random
+        -Dsql_health_alarm_log_save=c_sql_health_alarm_log_save
+        -Dsql_health_alarm_log_load=c_sql_health_alarm_log_load
+        -Dsql_get_alarm_id=c_sql_get_alarm_id -Dsql_alert_store_config=c_sql_alert_store_config
+    )
     run cc "${CFLAGS[@]}" "${defines[@]}" -c "${SRC}/src/${source}" -o "${object}"
     LOOP_OBJECTS+=("${object}")
 done
+
+# C's schema of the metadata database: the array database_config[] of sqlite_metadata.c, as it stands there
+METADATA="${SRC}/src/database/sqlite/sqlite_metadata.c"
+[[ -f "${METADATA}" ]] || die "missing ${METADATA}"
+awk '
+    BEGIN { print "#include <stddef.h>" }
+    /^const char \*database_config\[\] = \{$/ { inside = 1 }
+    inside { print }
+    inside && /^\};$/ { done = 1; exit }
+    END { if (!done) exit 1 }
+' "${METADATA}" >"${WORK}/meta-schema.c" || die "the schema of ${METADATA} moved"
+run cc "${CFLAGS[@]}" -c "${WORK}/meta-schema.c" -o "${WORK}/meta-schema.o"
+run cc "${CFLAGS[@]}" -c "${SCRIPT_DIR}/health-sql-stubs.c" -o "${WORK}/health-sql-stubs.o"
+LOOP_OBJECTS+=("${WORK}/meta-schema.o" "${WORK}/health-sql-stubs.o")
 
 # the pass is static: its file is compiled as a copy with the splice appended. In it, and in a copy of
 # health_notifications.c from the log's scan on, health_send_notification() is the stub's
@@ -97,7 +124,8 @@ LOOP_OBJECTS+=(
     "${WORK}/health_notifications.o" "${WORK}/health_event_loop.o" "${WORK}/health-oracle-stubs-loop.o"
     "${WORK}/health-loop-stubs.o"
 )
-run cc "${CFLAGS[@]}" "${SCRIPT_DIR}/gen-loop-vectors.c" "${LOOP_OBJECTS[@]}" -o "${WORK}/gen-loop-vectors" "${LIBS[@]}"
+run cc "${CFLAGS[@]}" "${SCRIPT_DIR}/gen-loop-vectors.c" "${LOOP_OBJECTS[@]}" -o "${WORK}/gen-loop-vectors" \
+    "${BUILD}/libsqlite3.a" "${LIBS[@]}"
 
 # the items, with paths relative to the crate's directory: the stock files, then each family of the corpus. A
 # directory named *.group is one item whose files are read one after the other into the same store.
@@ -132,15 +160,16 @@ SCENARIOS=tests/corpus/match/scenarios.txt
     || die "the link generator failed: $(tail -n 5 "${WORK}/link.log")"
 
 # the loop: the two tables, then one process per scenario, each appending its rows to its family's file
-[[ -d "${CRATE_DIR}/tests/corpus/loop" && -d "${CRATE_DIR}/tests/corpus/queue" ]] \
-    || die "missing ${CRATE_DIR}/tests/corpus/loop or queue"
+for family in loop queue sql; do
+    [[ -d "${CRATE_DIR}/tests/corpus/${family}" ]] || die "missing ${CRATE_DIR}/tests/corpus/${family}"
+done
 (cd -- "${CRATE_DIR}" && run "${WORK}/gen-loop-vectors" tables tests/vectors >"${WORK}/loop.log" 2>&1) \
     || die "the loop generator's tables failed: $(tail -n 5 "${WORK}/loop.log")"
 (
     cd -- "${CRATE_DIR}"
     # C prints a record's notification time as a local date
     export LC_ALL=C TZ=UTC
-    for family in loop queue; do
+    for family in loop queue sql; do
         vectors="tests/vectors/${family}.tsv"
         {
             printf '# generated by tests/oracle/gen-loop-vectors.c from the C implementation; do not edit\n'

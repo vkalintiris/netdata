@@ -254,6 +254,10 @@ int health_silencers_update_disabled_silenced(RRDHOST *host, RRDCALC *rc) {
 // max_alarm + 1 when it is 0 or not above the maximum.
 void sql_health_alarm_log_load(RRDHOST *host) {
     oracle_call("load\t%d", oracle.database ? 1 : 0);
+    if(oracle.sql_real) {
+        c_sql_health_alarm_log_load(host);
+        return;
+    }
     if(!oracle.database)
         return;
 
@@ -269,16 +273,22 @@ void sql_health_alarm_log_load(RRDHOST *host) {
 
 // C: sqlite_health.c, sql_health_alarm_log_save(): insert or update; the insert marks the entry SAVED.
 void sql_health_alarm_log_save(RRDHOST *host, ALARM_ENTRY *ae) {
-    (void)host;
     oracle_call("save\t%u\t%08x", ae->unique_id, (unsigned)ae->flags);
-    if(oracle.save_sets_saved)
+    if(oracle.sql_real)
+        c_sql_health_alarm_log_save(host, ae);
+    else if(oracle.save_sets_saved)
         ae->flags |= HEALTH_ENTRY_FLAG_SAVED;
 }
 
 // C: sqlite_health.c, sql_get_alarm_id(): the alarm id and the next event id of (host, chart, name) in the table,
 // whatever the rule's hash.
 uint32_t sql_get_alarm_id(RRDHOST *host, STRING *chart, STRING *name, uint32_t *next_event_id) {
-    (void)host;
+    if(oracle.sql_real) {
+        uint32_t found = c_sql_get_alarm_id(host, chart, name, next_event_id);
+        oracle_call("sql_get_alarm_id\t%s\t%s\t%u\t%u", string2str(chart), string2str(name), found,
+                    found ? *next_event_id : 0);
+        return found;
+    }
     uint32_t alarm_id = 0, next = 0;
     for(size_t i = 0; i < oracle.sql_alarms_used; i++)
         if(strcmp(oracle.sql_alarms[i].chart, string2str(chart)) == 0 &&

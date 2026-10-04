@@ -1,0 +1,29 @@
+# The restart of an agent whose queued saves left an alarm's last_transition_id on an older entry (`order`): the
+# pointer of an alarm that had no later insert names its unlink's REMOVED entry, so no REMOVED row is injected for
+# it, that old entry is what the load brings back, and the alarm's event ids start again from it.
+database real
+rules tests/corpus/sql/save.conf
+queue 1
+chart loop.s loop.s_name loop.sql disks things 1
+label loop.s kind ssd
+var loop.s v 10
+pending host-recheck
+pending chart-recheck loop.s
+clock 0
+pass 0
+clock 1
+store
+clock 2
+pass 2
+clock 3
+store
+clock 100
+restart
+clock 101
+pass 101
+clock 102
+store
+clock 103
+pass 103
+clock 104
+alarm-log 0

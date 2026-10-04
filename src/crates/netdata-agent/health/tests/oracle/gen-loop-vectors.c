@@ -12,7 +12,7 @@
 //
 //   gen-loop-vectors scenario <loop.tsv to append to> <scenario file> <a file for the records>
 //       One process per scenario. Rows are <scenario> <step> <kind> ..., a step being one `pass`, `unlink`,
-//       `apply` or `store` directive:
+//       `apply`, `store`, `restart`, `cleanup` or `alarm-log` directive:
 //         do         the directive
 //         next_run   after a pass: the pass's next_run
 //         host       pending flags (i = initialization, r = label recheck), health_transitions,
@@ -38,10 +38,21 @@
 //         call       what the step called of what is stubbed, in call order (health-loop-stubs.c writes them)
 //         record     each log record the step wrote, as C's logfmt line with the record's time and the thread id
 //                    blanked; the dates in it are UTC, and a transition id is the UUID the stubs counted out
+//         sql        with a real database, every row of health_log, health_log_detail, alert_queue and aclk_queue
+//                    in rowid order: the table, then `column=value` per column (an integer as it is, a real with
+//                    17 digits, a text quoted and escaped, a blob as x'hex', NULL)
+//         body       an `alarm-log` step: the JSON sql_health_alarm_log2json() writes
 //
 // A scenario file holds a directive per line (`#` starts a comment). Seconds are offsets from T0 = 2000000000.
 //   rules <path>                       reads a health.d file (relative to the crate's directory, where this runs)
-//   database <0|1>                     the alert log's load: C's result on an empty table (1, default), or none
+//   database <0|1|real>                the alert log's load: C's result on an empty table (1, default), or none;
+//                                      `real`: C's own sqlite_health.c over a new SQLite file with C's schema:
+//                                      the load, the save, the alarm id lookup and a rule's alert_hash row are
+//                                      C's statements from then on (say it before `rules`)
+//   sql <statement>                    a statement on the real database (what another life of the agent left)
+//   retention <seconds>                `[health] health log retention`: read by a host's first pass
+//   log-max <n>                        `[health] in memory max health log entries`: read by a host's first pass
+//   aclk-config <0|1>                  the host has its ACLK sync configuration (a save then fills alert_queue)
 //   hostlabel <name> <value>           the value is the rest of the line
 //   chart <id> <name> <context> <family> <units> <update every>     `-` for no family (the chart then takes its
 //                                      type, as in the daemon) and for empty units. The chart gets the two
@@ -67,6 +78,12 @@
 //   thread health|other                the thread the following steps run on (default: HEALTH)
 //   sql-alarm <chart> <name> <id> <next event id>   the alert log's table knows this alarm
 //   store                              the metadata thread's store job: every queued save, in arrival order
+//   restart                            the agent stops and starts on the same database: the queue's saves are
+//                                      dropped, the alerts and the memory log go without an entry or a save, and
+//                                      the host is one whose health never ran, its charts new; the next pass loads
+//   cleanup                            the hourly cleanup of the host: sql_health_alarm_log_cleanup(), then
+//                                      health_alarm_log_cleanup()
+//   alarm-log <after> [chart]          /api/v1/alarm_log's body (`after` is a unique id, as the request gives it)
 //   running-for <n>                    the service runs for n more looks at it, then it is stopping
 //   exiting                            the agent's exit has begun (it cannot be undone)
 //   delay-up-to <second|0>             the host's health is postponed until then (what a connecting child gets)
@@ -75,12 +92,13 @@
 //   pass <now> [hibernate]             one call of the pass
 //   unlink <chart>                     rrdcalc_unlink_and_delete_all_rrdset_alerts()
 //   apply                              health_apply_prototypes_to_host()
-// `unlink`, `apply` and `store` are steps too.
+// `unlink`, `apply`, `store`, `restart`, `cleanup` and `alarm-log` are steps too.
 //
 // Field encoding: see health-oracle.h. A double is `nan` or its bits in hex.
 
 #include "health-loop-oracle.h"
 #include "health/rrdvar.h"
+#include "database/sqlite/sqlite_health.h"
 
 char *format_value_and_unit(char *value_string, size_t value_string_len, NETDATA_DOUBLE value, const char *units, int precision);
 
@@ -214,6 +232,11 @@ static bool entry_row_changed(uint32_t unique_id, char *text) {
     }
     entry_rows[entry_rows_used++] = (struct entry_row){ .unique_id = unique_id, .text = text };
     return true;
+}
+
+static void sql_row(const char *table, const char *fields) {
+    row("sql");
+    fprintf(out, "\t%s%s\n", table, fields);
 }
 
 static RRDSET *chart_find(const char *id) {
@@ -386,7 +409,45 @@ static void dump(const char *directive) {
         }
     }
 
+    if(oracle.sql_real)
+        oracle_sql_rows(sql_row);
+
     step++;
+}
+
+// An agent that stops and starts again on the same database. The exit drops the saves the queue still holds; the
+// alerts and the memory log go without an entry or a save (the exit has begun); the new process has a host whose
+// health never ran, and every chart is new to it.
+static void restart(void) {
+    oracle.queued_used = 0;
+    exit_initiated_add(EXIT_REASON_SIGTERM);
+    rrdcalc_delete_all(&host);
+    health_alarm_log_free(&host);
+    for(size_t i = 0; i < oracle.deferred_used; i++) {
+        __atomic_store_n(&oracle.deferred[i]->pending_save_count, 0, __ATOMIC_RELAXED);
+        health_alarm_log_free_one_nochecks_nounlink(oracle.deferred[i]);
+    }
+    oracle.deferred_used = 0;
+    // the new process has no exit reason (exit_initiated_set() only adds one)
+    exit_initiated_init();
+
+    rrdhost_flag_clear(&host, RRDHOST_FLAG_INITIALIZED_HEALTH | RRDHOST_FLAG_PENDING_LABEL_RECHECK);
+    host.health_log.next_log_id = 0;
+    host.health_log.next_alarm_id = 0;
+    host.health_max_unique_id = 0;
+    host.health_max_alarm_id = 0;
+    host.health_last_processed_id = 0;
+    host.health_transitions = 0;
+    host.health.delay_up_to = 0;
+    __atomic_store_n(&host.health.pending_transitions, 0, __ATOMIC_RELAXED);
+    memset(&host.health.alert_status_snapshot, 0, sizeof(host.health.alert_status_snapshot));
+    for(size_t i = 0; i < oracle.charts_used; i++) {
+        if(oracle.charts[i].freed)
+            continue;
+        rrdset_flag_clear(oracle.charts[i].st, RRDSET_FLAG_PENDING_LABEL_RECHECK);
+        rrdset_flag_set(oracle.charts[i].st, RRDSET_FLAG_PENDING_HEALTH_INITIALIZATION);
+    }
+    rrdhost_flag_set(&host, RRDHOST_FLAG_PENDING_HEALTH_INITIALIZATION);
 }
 
 static time_t second(const char *text) {
@@ -408,6 +469,10 @@ static char *word(char **rest, const char *directive) {
 static void run_scenario(const char *out_path, const char *scenario_path, const char *records_path) {
     out = fopen(out_path, "a");
     if(!out) die("cannot append to", out_path);
+
+    // a real database, when the scenario asks for one, is a new file beside the records
+    char sql_path[4096];
+    snprintf(sql_path, sizeof(sql_path), "%s.db", records_path);
 
     // the scenario's name: the file's name without its directory and extension
     char name[256];
@@ -442,6 +507,7 @@ static void run_scenario(const char *out_path, const char *scenario_path, const 
     host.hostname = string_strdupz("oracle-host");
     host.registry_hostname = string_strdupz("oracle-host");
     snprintf(host.machine_guid, sizeof(host.machine_guid), "11111111-2222-4333-8444-555555555555");
+    if(uuid_parse(host.machine_guid, host.host_id.uuid) != 0) die("cannot parse", host.machine_guid);
     host.health.enabled = true;
     host.rrdlabels = rrdlabels_create();
     host.rrdvars = rrdvariables_create();
@@ -466,12 +532,32 @@ static void run_scenario(const char *out_path, const char *scenario_path, const 
         char *whole = strdupz(line);
         char *rest = line;
         char *directive = strsep(&rest, " ");
+        // C's records carry the thread's last error number: none of this program's own making
+        errno = 0;
 
         if(strcmp(directive, "rules") == 0) {
             if(health_readfile(word(&rest, whole), NULL, false) != 1) die("cannot read the rules of", whole);
         }
-        else if(strcmp(directive, "database") == 0)
-            oracle.database = atoi(word(&rest, whole)) != 0;
+        else if(strcmp(directive, "database") == 0) {
+            char *how = word(&rest, whole);
+            if(strcmp(how, "real") == 0) {
+                oracle.database = true;
+                oracle_sql_open(sql_path);
+            }
+            else
+                oracle.database = atoi(how) != 0;
+        }
+        else if(strcmp(directive, "sql") == 0) {
+            if(!rest || !*rest) die("a missing argument", whole);
+            oracle_sql_exec(rest);
+        }
+        else if(strcmp(directive, "retention") == 0)
+            health_globals.config.health_log_retention_s = (uint32_t)strtoul(word(&rest, whole), NULL, 10);
+        else if(strcmp(directive, "log-max") == 0)
+            health_globals.config.health_log_entries_max = (uint32_t)strtoul(word(&rest, whole), NULL, 10);
+        else if(strcmp(directive, "aclk-config") == 0)
+            __atomic_store_n(&host.aclk_host_config, atoi(word(&rest, whole)) ? (void *)&host : NULL,
+                             __ATOMIC_RELEASE);
         else if(strcmp(directive, "hostlabel") == 0) {
             char *label = word(&rest, whole);
             if(!rest || !*rest) die("a missing argument", whole);
@@ -647,6 +733,25 @@ static void run_scenario(const char *out_path, const char *scenario_path, const 
         }
         else if(strcmp(directive, "store") == 0) {
             oracle_store();
+            dump(whole);
+        }
+        else if(strcmp(directive, "restart") == 0) {
+            restart();
+            dump(whole);
+        }
+        else if(strcmp(directive, "cleanup") == 0) {
+            sql_health_alarm_log_cleanup(&host);
+            health_alarm_log_cleanup(&host);
+            dump(whole);
+        }
+        else if(strcmp(directive, "alarm-log") == 0) {
+            time_t after = (time_t)strtoul(word(&rest, whole), NULL, 0);
+            BUFFER *wb = buffer_create(0, NULL);
+            sql_health_alarm_log2json(&host, wb, after, (rest && *rest) ? rest : NULL);
+            row("body");
+            field(out, buffer_tostring(wb));
+            fputc('\n', out);
+            buffer_free(wb);
             dump(whole);
         }
         else

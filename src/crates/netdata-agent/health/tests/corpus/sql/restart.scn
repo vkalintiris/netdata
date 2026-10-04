@@ -1,0 +1,47 @@
+# An agent that stops and starts on its alert log. The load at the host's first pass: a REMOVED row injected for
+# every alarm whose last entry is not REMOVED, then the last entry of each alarm whose rule is known, back in the
+# memory log; the ids go on from the highest loaded; an alert linked afterwards takes its alarm id and continues
+# its event ids, and its link entry replaces the loaded one.
+database real
+rules tests/corpus/sql/save.conf
+chart loop.s loop.s_name loop.sql disks things 1
+label loop.s kind ssd
+chart loop.t loop.t_name loop.sql disks things 1
+label loop.t kind hdd
+var loop.s v 10
+var loop.t v 70
+clock 0
+pass 0
+clock 1
+pass 1
+clock 2
+pass 2
+# the second chart's alerts are removed in this life: nothing is injected for them
+clock 3
+unlink loop.t
+clock 4
+pass 4
+clock 5
+alarm-log 0
+clock 100
+restart
+clock 101
+pass 101
+clock 102
+alarm-log 0
+clock 103
+pass 103
+var loop.s v 70
+clock 104
+pass 104
+clock 105
+alarm-log 0
+# and once more, now with raised alerts
+clock 200
+restart
+clock 201
+pass 201
+clock 202
+pass 202
+clock 203
+alarm-log 0

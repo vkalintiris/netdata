@@ -1,0 +1,27 @@
+# The order of inserts when the metadata queue is in play, as in a daemon: a first pass as localhost's (every alert
+# linked, unlinked and linked again, all queued) whose own saves go at once; the store job then inserts the queued
+# entries after them, so the rows of health_log_detail are not in the order of their unique ids, and each queued
+# insert points its alarm's last_transition_id back at an older entry until the alarm's next insert. With the
+# host's ACLK sync configuration in place each insert also writes the alarm's row of alert_queue.
+database real
+rules tests/corpus/sql/save.conf
+queue 1
+aclk-config 1
+chart loop.s loop.s_name loop.sql disks things 1
+label loop.s kind ssd
+var loop.s v 10
+pending host-recheck
+pending chart-recheck loop.s
+clock 0
+pass 0
+clock 1
+pass 1
+clock 2
+store
+var loop.s v 70
+clock 3
+pass 3
+clock 4
+pass 4
+clock 5
+alarm-log 0

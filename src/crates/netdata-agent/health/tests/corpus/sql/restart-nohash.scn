@@ -1,0 +1,21 @@
+# An alarm whose rule is no longer in alert_hash (its health.d file changed while the agent was down): a REMOVED row
+# is still injected for it, but the load, which joins alert_hash, leaves it out; its alert, linked again, finds its
+# alarm id in the table by chart and name and continues its event ids.
+database real
+rules tests/corpus/sql/save.conf
+chart loop.s loop.s_name loop.sql disks things 1
+label loop.s kind ssd
+var loop.s v 70
+clock 0
+pass 0
+clock 1
+pass 1
+clock 100
+sql DELETE FROM alert_hash WHERE alarm IS NULL AND template = 's_plain'
+restart
+clock 101
+pass 101
+clock 102
+pass 102
+clock 103
+alarm-log 0

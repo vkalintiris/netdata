@@ -1,0 +1,29 @@
+# C's own save over a real database: the insert (the alarm's row in health_log, the entry's row in health_log_detail
+# with SAVED not yet in its flags, a NaN value as NULL), the update of an entry already saved, the alarm's
+# last_transition_id following each insert, a repeat's entry, the alarm log's JSON.
+database real
+rules tests/corpus/sql/save.conf
+chart loop.s loop.s_name loop.sql disks things 1
+label loop.s kind ssd
+var loop.s v 10
+clock 0
+pass 0
+var loop.s v 70
+clock 1
+pass 1
+clock 3
+pass 3
+var loop.s v 95
+clock 4
+pass 4
+var loop.s v 10
+clock 5
+pass 5
+clock 6
+alarm-log 0
+clock 7
+unlink loop.s
+clock 8
+pass 8
+clock 9
+alarm-log 0 loop.s

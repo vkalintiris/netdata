@@ -245,5 +245,5 @@ fn copies_match_c() {
 }
 
 /// The size of `copy.tsv`: a guard against a comparison that compared nothing.
-const COPIES: usize = 2665;
+const COPIES: usize = 2667;
 const COPY_RECORDS: usize = 42;

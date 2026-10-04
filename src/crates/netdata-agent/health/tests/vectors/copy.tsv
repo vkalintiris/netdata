@@ -2680,6 +2680,8 @@ tests/corpus/queue/sql-id.conf	copy	s_other_hash	0	$v	${v}	$this > 60	(${this} >
 tests/corpus/queue/sql-id.conf	copy	s_new	0	$v	${v}	\x00	\x00	\x00	\x00
 tests/corpus/smoke/first.conf	copy	smoke_tmpl	0	\x00	\x00	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/smoke/first.conf	copy	smoke_alarm	0	$load1 * 2	(${load1} * 2)	\x00	\x00	\x00	\x00
+tests/corpus/sql/save.conf	copy	s_plain	0	$v	${v}	$this > 50	(${this} > 50)	$this > 90	(${this} > 90)
+tests/corpus/sql/save.conf	copy	s_repeat	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/validate/chains.conf	copy	chain	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/validate/chains.conf	copy	chain	1	1	1	\x00	\x00	\x00	\x00
 tests/corpus/validate/chains.conf	copy	chain	2	1	1	\x00	\x00	\x00	\x00

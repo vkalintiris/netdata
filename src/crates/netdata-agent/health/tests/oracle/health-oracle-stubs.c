@@ -219,7 +219,15 @@ static void field_expression(FILE *f, EVAL_EXPRESSION *e) {
     oracle_esc(f, e ? expression_parsed_as(e) : NULL);
 }
 
+#ifdef HEALTH_ORACLE_LOOP
+// the loop's program: with a real database, C's own function stores the rule (health-sql-stubs.c)
+void oracle_loop_store_config(RRD_ALERT_PROTOTYPE *ap);
+#endif
+
 void sql_alert_store_config(RRD_ALERT_PROTOTYPE *ap) {
+#ifdef HEALTH_ORACLE_LOOP
+    oracle_loop_store_config(ap);
+#endif
     FILE *f = oracle_rules;
     if(!f)
         return;

@@ -63,6 +63,7 @@ struct oracle_script {
     bool running;                   // service_running()
     size_t running_for;             // when not 0: that many more looks find the service running, then it is stopping
     bool database;                  // sql_health_alarm_log_load(): C's result on an empty table, or no database
+    bool sql_real;                  // the load, the save and the alarm id lookup are C's own, over a real file
     bool queue_accepts;             // metadata_queue_ae_save(): the queue takes the save, or refuses it
     struct oracle_queued queued[ORACLE_QUEUE_MAX];  // the saves the queue took, in arrival order, until a store
     size_t queued_used;
@@ -83,6 +84,17 @@ struct oracle_chart *oracle_chart(RRDSET *st);
 
 // the metadata thread's store job, as far as the alert log goes: every queued save, in arrival order
 void oracle_store(void);
+
+// C's own functions of sqlite_health.c, compiled under these names (health-sql-stubs.c)
+void c_sql_health_alarm_log_save(RRDHOST *host, ALARM_ENTRY *ae);
+void c_sql_health_alarm_log_load(RRDHOST *host);
+uint32_t c_sql_get_alarm_id(RRDHOST *host, STRING *chart, STRING *name, uint32_t *next_event_id);
+void c_sql_alert_store_config(RRD_ALERT_PROTOTYPE *ap);
+
+// a real metadata database on a new file with C's schema; a statement on it; its alert log tables' rows
+void oracle_sql_open(const char *path);
+void oracle_sql_exec(const char *statement);
+void oracle_sql_rows(void (*each)(const char *table, const char *fields));
 
 // a double as the vectors hold it: `nan`, or its bits in hex
 void oracle_double(char *dst, size_t size, NETDATA_DOUBLE v);

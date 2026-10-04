@@ -1,0 +1,26 @@
+# /api/v1/alarm_log's body: newest first; `after` (entries with a higher unique id); a chart (its entries only, and
+# nothing for a chart without any); the limit, which is `[health] in memory max health log entries` as the host's
+# first pass read it; entries of a rule with and without a class, type, component and recipient; a value that is no
+# number; texts with their chart's labels in them.
+database real
+log-max 3
+rules tests/corpus/sql/save.conf
+chart loop.s loop.s_name loop.sql disks things 1
+label loop.s kind ssd
+chart loop.t loop.t_name loop.sql - things 1
+var loop.s v 10
+var loop.t v 95
+# before the host's first pass: the limit is 0
+clock 0
+alarm-log 0
+pass 0
+clock 1
+alarm-log 0
+clock 2
+alarm-log 2000000004
+clock 3
+alarm-log 0 loop.t
+clock 4
+alarm-log 0 loop.nope
+clock 5
+alarm-log 0x77359404

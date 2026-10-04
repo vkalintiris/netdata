@@ -1,0 +1,33 @@
+# The hourly cleanup of a host's alert log: rows older than the retention that a newer entry replaced go, unless an
+# alarm's last_transition_id names them; then the same in memory, where an entry needs no save to go. With a
+# retention of 0 every replaced row goes.
+database real
+retention 50
+rules tests/corpus/sql/save.conf
+chart loop.s loop.s_name loop.sql disks things 1
+label loop.s kind ssd
+var loop.s v 10
+clock 0
+pass 0
+var loop.s v 70
+clock 10
+pass 10
+var loop.s v 10
+clock 40
+pass 40
+var loop.s v 70
+clock 55
+pass 55
+# 50 seconds after the first status changes, not yet after the later ones
+clock 61
+cleanup
+clock 62
+alarm-log 0
+clock 91
+cleanup
+clock 200
+cleanup
+clock 201
+pass 201
+clock 202
+alarm-log 0
