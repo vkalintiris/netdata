@@ -423,3 +423,29 @@ pub fn changed_record(hostname: &[u8], alert: &[u8], before: u32, after: u32) {
         flag(after, run_flags::SILENCED)
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `health_silencers_all_alarms_disabled()`: `all` with the type DISABLE, and nothing else.
+    #[test]
+    fn all_alarms_are_disabled_by_all_with_the_type_disable() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let silencers = Silencers::new(dir.path().join("silencers.json").into_os_string().into_encoded_bytes());
+        let after = |query: &[u8]| {
+            let (reply, _records) = netdata_agent_log::capture(|| silencers.request(Some(b"key"), b"key", query));
+            assert_eq!(reply.code, 200);
+            silencers.all_alarms_disabled()
+        };
+        assert!(!silencers.all_alarms_disabled());
+        assert!(!after(b"cmd=SILENCE ALL"));
+        assert!(after(b"cmd=DISABLE ALL"));
+        // `all` stays on when the type alone changes
+        assert!(!after(b"cmd=SILENCE"));
+        assert!(after(b"cmd=DISABLE"));
+        assert!(!after(b"cmd=RESET"));
+        // a selector is not `all`
+        assert!(!after(b"cmd=DISABLE&alarm=*"));
+    }
+}
