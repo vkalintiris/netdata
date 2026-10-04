@@ -119,11 +119,14 @@ macro_rules! netdata_log_error {
 
 /// `netdata_log_error(...)` with the `errno` C's thread holds when it writes the record: what the ported calls left
 /// behind (`netdata_agent_text::c::set_errno`: a number that overflowed in a parser, a failed `stat()`), however
-/// unrelated to the record. The record clears it, as C's logger does.
+/// unrelated to the record. The record clears it, as C's logger does; a record the log level filters out is not
+/// written and leaves it, as in C.
 #[macro_export]
 macro_rules! netdata_log_error_errno {
     ($($arg:tt)+) => {
-        $crate::nd_log!($crate::Source::Daemon, $crate::Priority::Err, errno = $crate::take_errno(); $($arg)+)
+        if !$crate::filtered($crate::Source::Daemon, $crate::Priority::Err) {
+            $crate::nd_log!($crate::Source::Daemon, $crate::Priority::Err, errno = $crate::take_errno(); $($arg)+)
+        }
     };
 }
 

@@ -162,6 +162,10 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    // The daemon reads the health files with the log flood limits off (they are reset after rrd_init()): without
+    // this, C replaces the records past the limit by one "LOG FLOOD PROTECTION" record.
+    nd_log_limits_unlimited();
+
     // what C's own unit test initializes before it reads a file (health-config-unittest.c), and the two defaults
     // the daemon takes from [health]
     string_init();

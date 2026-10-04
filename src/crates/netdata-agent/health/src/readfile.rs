@@ -213,9 +213,8 @@ pub fn health_readfile(health: &Health, filename: &[u8], stock: bool) -> bool {
         let end = buffer.iter().rposition(|&c| !is_space(c)).map_or(start, |last| last + 1);
         buffer.truncate(end);
         if buffer[start] == b'#' {
-            if stop_appending {
-                break;
-            }
+            // never at the end of the file: what a pending continuation keeps is no comment (a first line that is
+            // one does not continue), and the end adds nothing to it
             continue;
         }
 
@@ -225,6 +224,7 @@ pub fn health_readfile(health: &Health, filename: &[u8], stock: bool) -> bool {
             if append < MAX_LINE {
                 continue;
             }
+            // not reached, in C either: a read holds at most 4,095 bytes
             netdata_log_error_errno!("Health configuration has too long multi-line at line {line} of file '{file}'.");
         }
         append = 0;
@@ -425,6 +425,17 @@ mod tests {
         assert_eq!(read(&format!("{FIRST}\\\n  \t\n{SECOND}")), first_only);
         assert_eq!(read(&format!("{FIRST}\\\n")), first_only);
         assert_eq!(read(&format!("{FIRST}\\")), first_only);
+        // comment lines after it do not help: nothing but text ends the pending continuation
+        assert_eq!(read(&format!("{FIRST}\\\n# a comment\n# another\n")), first_only);
+        assert_eq!(read(&format!("{FIRST}\\\n# a comment\n\n{SECOND}")), first_only);
+        // a line of 4,096 bytes that ends in a backslash: a read takes 4,095, and the backslash is a line alone
+        let long = format!(" info: {}\\\n", "A".repeat(4095 - " info: ".len()));
+        assert_eq!(long.len(), 4097);
+        assert_eq!(read(&format!("{FIRST}{long}")), first_only);
+        assert_eq!(read(&format!("{FIRST}{long}\n{SECOND}")), first_only);
+        // one byte shorter and the backslash is the line's own: an ordinary continuation
+        let fits = format!(" info: {}\\\n units: u\n\n", "A".repeat(4094 - " info: ".len()));
+        assert_eq!(read(&format!("{FIRST}{fits}{SECOND}")), both);
         // followed by text, the backslash is an ordinary continuation
         assert_eq!(read(&format!("{FIRST}\\\ninfo: x\n{SECOND}")), both);
     }

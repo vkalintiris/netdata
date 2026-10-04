@@ -148,6 +148,17 @@ pub fn str2ll_encoded(s: &[u8]) -> i64 {
     }
 }
 
+/// `pow(10.0, x)` as `str2ndd()` and its digit reader call it: glibc's `pow()` sets `errno` to `ERANGE` when the
+/// result of a finite `x` overflows or underflows to zero. A subnormal result sets nothing, and neither does an
+/// infinite `x` (an exponent of 309 digits or more), for which the result is exact.
+fn pow10(x: f64) -> f64 {
+    let power = 10f64.powf(x);
+    if x.is_finite() && (power == 0.0 || power.is_infinite()) {
+        c::set_errno(c::ERANGE);
+    }
+    power
+}
+
 /// `str2ndd_parse_double_decimal_digits_internal()`: skips `isspace()`, then
 /// accumulates decimal digits; the digit count excludes the skipped spaces.
 fn decimal_digits_as_double(s: &[u8]) -> (f64, usize) {
@@ -155,7 +166,8 @@ fn decimal_digits_as_double(s: &[u8]) -> (f64, usize) {
     let mut i = start;
     let mut n = 0.0f64;
     while is_digit(at(s, i)) {
-        // chunks that fit an unsigned long keep the arithmetic exact
+        // chunks that fit an unsigned long keep the arithmetic exact; a run of zeros never fills one, so its
+        // chunk is as long as the run, and 309 of them overflow the power
         let mut chunk: u64 = 0;
         let mut exponent: u32 = 0;
         while is_digit(at(s, i)) && chunk < u64::MAX / 10 {
@@ -163,19 +175,9 @@ fn decimal_digits_as_double(s: &[u8]) -> (f64, usize) {
             i += 1;
             exponent += 1;
         }
-        n = n * 10f64.powf(f64::from(exponent)) + chunk as f64;
+        n = n * pow10(f64::from(exponent)) + chunk as f64;
     }
     (n, i - start)
-}
-
-/// `pow(10.0, x)` as `str2ndd()` calls it: glibc's `pow()` sets `errno` to `ERANGE` when its result overflows or
-/// underflows to zero (a subnormal result sets nothing).
-fn pow10(x: f64) -> f64 {
-    let power = 10f64.powf(x);
-    if power == 0.0 || power.is_infinite() {
-        c::set_errno(c::ERANGE);
-    }
-    power
 }
 
 /// `str2ndd()`: the Agent's fast decimal parser (not correctly rounded).
@@ -1014,6 +1016,27 @@ mod uuid_and_strtoull_tests {
     fn str2ndd_range_errors_match_glibc() {
         let fraction = format!("0.{}", "1".repeat(400));
         let integer = "1".repeat(400);
+        // an exponent of 309 digits is infinite itself, and pow() is exact there; a run of 309 digits overflows
+        // the digit reader's own pow(), whatever the digits (review R76)
+        let nines = |n: usize| "9".repeat(n);
+        let zeros = |n: usize| "0".repeat(n);
+        let edges: [(String, bool); 9] = [
+            (format!("1e{}", nines(308)), true),
+            (format!("1e{}", nines(309)), false),
+            (format!("1e-{}", nines(308)), true),
+            (format!("1e-{}", nines(309)), false),
+            (zeros(308), false),
+            (zeros(309), true),
+            (format!("{}1", zeros(308)), true),
+            (format!("1.{}", zeros(309)), true),
+            // nines fill a chunk long before 309 digits: no chunk's pow() overflows
+            (nines(309), false),
+        ];
+        for (input, range_error) in &edges {
+            c::take_errno();
+            str2ndd(input.as_bytes());
+            assert_eq!(c::take_errno(), if *range_error { c::ERANGE } else { 0 }, "{}...({})", &input[..4], input.len());
+        }
         let cases: [(&str, bool); 14] = [
             ("1e400", true),
             ("1e309", true),

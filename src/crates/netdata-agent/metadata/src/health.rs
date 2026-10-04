@@ -76,8 +76,9 @@ fn text_or_null(value: &Option<Vec<u8>>) -> ToSqlOutput<'_> {
 }
 
 impl MetaDb {
-    /// A queued `sql_alert_store_config()` statement, stepped (`execute_statement()`): true when stored. The
-    /// columns nothing sets (`os`, `hosts`, `families`, `plugin`, `module`, `charts`) stay NULL.
+    /// A queued `sql_alert_store_config()` statement, stepped (`execute_statement()`): true when stored; a failed
+    /// step logs C's two records. The columns nothing sets (`os`, `hosts`, `families`, `plugin`, `module`, `charts`)
+    /// stay NULL.
     pub fn store_alert_config(&self, row: &AlertHashRow) -> bool {
         const NULL: ToSqlOutput<'_> = ToSqlOutput::Owned(Value::Null);
         // `green` and `red` are bound as a NaN double, which SQLite stores as NULL
@@ -126,6 +127,8 @@ impl MetaDb {
             Err(Step::Prepare) => false,
             Err(Step::Failed(rc)) => {
                 netdata_log_error!("Failed to execute sql statement, rc = {rc}");
+                // SQLITE_FINALIZE(): finalizing a statement whose step failed returns that code again
+                netdata_log_error!("Failed to finalize statement rc={rc} in execute_statement");
                 false
             }
         }
@@ -255,89 +258,122 @@ mod tests {
         );
     }
 
+    /// Every column with a value of its own, so that no two binds can change places unseen.
     #[test]
-    fn a_full_row_keeps_every_value_and_its_type() {
+    fn a_full_row_keeps_every_value_in_its_column_with_its_type() {
         let (_dir, meta) = db();
         let row = AlertHashRow {
-            alarm: Some(b"a".to_vec()),
+            hash_id: [2; 16],
+            alarm: Some(b"the alarm".to_vec()),
             template: None,
-            on_key: Some(b"system.cpu".to_vec()),
-            class: Some(b"Utilization".to_vec()),
-            component: Some(b"CPU".to_vec()),
-            r#type: Some(b"System".to_vec()),
-            update_every: 60,
-            units: Some(b"%".to_vec()),
-            calc: Some(b"$this * 2".to_vec()),
-            warn: Some(b"$this > 1".to_vec()),
-            crit: Some(b"$this > 2".to_vec()),
-            exec: Some(b"/bin/true".to_vec()),
-            to_key: Some(b"sysadmin".to_vec()),
+            on_key: Some(b"the on key".to_vec()),
+            class: Some(b"the class".to_vec()),
+            component: Some(b"the component".to_vec()),
+            r#type: Some(b"the type".to_vec()),
+            update_every: 61,
+            units: Some(b"the units".to_vec()),
+            calc: Some(b"the calc".to_vec()),
+            warn: Some(b"the warn".to_vec()),
+            crit: Some(b"the crit".to_vec()),
+            exec: Some(b"the exec".to_vec()),
+            to_key: Some(b"the recipient".to_vec()),
             // bytes that are no text are stored as they are
-            info: Some(b"caf\xe9".to_vec()),
-            delay: b"up 60s down 300s multiplier 1.5 max 3600s".to_vec(),
-            options: Some("no-clear-notification"),
-            repeat: Some("warning 120s critical 30s".to_owned()),
-            host_labels: Some(b"a=b".to_vec()),
+            info: Some(b"the info caf\xe9".to_vec()),
+            delay: b"the delay".to_vec(),
+            options: Some("the options"),
+            repeat: Some("the repeat".to_owned()),
+            host_labels: Some(b"the host labels".to_vec()),
             lookup: Some(AlertHashLookup {
-                dimensions: Some(b"user".to_vec()),
-                method: "average",
+                dimensions: Some(b"the dimensions".to_vec()),
+                method: "the method",
                 options: 32768,
                 after: -600,
                 before: -60,
             }),
-            source: Some(b"line=1,file=/etc/netdata/health.d/x.conf".to_vec()),
-            chart_labels: Some(b"c=d".to_vec()),
-            summary: Some(b"CPU".to_vec()),
+            source: Some(b"the source".to_vec()),
+            chart_labels: Some(b"the chart labels".to_vec()),
+            summary: Some(b"the summary".to_vec()),
             time_group_condition: 2,
             time_group_value: 1.5,
             dims_group: 3,
             data_source: 1,
-            ..bare([2; 16])
         };
         assert!(meta.store_alert_config(&row));
-        let columns = stored(&meta, &row.hash_id);
-        let info = String::from_utf8_lossy(b"caf\xe9").into_owned();
-        for expected in [
-            "alarm=text:a",
-            "template=null",
-            "class=text:Utilization",
-            "every=text:60",
-            "calc=text:$this * 2",
-            "green=null",
-            "red=null",
-            "exec=text:/bin/true",
-            "to_key=text:sysadmin",
-            &format!("info=text:{info}"),
-            "delay=text:up 60s down 300s multiplier 1.5 max 3600s",
-            "options=text:no-clear-notification",
-            "repeat=text:warning 120s critical 30s",
-            "host_labels=text:a=b",
-            "p_db_lookup_dimensions=text:user",
-            "p_db_lookup_method=text:average",
-            "p_db_lookup_options=integer:32768",
-            "p_db_lookup_after=integer:-600",
-            "p_db_lookup_before=integer:-60",
-            "p_update_every=integer:60",
-            "chart_labels=text:c=d",
-            "summary=text:CPU",
-            "time_group_condition=integer:2",
-            "time_group_value=real:1.5",
-            "dims_group=integer:3",
-            "data_source=integer:1",
-        ] {
-            assert!(columns.iter().any(|column| column == expected), "{expected} is not in {columns:?}");
-        }
+        let info = String::from_utf8_lossy(b"the info caf\xe9").into_owned();
+        assert_eq!(
+            stored(&meta, &row.hash_id),
+            [
+                "hash_id=blob:16",
+                "alarm=text:the alarm",
+                "template=null",
+                "on_key=text:the on key",
+                "class=text:the class",
+                "component=text:the component",
+                "type=text:the type",
+                "os=null",
+                "hosts=null",
+                "lookup=null",
+                "every=text:61",
+                "units=text:the units",
+                "calc=text:the calc",
+                "families=null",
+                "plugin=null",
+                "module=null",
+                "charts=null",
+                "green=null",
+                "red=null",
+                "warn=text:the warn",
+                "crit=text:the crit",
+                "exec=text:the exec",
+                "to_key=text:the recipient",
+                &format!("info=text:{info}"),
+                "delay=text:the delay",
+                "options=text:the options",
+                "repeat=text:the repeat",
+                "host_labels=text:the host labels",
+                "p_db_lookup_dimensions=text:the dimensions",
+                "p_db_lookup_method=text:the method",
+                "p_db_lookup_options=integer:32768",
+                "p_db_lookup_after=integer:-600",
+                "p_db_lookup_before=integer:-60",
+                "p_update_every=integer:61",
+                "source=text:the source",
+                "chart_labels=text:the chart labels",
+                "summary=text:the summary",
+                "time_group_condition=integer:2",
+                "time_group_value=real:1.5",
+                "dims_group=integer:3",
+                "data_source=integer:1",
+            ]
+        );
+        // the bytes of the info are the ones given
+        let c = meta.lock();
+        let info: Vec<u8> = c
+            .query_row("SELECT CAST(info AS BLOB) FROM alert_hash WHERE hash_id = ?", [&row.hash_id[..]], |r| r.get(0))
+            .unwrap();
+        assert_eq!(info, b"the info caf\xe9");
+        drop(c);
 
-        // a lookup without dimensions
+        // a template, a lookup without dimensions, and a delay text that is empty and still a text
         let row = AlertHashRow {
+            delay: Vec::new(),
             lookup: Some(AlertHashLookup { dimensions: None, method: "sum", options: 0, after: -60, before: 0 }),
             ..bare([3; 16])
         };
         assert!(meta.store_alert_config(&row));
         let columns = stored(&meta, &row.hash_id);
-        assert!(columns.contains(&"p_db_lookup_dimensions=null".to_owned()));
-        assert!(columns.contains(&"p_db_lookup_method=text:sum".to_owned()));
-        assert!(columns.contains(&"p_db_lookup_before=integer:0".to_owned()));
+        for expected in [
+            "alarm=null",
+            "template=text:t",
+            "delay=text:",
+            "p_db_lookup_dimensions=null",
+            "p_db_lookup_method=text:sum",
+            "p_db_lookup_options=integer:0",
+            "p_db_lookup_after=integer:-60",
+            "p_db_lookup_before=integer:0",
+        ] {
+            assert!(columns.iter().any(|column| column == expected), "{expected} is not in {columns:?}");
+        }
     }
 
     #[test]

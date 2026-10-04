@@ -9,6 +9,8 @@ use std::os::unix::ffi::OsStrExt;
 
 use netdata_agent_log::netdata_log_error_errno;
 use netdata_agent_text::c::{filename_from_path_entry_bytes, set_errno};
+
+use crate::lossy;
 use rustix::fs::{Dir, FileType, Mode, OFlags};
 
 /// The deepest subdirectory level that is still read, the top being 0.
@@ -48,9 +50,16 @@ fn opendir(path: &[u8]) -> Option<Dir> {
     }
 }
 
-/// The entries of `dir` as `readdir()` gives them (a failed read ends the directory): each name and `d_type`.
+/// The entries of `dir` as `readdir()` gives them: each name and `d_type`. A failed read ends the directory and
+/// leaves its `errno` behind.
 fn entries(dir: Dir) -> impl Iterator<Item = (Vec<u8>, FileType)> {
-    dir.map_while(Result::ok).map(|entry| (entry.file_name().to_bytes().to_vec(), entry.file_type()))
+    dir.map_while(|entry| match entry {
+        Ok(entry) => Some((entry.file_name().to_bytes().to_vec(), entry.file_type())),
+        Err(error) => {
+            set_errno(error.raw_os_error());
+            None
+        }
+    })
 }
 
 /// `d_type` says directory or link (never for a filesystem that reports no types), and the name is not `.` or `..`.
@@ -71,10 +80,6 @@ fn may_be_file(d_type: FileType) -> bool {
 /// A name longer than its `.conf` suffix.
 fn is_conf_name(name: &[u8]) -> bool {
     name.len() > 5 && name.ends_with(b".conf")
-}
-
-fn lossy(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
-    String::from_utf8_lossy(bytes)
 }
 
 /// `recursive_config_double_dir_load()`: calls `callback(filename, stock)` for every `*.conf` regular file under
@@ -425,5 +430,111 @@ mod tests {
         );
         loaded.sort();
         assert_eq!(loaded, [(trees.path("stock/health.d/b.conf"), true), (trees.path("user/health.d/a.conf"), false)]);
+    }
+
+    /// What `d_type` lets an entry be. A filesystem that reports no types (unknown) gives entries that may be
+    /// files and never directories.
+    #[test]
+    fn what_an_entry_may_be_goes_by_its_d_type() {
+        let cases = [
+            (FileType::Directory, true, false),
+            (FileType::Symlink, true, true),
+            (FileType::RegularFile, false, true),
+            (FileType::Unknown, false, true),
+            (FileType::Fifo, false, false),
+            (FileType::Socket, false, false),
+            (FileType::CharacterDevice, false, false),
+            (FileType::BlockDevice, false, false),
+        ];
+        for (d_type, dir, file) in cases {
+            assert_eq!(may_be_dir(b"x", d_type), Some(dir), "{d_type:?}");
+            assert_eq!(may_be_file(d_type), file, "{d_type:?}");
+        }
+        // `.`, `..` and an empty name are skipped where the type says directory or link, and only there
+        for name in [&b"."[..], b"..", b""] {
+            assert_eq!(may_be_dir(name, FileType::Directory), None);
+            assert_eq!(may_be_dir(name, FileType::Symlink), None);
+            assert_eq!(may_be_dir(name, FileType::Unknown), Some(false));
+        }
+    }
+
+    /// A subdirectory is entered where the listing meets it, not after the directory's own files.
+    #[test]
+    fn a_subdirectory_is_entered_where_the_listing_meets_it() {
+        let trees = Trees::new();
+        for n in 0..8 {
+            trees.file(&format!("user/d{n}/x.conf")).file(&format!("user/d{n}/y.conf")).file(&format!("user/f{n}.conf"));
+        }
+
+        // the kernel's order, listed by other code
+        fn listing(dir: &Path, out: &mut Vec<Vec<u8>>) {
+            for entry in fs::read_dir(dir).unwrap() {
+                let entry = entry.unwrap();
+                if entry.file_type().unwrap().is_dir() {
+                    listing(&entry.path(), out);
+                } else {
+                    out.push(entry.path().as_os_str().as_bytes().to_vec());
+                }
+            }
+        }
+        let mut expected = Vec::new();
+        listing(&trees.root.path().join("user"), &mut expected);
+        // the test says something only when a subdirectory comes before one of the top directory's files
+        let top_file = |path: &Vec<u8>| !path.ends_with(b"/x.conf") && !path.ends_with(b"/y.conf");
+        let first_inner = expected.iter().position(|path| !top_file(path)).unwrap();
+        let last_top = expected.iter().rposition(top_file).unwrap();
+        assert!(first_inner < last_top, "this filesystem lists every subdirectory last");
+
+        let mut calls = Vec::new();
+        recursive_config_double_dir_load(&trees.path("user"), None, b"", &mut |filename, _| calls.push(filename.to_vec()));
+        assert_eq!(calls, expected);
+    }
+
+    /// C calls `stat()` before it looks at the name, so a failed one leaves its errno whatever the name is.
+    #[test]
+    fn the_stat_comes_before_the_name_s_test() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let trees = Trees::new();
+        trees.file("user/not-a-conf.txt");
+        let user = trees.root.path().join("user");
+        // listed but not searched: its entries cannot be stat()ed
+        fs::set_permissions(&user, fs::Permissions::from_mode(0o400)).unwrap();
+        let unreachable = fs::metadata(user.join("not-a-conf.txt")).is_err();
+        take_errno();
+        let mut calls = 0;
+        recursive_config_double_dir_load(&trees.path("user"), None, b"", &mut |_, _| calls += 1);
+        let pending = take_errno();
+        fs::set_permissions(&user, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(calls, 0);
+        // root reaches everything: nothing to see then
+        if unreachable {
+            const EACCES: i32 = 13;
+            assert_eq!(pending, EACCES);
+        }
+    }
+
+    /// A chain of subdirectories only the stock tree has: each level reports its missing user twin, and the depth
+    /// record carries the errno of the last failed `stat()`.
+    #[test]
+    fn the_depth_record_carries_the_pending_errno() {
+        let trees = Trees::new();
+        trees.dir("stock/d1/d2/d3/d4");
+        let (loaded, records) = trees.load(true);
+        assert!(loaded.is_empty());
+        assert_eq!(
+            shown(&trees, &records),
+            [
+                (ENOENT, "CONFIG cannot open user-config directory 'ROOT/user/d1'.".to_owned()),
+                (ENOENT, "CONFIG cannot open user-config directory 'ROOT/user/d1/d2'.".to_owned()),
+                (ENOENT, "CONFIG cannot open user-config directory 'ROOT/user/d1/d2/d3'.".to_owned()),
+                (
+                    ENOENT,
+                    "CONFIG: Max directory depth reached while reading user path 'ROOT/user/d1/d2/d3', stock path \
+                     'ROOT/stock/d1/d2/d3', subpath 'd4'"
+                        .to_owned()
+                ),
+            ]
+        );
     }
 }

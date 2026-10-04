@@ -7,8 +7,8 @@ use netdata_agent_text::print::print_fixed;
 use crate::prototype::Rule;
 use crate::tables::{ACTION_OPTION_NO_CLEAR_NOTIFICATION, ACTION_OPTION_NO_CLEAR_NOTIFICATION_NAME, options_remove_overlapping};
 
-/// The `delay` column: each part that is not zero, a space after each but the last. A file's rule always has the
-/// multiplier, so its text ends with a space unless a maximum follows.
+/// The `delay` column: each part that is not zero; `up`, `down` and the multiplier each end in a space, `max` does
+/// not. A file's rule always has the multiplier, so its text ends with a space unless a maximum follows.
 fn delay_text(up: i32, down: i32, multiplier: f32, max: i32) -> Vec<u8> {
     let mut text = Vec::new();
     if up != 0 {
@@ -165,7 +165,7 @@ mod tests {
         ac.exec = Some(b"/bin/true".to_vec());
         ac.recipient = Some(b"sysadmin".to_vec());
         ac.classification = Some(b"Utilization".to_vec());
-        ac.component = Some(b"CPU".to_vec());
+        ac.component = Some(b"Processor".to_vec());
         ac.r#type = Some(b"System".to_vec());
         ac.source = Some(b"line=1,file=x.conf".to_vec());
         ac.units = Some(b"%".to_vec());
@@ -201,7 +201,7 @@ mod tests {
                 template: None,
                 on_key: Some(b"system.cpu".to_vec()),
                 class: Some(b"Utilization".to_vec()),
-                component: Some(b"CPU".to_vec()),
+                component: Some(b"Processor".to_vec()),
                 r#type: Some(b"System".to_vec()),
                 update_every: 60,
                 units: Some(b"%".to_vec()),
@@ -231,5 +231,24 @@ mod tests {
                 data_source: DataSource::Percentages as i32,
             }
         );
+    }
+
+    /// The five lookup columns go by `after` alone, as C's `if (ap->config.after)`.
+    #[test]
+    fn the_lookup_is_stored_when_after_is_set() {
+        let mut rule = Rule::default();
+        rule.config.time_group = Some(TimeGrouping::Min);
+        rule.config.after = -600;
+        assert_eq!(
+            alert_hash_row(&rule).lookup,
+            Some(AlertHashLookup { dimensions: None, method: "min", options: 0, after: -600, before: 0 })
+        );
+
+        let mut rule = Rule::default();
+        rule.config.time_group = Some(TimeGrouping::Min);
+        rule.config.before = -60;
+        rule.config.dimensions = Some(b"user".to_vec());
+        rule.config.options = options::NOT_ALIGNED;
+        assert_eq!(alert_hash_row(&rule).lookup, None);
     }
 }

@@ -20,7 +20,8 @@ pub struct AlertMatch {
     pub chart_labels: Option<Vec<u8>>,
 }
 
-/// `struct rrd_alert_config`. A text is `None` where C's `STRING` is NULL: an empty text is never stored.
+/// `struct rrd_alert_config`. A text is `None` where C's `STRING` is NULL. C never holds an empty one (an empty
+/// `STRING` is NULL), and the reader gives none: a line without a value is refused.
 #[derive(Debug)]
 pub struct AlertConfig {
     pub hash_id: [u8; 16],
@@ -163,7 +164,6 @@ impl Rule {
 pub struct Prototype {
     rules: Vec<Rule>,
     enabled: bool,
-    is_on_disk: bool,
 }
 
 impl Prototype {
@@ -175,11 +175,6 @@ impl Prototype {
     /// Whether any rule was enabled when it was added (`_internal.enabled`).
     pub fn enabled(&self) -> bool {
         self.enabled
-    }
-
-    /// Whether a rule of this name came from a file (`_internal.is_on_disk`).
-    pub fn is_on_disk(&self) -> bool {
-        self.is_on_disk
     }
 }
 
@@ -214,7 +209,8 @@ impl Prototypes {
 
     /// `dictionary_set_advanced()` with the store's insert and conflict callbacks: a new name is inserted; rules
     /// of a known name are appended to its chain, unless that chain came from DynCfg (they are dropped) or they
-    /// come from DynCfg themselves (they replace it). The dictionary takes no empty name.
+    /// come from DynCfg themselves (they replace it). The dictionary takes no empty name. (C also marks the name as
+    /// seen on disk, `_internal.is_on_disk`, which nothing reads.)
     pub(crate) fn set(&mut self, name: &[u8], rules: Vec<Rule>, enabled: bool) {
         let Some(first) = rules.first() else {
             return;
@@ -225,18 +221,12 @@ impl Prototypes {
         let new_is_dyncfg = first.is_dyncfg();
 
         let Some(old) = self.by_name.get_mut(name) else {
-            self.by_name.insert(name.to_vec(), Prototype { rules, enabled, is_on_disk: !new_is_dyncfg });
+            self.by_name.insert(name.to_vec(), Prototype { rules, enabled });
             return;
         };
-        let old_is_dyncfg = old.rules[0].is_dyncfg();
-        let on_disk = !old_is_dyncfg || !new_is_dyncfg;
-        if on_disk {
-            old.is_on_disk = true;
-        }
-
         if new_is_dyncfg {
-            *old = Prototype { rules, enabled, is_on_disk: on_disk };
-        } else if !old_is_dyncfg {
+            *old = Prototype { rules, enabled };
+        } else if !old.rules[0].is_dyncfg() {
             old.rules.extend(rules);
             if enabled {
                 old.enabled = true;
@@ -257,15 +247,15 @@ mod tests {
         rule
     }
 
-    /// The chain of `name`: each rule's mark, then the two flags.
-    fn chain(store: &Prototypes, name: &[u8]) -> (Vec<String>, bool, bool) {
+    /// The chain of `name`: each rule's mark, then whether the name is enabled.
+    fn chain(store: &Prototypes, name: &[u8]) -> (Vec<String>, bool) {
         let prototype = store.get(name).expect("the name");
         let marks = prototype
             .rules()
             .iter()
             .map(|rule| String::from_utf8_lossy(rule.config.units.as_deref().unwrap_or(b"")).into_owned())
             .collect();
-        (marks, prototype.enabled(), prototype.is_on_disk())
+        (marks, prototype.enabled())
     }
 
     #[test]
@@ -274,7 +264,7 @@ mod tests {
         store.set(b"a", vec![rule(SourceType::User, b"1"), rule(SourceType::User, b"2")], false);
         store.set(b"b", vec![rule(SourceType::Stock, b"b")], true);
         store.set(b"a", vec![rule(SourceType::Stock, b"3")], true);
-        assert_eq!(chain(&store, b"a"), (vec!["1".to_owned(), "2".to_owned(), "3".to_owned()], true, true));
+        assert_eq!(chain(&store, b"a"), (vec!["1".to_owned(), "2".to_owned(), "3".to_owned()], true));
         // an enabled chain stays enabled
         store.set(b"a", vec![rule(SourceType::User, b"4")], false);
         assert!(chain(&store, b"a").1);
@@ -289,22 +279,22 @@ mod tests {
         let mut store = Prototypes::default();
         store.set(b"a", vec![rule(SourceType::User, b"1"), rule(SourceType::User, b"2")], true);
         store.set(b"a", vec![rule(SourceType::Dyncfg, b"d1")], false);
-        // the name was on disk once, and the new rules bring their own enabled flag
-        assert_eq!(chain(&store, b"a"), (vec!["d1".to_owned()], false, true));
+        // the new rules bring their own enabled flag
+        assert_eq!(chain(&store, b"a"), (vec!["d1".to_owned()], false));
 
-        // DynCfg over DynCfg: the mark of the disk does not survive (C swaps in the new value as it came)
+        // DynCfg over DynCfg
         store.set(b"a", vec![rule(SourceType::Dyncfg, b"d2"), rule(SourceType::Dyncfg, b"d3")], true);
-        assert_eq!(chain(&store, b"a"), (vec!["d2".to_owned(), "d3".to_owned()], true, false));
+        assert_eq!(chain(&store, b"a"), (vec!["d2".to_owned(), "d3".to_owned()], true));
     }
 
     #[test]
     fn file_rules_after_dyncfg_ones_are_dropped() {
         let mut store = Prototypes::default();
         store.set(b"a", vec![rule(SourceType::Dyncfg, b"d")], false);
-        assert_eq!(chain(&store, b"a"), (vec!["d".to_owned()], false, false));
+        assert_eq!(chain(&store, b"a"), (vec!["d".to_owned()], false));
         store.set(b"a", vec![rule(SourceType::User, b"file")], true);
-        // dropped, but the name is now known to be on disk; its enabled flag is not taken
-        assert_eq!(chain(&store, b"a"), (vec!["d".to_owned()], false, true));
+        // dropped, and its enabled flag is not taken
+        assert_eq!(chain(&store, b"a"), (vec!["d".to_owned()], false));
     }
 
     #[test]

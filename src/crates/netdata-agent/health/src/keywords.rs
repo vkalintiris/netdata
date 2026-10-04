@@ -8,7 +8,7 @@ use std::borrow::Cow;
 
 use netdata_agent_log::netdata_log_error_errno;
 use netdata_agent_query::tables::{TIME_GROUPINGS, TimeGrouping, options};
-use netdata_agent_text::c::{self, at, c_str, is_space};
+use netdata_agent_text::c::{self, at, c_str, is_space, skip_spaces};
 use netdata_agent_text::duration::duration_parse_seconds;
 use netdata_agent_text::parse::{str2ndd, strtof};
 
@@ -288,13 +288,7 @@ pub fn parse_db_lookup(line: usize, filename: &[u8], value: &[u8], ac: &mut Aler
     };
 
     if group_options {
-        let skip_spaces = |mut i: usize| {
-            while is_space(at(s, i)) {
-                i += 1;
-            }
-            i
-        };
-        i = skip_spaces(i);
+        i = skip_spaces(s, i);
 
         match at(s, i) {
             b'!' => {
@@ -337,7 +331,7 @@ pub fn parse_db_lookup(line: usize, filename: &[u8], value: &[u8], ac: &mut Aler
             }
             _ => {}
         }
-        i = skip_spaces(i);
+        i = skip_spaces(s, i);
 
         let digit = |i: usize| at(s, i).is_ascii_digit();
         let first = at(s, i);
@@ -349,7 +343,7 @@ pub fn parse_db_lookup(line: usize, filename: &[u8], value: &[u8], ac: &mut Aler
         {
             let (number, used) = str2ndd(&s[i..]);
             ac.time_group_value = number;
-            i = skip_spaces(i + used);
+            i = skip_spaces(s, i + used);
             if at(s, i) != b')' {
                 netdata_log_error_errno!(
                     "Health configuration at line {line} of file '{file}': missing closing parenthesis after number in aggregation method on '{}'",
