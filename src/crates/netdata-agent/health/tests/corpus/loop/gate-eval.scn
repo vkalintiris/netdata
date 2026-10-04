@@ -52,3 +52,16 @@ gate 1
 var loop.v v 10
 clock 8
 pass 8
+# what an alert shows when it is not evaluated: the values of a first walk that no second walk published stay
+# unpublished while the alert is not runnable (its chart was collected only once); only its run flags follow
+var loop.v v 70
+clock 9
+gate-for 4
+pass 9
+gate 1
+collected loop.v 1 9
+clock 10
+pass 10
+collected loop.v 2 10
+clock 11
+pass 11

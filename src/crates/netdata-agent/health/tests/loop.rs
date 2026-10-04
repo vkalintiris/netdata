@@ -997,5 +997,5 @@ fn loop_matches_c() {
     let (steps, failures) = replay::run();
     let shown = failures[..failures.len().min(12)].join("\n");
     assert!(failures.is_empty(), "{} differences over {steps} steps:\n{shown}", failures.len());
-    assert_eq!(steps, 215);
+    assert_eq!(steps, 218);
 }
