@@ -36,6 +36,7 @@ mod heartbeat;
 mod host_labels;
 mod listen;
 mod maintenance;
+mod manage;
 mod meta_store;
 mod metasync;
 mod plugins_d;
@@ -809,6 +810,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         ),
         None => archived::load_without_database(&hosts, Some(&metasync)),
     }
+    // api_v1_management_init(): with health on or off
+    let management_key = manage::management_init(&mut conf);
     // each started when a node is first assigned to it
     let stream_threads = netdata_agent_streaming::pins::threads_for(conf.threads.cpus);
     let stream_pins = Arc::new(std::sync::Mutex::new(netdata_agent_streaming::pins::Pins::new(stream_threads)));
@@ -940,6 +943,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         web_dir: conf.dirs.web.clone(),
         hosts: Arc::clone(&hosts),
         health: Arc::clone(&health),
+        management_key,
         meta: meta.as_ref().map(Arc::downgrade),
         user_config_dir: conf.dirs.user_config.clone(),
         grouping_windows,

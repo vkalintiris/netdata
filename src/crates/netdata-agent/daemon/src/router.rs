@@ -3,7 +3,8 @@
 //! `web_client_api_request_vX()` in `src/web/api/web_api.c`.
 //!
 //! Not ported yet: `/mcp` and `/sse`, and the API commands other than `info`, `chart`, `charts`, `context`,
-//! `contexts`, `data`, `dbengine_stats`, `function`, `functions`, `me`, `progress`, `stream_info` and `stream_path`.
+//! `contexts`, `data`, `dbengine_stats`, `function`, `functions`, `manage`, `me`, `progress`, `stream_info`,
+//! `stream_path` and health's (`alarms`, `alarm_log` and the others of its block of the table).
 //! `/netdata.conf` shows only the keys of the subsystems ported so far.
 
 use std::sync::Arc;
@@ -29,6 +30,7 @@ use crate::data;
 use crate::dbengine_stats;
 use crate::functions;
 use crate::health_api;
+use crate::manage;
 use crate::server::{self, Reply, Shared};
 use crate::static_file;
 use crate::stream_info;
@@ -162,6 +164,14 @@ const API_V1: &[Command] = &[
         access: access::ANONYMOUS_DATA,
         allow_subpaths: false,
         callback: health_api::alarm_count,
+    },
+    // the only v1 command with subpaths: it reads the path itself, and the key is its authorization
+    Command {
+        name: "manage",
+        acl: acl::bits::MANAGEMENT,
+        access: access::NONE,
+        allow_subpaths: true,
+        callback: manage::api_v1_manage,
     },
     Command {
         name: "alarm_variables",
@@ -368,7 +378,11 @@ pub struct Route<'a> {
     /// The request as its log frames and records see it.
     pub ctx: &'a RequestContext,
     pub url_as_received: &'a [u8],
+    /// `w->url_path_decoded`: the request's path, decoded, without its query.
+    pub path_decoded: &'a [u8],
     pub query: &'a [u8],
+    /// `w->auth_bearer_token` as `X-Auth-Token` sets it: the management API's key.
+    pub auth_token: Option<&'a [u8]>,
     /// `w->payload`: a POST or PUT body.
     pub payload: Option<&'a Payload>,
     /// `X-Forwarded-For` as received (cut at 45 bytes), for a call's source.
@@ -415,7 +429,9 @@ pub fn process_request(
         interrupted,
         ctx,
         url_as_received: &req.url_as_received,
+        path_decoded: &path[..end],
         query: &req.query,
+        auth_token: req.headers.auth_token.as_deref(),
         payload: req.payload.as_ref(),
         forwarded_for: &req.headers.forwarded_for,
         input,
@@ -583,6 +599,7 @@ mod tests {
             first_request_timeout_s: 60,
             idle_timeout_s: 60,
             health: netdata_agent_health::Health::init(Default::default(), Box::new(|_| {})),
+            management_key: b"5a1e0000-0000-4000-8000-00000000c0de".to_vec(),
             meta: None,
             user_config_dir: "/etc/netdata".into(),
             grouping_windows: Default::default(),
@@ -1270,5 +1287,50 @@ mod tests {
             (r.code, r.headers.as_slice()),
             (status::MOVED_PERM, &b"Location: box/\r\n"[..])
         );
+    }
+
+    /// `/api/v1/manage/health`: the path's two 404 texts, the ACL bit before the key, the key, and a request the
+    /// silencers answer.
+    #[test]
+    fn the_management_route_asks_for_its_path_its_acl_bit_and_its_key() {
+        let s = shared();
+        let key = s.management_key.clone();
+        let all = acl::bits::TRANSPORTS | acl::bits::ALL_LISTENER_FEATURES;
+        let ask = |path: &[u8], token: Option<&[u8]>, acl: u32| {
+            let mut req = Request::default();
+            req.path = path.to_vec();
+            req.url_as_received = path.to_vec();
+            req.query = b"?cmd=LIST".to_vec();
+            req.headers.auth_token = token.map(<[u8]>::to_vec);
+            let context = crate::access_log::RequestContext::default();
+            let reply = process_request(&req, path, acl, &s, Instant::now(), &context, &|_| false);
+            (reply.code, reply.content_type, reply.no_cacheable, String::from_utf8(reply.body).expect("a text"))
+        };
+        let plain = |code, text: &str| (code, ContentType::TextPlain, true, text.to_owned());
+        let health = b"/api/v1/manage/health";
+
+        let listed = ask(health, Some(&key), all);
+        assert_eq!((listed.0, listed.1, listed.2), (status::OK, ContentType::ApplicationJson, true));
+        assert_eq!(listed.3, "{\n\t\"all\": false,\n\t\"type\": \"None\",\n\t\"silencers\": []\n}\n");
+        // the first `manage/health` of the path must end it, wherever it stands
+        assert_eq!(ask(b"/api/v1/manage/x/manage/health", Some(&key), all), listed);
+        let curently = "Invalid management request. Curently only 'health' is supported.";
+        assert_eq!(ask(b"/api/v1/manage", Some(&key), all), plain(status::NOT_FOUND, curently));
+        assert_eq!(ask(b"/api/v1/manage/other", Some(&key), all), plain(status::NOT_FOUND, curently));
+        assert_eq!(
+            ask(b"/api/v1/manage/health/more", Some(&key), all),
+            plain(status::NOT_FOUND, "Invalid management request. Currently only 'health' is supported.")
+        );
+        // the key: `X-Auth-Token`, whole
+        assert_eq!(ask(health, None, all), plain(status::FORBIDDEN, "Auth Error\n"));
+        assert_eq!(ask(health, Some(b"another"), all), plain(status::FORBIDDEN, "Auth Error\n"));
+        assert_eq!(ask(health, Some(&key[..35]), all), plain(status::FORBIDDEN, "Auth Error\n"));
+        // the ACL bit comes before the path and the key
+        let denied = plain(status::UNAVAILABLE_FOR_LEGAL_REASONS, "You need to be authorized to access this resource");
+        assert_eq!(ask(health, Some(&key), all & !acl::bits::MANAGEMENT), denied);
+        assert_eq!(ask(b"/api/v1/manage", None, all & !acl::bits::MANAGEMENT), denied);
+        // not a command of the later versions
+        assert_eq!(ask(b"/api/v2/manage/health", Some(&key), all).0, status::NOT_FOUND);
+        assert_eq!(ask(b"/api/v3/manage/health", Some(&key), all).0, status::NOT_FOUND);
     }
 }

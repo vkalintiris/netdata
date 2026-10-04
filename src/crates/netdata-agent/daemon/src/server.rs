@@ -50,6 +50,8 @@ pub struct Shared {
     pub hosts: Arc<Hosts>,
     /// The health plugin's state: the rules and each host's alerts.
     pub health: Arc<netdata_agent_health::Health>,
+    /// `api_secret`: the management API's key, made before the first request is answered.
+    pub management_key: Vec<u8>,
     /// The metadata database, for the alert log's endpoints; none when the agent has none. Weak: the exit closes
     /// the database by letting go of it.
     pub meta: Option<std::sync::Weak<netdata_agent_metadata::open::MetaDb>>,

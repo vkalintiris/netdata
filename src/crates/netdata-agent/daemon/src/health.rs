@@ -55,6 +55,8 @@ pub fn plugin_init(conf: &mut Conf, config: HealthConfig, database: bool, queue:
     if health.config().enabled {
         let dirs = conf.health_config_dirs(health.config().stock_enabled);
         health.reload_prototypes(&dirs);
+        // with health off the silencers' file is not read: the state stays empty until a request changes it
+        health.silencers().init();
     }
     health
 }
@@ -378,6 +380,8 @@ pub fn spawn(
             let mut suspension = Suspension { last: None };
             // service_running(SERVICE_HEALTH): false once the exit starts (D110)
             let running = || ticker.running() && !shutdown::exiting();
+            // C's `static int logged`: once per process
+            let mut skipping_logged = false;
             while running() {
                 if !stream_control::health_should_be_running() {
                     ticker.sleep(stream_control::throttle_wait());
@@ -395,6 +399,15 @@ pub fn spawn(
                     );
                     // schedule_node_state_update(localhost, 10)
                     hosts.localhost().set_aclk_sync_config();
+                }
+                // C's record says so and skips nothing: the hosts' passes run, and each alert is found disabled
+                if !skipping_logged && health.silencers().all_alarms_disabled() {
+                    nd_log!(
+                        Source::Daemon,
+                        Priority::Debug,
+                        "Skipping health checks, because all alarms are disabled via API command."
+                    );
+                    skipping_logged = true;
                 }
                 hosts.storage().next_health_iteration();
                 for host in hosts.all() {
@@ -434,10 +447,19 @@ mod tests {
         let mut conf = Conf::default();
         conf.dirs.user_config = root.join("user").to_string_lossy().into_owned();
         conf.dirs.stock_config = root.join("stock").to_string_lossy().into_owned();
+        conf.dirs.varlib = root.join("lib").to_string_lossy().into_owned();
         let path = root.join("netdata.conf");
         std::fs::write(&path, format!("[health]\n{health}")).unwrap();
         assert!(conf.netdata.load(&path, false, None).is_ok());
+        // the "silencers" step of the start, which comes before health's
+        conf.health_silencers_filename();
         conf
+    }
+
+    /// The record of health's start when there is no silencers file, which no test here lays.
+    fn no_silencers(root: &Path) -> String {
+        let file = root.join("lib").join("health.silencers.json");
+        format!("Cannot open the file {}, so Netdata will work with the default health configuration.", file.display())
     }
 
     fn rule_file(root: &Path, path: &str, name: &str) {
@@ -476,7 +498,10 @@ mod tests {
         let config = conf.health_load_config_defaults();
         let (queue, unread) = MetaQueue::unread();
         let (health, records) = netdata_agent_log::capture(|| plugin_init(&mut conf, config, true, queue));
-        assert!(records.is_empty(), "{records:?}");
+        // with health on the silencers' file is read after the rules: there is none, and the record carries the
+        // failed open's errno
+        let records: Vec<_> = records.into_iter().map(|record| (record.errno, record.message)).collect();
+        assert_eq!(records, [(2, Some(no_silencers(root.path())))]);
         // the user tree first, then the stock files nothing shadows
         assert_eq!(names(&health), ["user_a", "stock_b"]);
         assert_eq!(templates(&unread.statements()), ["user_a", "stock_b"]);
@@ -788,7 +813,8 @@ mod tests {
         assert_eq!(names(&health), ["user_a", "stock_b"]);
         assert!(unread.statements().is_empty());
         let messages: Vec<String> = records.into_iter().filter_map(|record| record.message).collect();
-        assert_eq!(messages, ["Failed to prepare statement, rc=21 in sql_alert_store_config"; 2]);
+        let failed = "Failed to prepare statement, rc=21 in sql_alert_store_config".to_owned();
+        assert_eq!(messages, [failed.clone(), failed, no_silencers(root.path())]);
     }
 
     /// A pass after the wall clock ran more than twice as far as the monotonic one is a resume; the first is not.
