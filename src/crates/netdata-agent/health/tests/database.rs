@@ -67,7 +67,7 @@ fn health(config: HealthConfig, text: &str) -> Arc<Health> {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let path = dir.path().join("test.conf");
     std::fs::write(&path, text).expect("the file");
-    let health = Health::init(config, Box::new(|_| {}), false);
+    let health = Health::init(config, Box::new(|_| {}));
     assert!(health_readfile(&health, path.as_os_str().as_bytes(), false));
     health
 }

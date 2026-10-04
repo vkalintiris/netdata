@@ -94,9 +94,22 @@ void oracle_loop_store_config(RRD_ALERT_PROTOTYPE *ap) {
 }
 
 void oracle_sql_open(const char *path) {
-    unlink(path);
+    // a new database: the file an earlier scenario left goes, with its write-ahead log and its index
+    static const char *suffixes[] = { "", "-wal", "-shm" };
+    for(size_t i = 0; i < sizeof(suffixes) / sizeof(suffixes[0]); i++) {
+        char file[4096 + 8];
+        snprintf(file, sizeof(file), "%s%s", path, suffixes[i]);
+        unlink(file);
+    }
     if(sqlite3_open(path, &db_meta) != SQLITE_OK) {
         fprintf(stdout, "cannot open %s: %s\n", path, sqlite3_errmsg(db_meta));
+        exit(1);
+    }
+    // the daemon's journal mode (sqlite_functions.c, configure_sqlite_database()): with a rollback journal SQLite
+    // looks for a hot journal at every read, and the failed look leaves an error number that C's next record of
+    // the thread would print; the daemon's records have none
+    if(sqlite3_exec(db_meta, "PRAGMA journal_mode=WAL", NULL, NULL, NULL) != SQLITE_OK) {
+        fprintf(stdout, "cannot set the journal mode of %s: %s\n", path, sqlite3_errmsg(db_meta));
         exit(1);
     }
     for(size_t i = 0; database_config[i]; i++) {

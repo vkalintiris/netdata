@@ -17,7 +17,7 @@ type Fields = Vec<Vec<u8>>;
 fn read(item: &Item) -> (Vec<Fields>, Vec<bool>, Vec<Fields>, Vec<Captured>) {
     let stored: Arc<Mutex<Vec<Fields>>> = Arc::default();
     let sink = Arc::clone(&stored);
-    let health = Health::init(oracle_config(), Box::new(move |rule| sink.lock().unwrap().push(rule_fields(rule))), false);
+    let health = Health::init(oracle_config(), Box::new(move |rule| sink.lock().unwrap().push(rule_fields(rule))));
 
     let (returns, records) = netdata_agent_log::capture(|| {
         item.files.iter().map(|file| health_readfile(&health, file.bytes(2), file.flag(3))).collect::<Vec<bool>>()

@@ -145,7 +145,7 @@ impl Health {
     /// where C looks: before the host is initialized, and again before its charts are linked.
     fn link(&self, host: &Arc<Host>, alerts: &HostAlerts, env: &dyn Env, clock: Clock, running: &dyn Fn() -> bool) {
         if !alerts.is_initialized() && running() {
-            alerts.initialize(self.database, clock);
+            alerts.initialize(host, &self.config, env, clock, running);
             if running() {
                 self.apply_prototypes_to_host(host, env, clock, running);
             }

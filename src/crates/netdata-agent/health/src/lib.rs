@@ -36,6 +36,7 @@ pub mod matching;
 pub mod pass;
 pub mod prototype;
 pub mod readfile;
+pub mod sql;
 pub mod store;
 pub mod template;
 #[cfg(test)]
@@ -76,16 +77,13 @@ pub struct Health {
     store: StoreSink,
     /// Each host's alerts, by machine GUID, from the host's first health pass on.
     hosts: Mutex<HashMap<String, Arc<HostAlerts>>>,
-    /// Whether the agent has its metadata database: a host's alert log is then loaded at its first pass, which
-    /// seeds its ids.
-    database: bool,
 }
 
 impl Health {
     /// `health_plugin_init()` up to the load: an empty store.
-    pub fn init(config: HealthConfig, store: StoreSink, database: bool) -> Arc<Health> {
+    pub fn init(config: HealthConfig, store: StoreSink) -> Arc<Health> {
         let prototypes = RwLock::new(Prototypes::default());
-        Arc::new(Health { config, prototypes, store, hosts: Mutex::default(), database })
+        Arc::new(Health { config, prototypes, store, hosts: Mutex::default() })
     }
 
     pub fn config(&self) -> &HealthConfig {

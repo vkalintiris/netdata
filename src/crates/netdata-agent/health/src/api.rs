@@ -612,7 +612,7 @@ mod tests {
             default_recipient: b"root".to_vec(),
             ..HealthConfig::default()
         };
-        let health = crate::Health::init(config, Box::new(|_| {}), false);
+        let health = crate::Health::init(config, Box::new(|_| {}));
         assert!(crate::readfile::health_readfile(&health, rules.as_os_str().as_bytes(), false));
 
         // the case's chart (inputs/plugin-lines.txt), collected, and its alerts

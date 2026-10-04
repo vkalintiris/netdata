@@ -59,17 +59,21 @@ mod replay {
     use std::collections::{BTreeMap, HashMap};
     use std::sync::Arc;
 
-    use netdata_agent_health::Health;
     use netdata_agent_health::alerts::HostAlerts;
     use netdata_agent_health::entry::Entry;
     use netdata_agent_health::pass::{ChartFacts, Env, Pass};
     use netdata_agent_health::readfile::health_readfile;
+    use netdata_agent_health::store::alert_hash_row;
+    use netdata_agent_health::{Health, StoreSink, sql};
     use netdata_agent_log::{Captured, Field, Priority, Source};
+    use netdata_agent_metadata::health_log::LoadedRow;
+    use netdata_agent_metadata::open::{MetaDb, SqliteSettings};
     use netdata_agent_query::value::{Priority as QueryPriority, ValueRequest, ValueResult};
     use netdata_agent_rrd::chart::{Algorithm, Chart, ChartSpec, ChartType, flags};
     use netdata_agent_rrd::host::{Host, HostInfo, pending_flags};
     use netdata_agent_rrd::labels::SRC_CONFIG;
     use netdata_agent_rrd::mode::DbMode;
+    use rusqlite::types::ValueRef;
 
     use crate::common::{oracle_config, rows, unescape_logfmt};
 
@@ -103,6 +107,66 @@ mod replay {
     /// An alarm the table knows: its chart, its name, its alarm id and its next event id.
     type KnownAlarm = (Vec<u8>, Vec<u8>, u32, u32);
 
+    /// The metadata database of a scenario that says `database real`: the agent's handle on a new file, and a
+    /// second connection for the scenario's own statements and for reading the tables.
+    struct Real {
+        meta: Arc<MetaDb>,
+        raw: rusqlite::Connection,
+        _dir: tempfile::TempDir,
+    }
+
+    /// The host's id in the tables: its machine GUID's bytes.
+    fn host_id(host: &Host) -> [u8; 16] {
+        let hex: String = host.machine_guid().chars().filter(|c| *c != '-').collect();
+        u128::from_str_radix(&hex, 16).expect("a GUID").to_be_bytes()
+    }
+
+    /// C's `%.17g`.
+    fn g17(value: f64) -> String {
+        if value == 0.0 || !value.is_finite() {
+            return format!("{value}");
+        }
+        let scientific = format!("{value:.16e}");
+        let (mantissa, exponent) = scientific.split_once('e').expect("an exponent");
+        let exponent: i32 = exponent.parse().expect("an exponent");
+        let trimmed = |digits: &str| match digits.contains('.') {
+            true => digits.trim_end_matches('0').trim_end_matches('.').to_owned(),
+            false => digits.to_owned(),
+        };
+        if (-4..17).contains(&exponent) {
+            trimmed(&format!("{value:.*}", (16 - exponent) as usize))
+        } else {
+            format!("{}e{}{:02}", trimmed(mantissa), if exponent < 0 { '-' } else { '+' }, exponent.abs())
+        }
+    }
+
+    /// Every row of a table in rowid order as the generator prints one: the table, then `column=value` for each
+    /// column (an integer as it is, a real with 17 digits, a text in quotes, a blob as hex, `NULL`).
+    fn table_rows(raw: &rusqlite::Connection, table: &str) -> Vec<Fields> {
+        let mut statement = raw.prepare(&format!("SELECT * FROM {table} ORDER BY rowid")).expect("the table");
+        let names: Vec<String> = statement.column_names().iter().map(|name| (*name).to_owned()).collect();
+        let mut rows = statement.query([]).expect("the rows");
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().expect("a row") {
+            let mut fields = vec![table.as_bytes().to_vec()];
+            for (i, name) in names.iter().enumerate() {
+                let value = match row.get_ref(i).expect("a column") {
+                    ValueRef::Null => b"NULL".to_vec(),
+                    ValueRef::Integer(value) => text(value),
+                    ValueRef::Real(value) => g17(value).into_bytes(),
+                    ValueRef::Text(value) => [b"\"", value, b"\""].concat(),
+                    ValueRef::Blob(value) => {
+                        let hex: String = value.iter().map(|byte| format!("{byte:02x}")).collect();
+                        format!("x'{hex}'").into_bytes()
+                    }
+                };
+                fields.push([name.as_bytes(), b"=", &value].concat());
+            }
+            out.push(fields);
+        }
+        out
+    }
+
     /// What a scenario says of one chart, beside the chart's own state.
     struct ChartScript {
         chart: Arc<Chart>,
@@ -126,8 +190,17 @@ mod replay {
         gate_for: Cell<usize>,
         running: Cell<bool>,
         running_for: Cell<usize>,
+        /// The next look at the service is not one the generator makes: it counts for nothing.
+        free_look: Cell<bool>,
         exiting: Cell<bool>,
         saved: Cell<bool>,
+        /// Whether the agent has a database. With a real one the alert log's statements run over its file; else
+        /// the table is empty, a save does what `saved` says, and the alarms the table knows are `sql_alarms`.
+        database: Cell<bool>,
+        real: RefCell<Option<Real>>,
+        /// Whether the host has its ACLK sync configuration: an inserted entry then writes its alarm's row of the
+        /// unclaimed queue.
+        aclk_config: Cell<bool>,
         /// Whether the metadata queue takes a save, and whether the thread at work is HEALTH's.
         queue_accepts: Cell<bool>,
         health_thread: Cell<bool>,
@@ -144,6 +217,9 @@ mod replay {
         /// C's `service_running()` as the generator stubs it: stopping once the exit began; else running for the
         /// looks the scenario counts down, then stopping.
         fn is_running(&self) -> bool {
+            if self.free_look.replace(false) {
+                return true;
+            }
             if self.exiting.get() {
                 return false;
             }
@@ -267,13 +343,45 @@ mod replay {
             self.is_running()
         }
 
-        /// The stub of `sql_get_alarm_id()`: the alarm of that chart and name the scenario put in the table, the
-        /// last one when several match.
-        fn sql_alarm_id(&self, _: &Host, chart: &[u8], name: Option<&[u8]>) -> Option<(u32, u32)> {
+        /// The stub of `sql_health_alarm_log_load()`: it records whether there is a database. With a real one C's
+        /// statements run: the REMOVED rows, then the load's query. With a scripted one the table is empty.
+        fn load(&self, host: &Host) -> Option<Vec<LoadedRow>> {
+            let database = self.database.get();
+            self.calls.borrow_mut().push(vec![b"load".to_vec(), text(u8::from(database))]);
+            let real = self.real.borrow();
+            let Some(real) = real.as_ref() else {
+                // The generator's scripted load seeds the host's ids and returns. C's own load, over an empty
+                // table, looks at the service once (before the step that finds no row) and writes its record: the
+                // look is given back here, the record is left out where the records are compared.
+                self.free_look.set(database);
+                return database.then(Vec::new);
+            };
+            let (hostname, id, queue) = (host.hostname(), host_id(host), self.aclk_config.get());
+            let (now, now_usec) = (self.clock(), self.now_usec());
+            let mut transition_id = || self.transition_id();
+            let running = || self.is_running();
+            real.meta.check_removed_alerts_state(&hostname, &id, &running, queue, now, now_usec, &mut transition_id);
+            let mut rows = Vec::new();
+            let prepared = real.meta.load_health_log(&id, |row| {
+                rows.push(row);
+                true
+            });
+            prepared.then_some(rows)
+        }
+
+        /// The stub of `sql_get_alarm_id()`: what the real table has for that chart and name, else the alarm the
+        /// scenario put in the scripted table, the last one when several match.
+        fn sql_alarm_id(&self, host: &Host, chart: &[u8], name: Option<&[u8]>) -> Option<(u32, u32)> {
+            let known = match self.real.borrow().as_ref() {
+                Some(real) => real.meta.get_alarm_id(&host_id(host), chart, name),
+                None => {
+                    let (alarms, name) = (self.sql_alarms.borrow(), name.unwrap_or(b""));
+                    let known = alarms.iter().rev().find(|known| known.0 == chart && known.1 == name);
+                    known.map(|known| (known.2, known.3))
+                }
+            };
             let name = name.unwrap_or(b"");
-            let alarms = self.sql_alarms.borrow();
-            let known = alarms.iter().rev().find(|(of_chart, of_name, ..)| of_chart == chart && of_name == name);
-            let (alarm_id, next_event_id) = known.map_or((0, 0), |known| (known.2, known.3));
+            let (alarm_id, next_event_id) = known.unwrap_or((0, 0));
             let answer = [text(alarm_id), text(next_event_id)];
             let call = [b"sql_get_alarm_id".to_vec(), chart.to_vec(), name.to_vec()].into_iter().chain(answer);
             self.calls.borrow_mut().push(call.collect());
@@ -291,11 +399,16 @@ mod replay {
             accepts
         }
 
-        /// The stub of `sql_health_alarm_log_save()`: it records the entry as it stands, and marks it as saved
-        /// when the scenario says so.
-        fn sql_save(&self, entry: &Entry) -> bool {
+        /// The stub of `sql_health_alarm_log_save()`: it records the entry as it stands; then a real database
+        /// gets its row, and a scripted one marks the entry as saved when the scenario says so.
+        fn sql_save(&self, host: &Host, entry: &Entry) -> bool {
             self.calls.borrow_mut().push(vec![b"save".to_vec(), text(entry.unique_id), hex8(entry.flags)]);
-            self.saved.get()
+            match self.real.borrow().as_ref() {
+                Some(real) => {
+                    sql::save(&real.meta, &host.hostname(), &host_id(host), entry, self.aclk_config.get())
+                }
+                None => self.saved.get(),
+            }
         }
 
         fn commit_transitions(&self) {
@@ -517,7 +630,9 @@ mod replay {
         name: String,
         health: Option<Arc<Health>>,
         rules: Vec<String>,
-        database: bool,
+        /// The configuration's retention and limit of the alert log, when the scenario sets them.
+        retention_s: Option<u32>,
+        log_max: Option<u32>,
         host: Arc<Host>,
         world: World,
         step: usize,
@@ -529,10 +644,21 @@ mod replay {
     }
 
     impl Replay {
-        /// The health plugin, made at the first step: every rule file and the database setting are known by then.
+        /// The health plugin, made at the first step: every rule file, the database and the configuration are
+        /// known by then. With a real database each rule's `alert_hash` row is stored as the rule is read.
         fn health(&mut self) -> Arc<Health> {
             if self.health.is_none() {
-                let health = Health::init(oracle_config(), Box::new(|_| {}), self.database);
+                let mut config = oracle_config();
+                config.health_log_retention_s = self.retention_s.unwrap_or(config.health_log_retention_s);
+                config.health_log_entries_max = self.log_max.unwrap_or(config.health_log_entries_max);
+                let meta = self.world.real.borrow().as_ref().map(|real| Arc::clone(&real.meta));
+                let store: StoreSink = match meta {
+                    Some(meta) => Box::new(move |rule| {
+                        assert!(meta.store_alert_config(&alert_hash_row(rule)), "a rule's row was not stored");
+                    }),
+                    None => Box::new(|_| {}),
+                };
+                let health = Health::init(config, store);
                 for path in &self.rules {
                     assert!(health_readfile(&health, path.as_bytes(), false), "cannot read {path}");
                 }
@@ -553,11 +679,27 @@ mod replay {
             let (directive, rest) = (words.next().expect("a directive"), words.next().unwrap_or(""));
             let args: Vec<&str> = rest.split(' ').collect();
             let flag = |text: &str| text != "0";
-            // the generator reads both at once; here they make the plugin, at the first step
-            assert!(self.health.is_none() || !matches!(directive, "rules" | "database"), "{}: {line}", self.name);
+            // the generator reads these at once; here they make the plugin, at the first step
+            let early = matches!(directive, "rules" | "database" | "retention" | "log-max");
+            assert!(self.health.is_none() || !early, "{}: {line}", self.name);
             match directive {
                 "rules" => self.rules.push(args[0].to_owned()),
-                "database" => self.database = flag(args[0]),
+                "database" if args[0] == "real" => {
+                    let dir = tempfile::tempdir().expect("a directory");
+                    let meta = MetaDb::open(dir.path(), &SqliteSettings::default()).expect("the metadata database");
+                    let raw = rusqlite::Connection::open(MetaDb::path(dir.path())).expect("a second connection");
+                    self.world.database.set(true);
+                    *self.world.real.borrow_mut() = Some(Real { meta: Arc::new(meta), raw, _dir: dir });
+                }
+                "database" => self.world.database.set(flag(args[0])),
+                "retention" => self.retention_s = Some(args[0].parse().expect("seconds")),
+                "log-max" => self.log_max = Some(args[0].parse().expect("a count")),
+                "aclk-config" => self.world.aclk_config.set(flag(args[0])),
+                "sql" => {
+                    let real = self.world.real.borrow();
+                    let raw = &real.as_ref().unwrap_or_else(|| panic!("{}: no real database", self.name)).raw;
+                    raw.execute_batch(rest).unwrap_or_else(|err| panic!("{}: {rest}: {err}", self.name));
+                }
                 "hostlabel" => {
                     let (name, value) = rest.split_once(' ').expect("a label");
                     // the generator adds the label and raises nothing
@@ -735,16 +877,51 @@ mod replay {
                 }
                 // `store_alert_transitions()` on a worker of the metadata thread: the queued saves in arrival order
                 "store" => {
-                    let world = &self.world;
+                    let (world, host) = (&self.world, &self.host);
                     let health_thread = world.health_thread.replace(false);
                     let queued = std::mem::take(&mut *world.queued.borrow_mut());
                     let ((), records) = netdata_agent_log::capture(|| {
                         for (alerts, unique_id) in queued {
-                            alerts.save_queued(unique_id, &|entry| world.sql_save(entry));
+                            alerts.save_queued(unique_id, &|entry| world.sql_save(host, entry));
                         }
                     });
                     world.health_thread.set(health_thread);
                     self.dump(line, None, records);
+                }
+                // A new process on the same database: the host's alerts, its log and what the queue held are
+                // gone; the rules are those read before, and every chart asks for its alerts again.
+                "restart" => {
+                    let health = self.health();
+                    self.world.queued.borrow_mut().clear();
+                    health.host_freed(&self.host);
+                    self.world.exiting.set(false);
+                    self.host.take_health_pending();
+                    self.host.raise_pending_flags(pending_flags::HEALTH_INITIALIZATION);
+                    self.host.set_health_delay_up_to(0);
+                    for script in self.world.charts.borrow().iter().filter(|script| !script.chart.is_freed()) {
+                        script.chart.take_health_pending();
+                        script.chart.flags_set_and_clear(flags::PENDING_HEALTH_INITIALIZATION, 0);
+                    }
+                    self.dump(line, None, Vec::new());
+                }
+                // the metadata thread's hourly cleanup of the host's alert log, then the memory log's once more
+                "cleanup" => {
+                    let (health, world) = (self.health(), &self.world);
+                    let alerts = health.host(&self.host);
+                    let ((), records) = netdata_agent_log::capture(|| {
+                        if let Some(real) = world.real.borrow().as_ref() {
+                            sql::cleanup(&real.meta, &host_id(&self.host), alerts.as_deref(), &|| world.clock());
+                        }
+                        if let Some(alerts) = &alerts {
+                            alerts.log_cleanup(&|| world.clock());
+                        }
+                    });
+                    self.dump(line, None, records);
+                }
+                // the alert log's query: its body is compared once its JSON is ported
+                "alarm-log" => {
+                    self.health();
+                    self.dump(line, None, Vec::new());
                 }
                 other => panic!("{}: directive {other}", self.name),
             }
@@ -874,14 +1051,27 @@ mod replay {
                 }
             }
 
+            if let Some(real) = self.world.real.borrow().as_ref() {
+                for table in ["health_log", "health_log_detail", "alert_queue", "aclk_queue"] {
+                    for row in table_rows(&real.raw, table) {
+                        put("sql", row);
+                    }
+                }
+            }
+
             let mut expected = self.expected.remove(&self.step).unwrap_or_default();
+            // the alert log's JSON is not ported yet: its body, and the records its export writes
+            expected.remove("body");
+            if directive.starts_with("alarm-log") {
+                expected.remove("record");
+            }
             if let Some(calls) = expected.get_mut("call") {
                 calls.retain(|call| match &call[0][..] {
-                    b"queue" | b"save" | b"lookup" | b"notify" | b"sql_get_alarm_id" => true,
+                    b"queue" | b"save" | b"lookup" | b"notify" | b"sql_get_alarm_id" | b"load" => true,
                     b"commit_alert_transitions" | b"process_alert_pending_queue" => true,
-                    // the load comes with the tables' own step; an entry freed with a save still queued is kept
-                    // aside inside the host's alerts: it shows in the store job's saves
-                    b"load" | b"queue_deletion" => false,
+                    // an entry freed with a save still queued is kept aside inside the host's alerts: it shows in
+                    // the store job's saves
+                    b"queue_deletion" => false,
                     other => panic!("{}: a call row of kind {}", self.name, String::from_utf8_lossy(other)),
                 });
                 if calls.is_empty() {
@@ -890,7 +1080,12 @@ mod replay {
             }
             let expected_records: Vec<Record> =
                 expected.remove("record").unwrap_or_default().iter().map(|row| c_record(&row[0])).collect();
-            let actual_records: Vec<Record> = records.iter().map(rust_record).collect();
+            // the generator's scripted load writes no record (see `World::load`)
+            let scripted = self.world.real.borrow().is_none();
+            let empty_load = b"Table health_log, loaded 0 alarm entries, errors in 0 entries.";
+            let load_record = |record: &Record| record.3.ends_with(empty_load);
+            let mut actual_records: Vec<Record> = records.iter().map(rust_record).collect();
+            actual_records.retain(|record| !(scripted && load_record(record)));
             if expected_records != actual_records {
                 let first = expected_records.iter().zip(&actual_records).position(|(e, a)| e != a);
                 let first = first.unwrap_or(expected_records.len().min(actual_records.len()));
@@ -1026,8 +1221,12 @@ mod replay {
                 gate_for: Cell::new(0),
                 running: Cell::new(true),
                 running_for: Cell::new(0),
+                free_look: Cell::new(false),
                 exiting: Cell::new(false),
                 saved: Cell::new(false),
+                database: Cell::new(true),
+                real: RefCell::new(None),
+                aclk_config: Cell::new(false),
                 queue_accepts: Cell::new(false),
                 health_thread: Cell::new(true),
                 sql_alarms: RefCell::new(Vec::new()),
@@ -1041,7 +1240,8 @@ mod replay {
                 name,
                 health: None,
                 rules: Vec::new(),
-                database: true,
+                retention_s: None,
+                log_max: None,
                 host,
                 world,
                 step: 0,
@@ -1074,6 +1274,15 @@ fn loop_matches_c() {
 #[test]
 fn queue_matches_c() {
     assert_eq!(replayed("queue"), 39);
+}
+
+/// Every scenario of `tests/corpus/sql/` against C's pass with C's own alert log SQL over a real database file:
+/// here the Rust statements run over a new metadata database, and after each step the rows of the alert log's four
+/// tables are compared too. A scenario's `restart` is a new process on the same file: the load at the host's first
+/// pass, with the REMOVED rows it injects, rows it refuses, and a service that stops while it loads.
+#[test]
+fn sql_matches_c() {
+    assert_eq!(replayed("sql"), 87);
 }
 
 /// The steps a family's replay compared; any difference from C's rows fails.

@@ -16,6 +16,7 @@ use netdata_agent_health::entry::Entry;
 use netdata_agent_health::pass::{ChartFacts, Env, Pass};
 use netdata_agent_health::store::alert_hash_row;
 use netdata_agent_health::{Health, StoreSink};
+use netdata_agent_metadata::health_log::LoadedRow;
 use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_query::execute::Control;
 use netdata_agent_query::grouping::Windows;
@@ -44,7 +45,7 @@ pub fn plugin_init(conf: &mut Conf, config: HealthConfig, database: bool, queue:
     } else {
         Box::new(|_| crate::meta_store::no_database("sql_alert_store_config"))
     };
-    let health = Health::init(config, store, database);
+    let health = Health::init(config, store);
     if health.config().enabled {
         let dirs = conf.health_config_dirs(health.config().stock_enabled);
         health.reload_prototypes(&dirs);
@@ -78,11 +79,13 @@ impl Suspension {
 pub struct LiveEnv {
     hosts: Arc<Hosts>,
     windows: Windows,
+    /// Whether the agent has its metadata database.
+    database: bool,
 }
 
 impl LiveEnv {
-    pub fn new(hosts: Arc<Hosts>, windows: Windows) -> LiveEnv {
-        LiveEnv { hosts, windows }
+    pub fn new(hosts: Arc<Hosts>, windows: Windows, database: bool) -> LiveEnv {
+        LiveEnv { hosts, windows, database }
     }
 }
 
@@ -136,6 +139,11 @@ impl Env for LiveEnv {
         !shutdown::exiting()
     }
 
+    /// With a database the table reads as empty until the alert log's tables are wired.
+    fn load(&self, _: &Host) -> Option<Vec<LoadedRow>> {
+        self.database.then(Vec::new)
+    }
+
     fn sql_alarm_id(&self, _: &Host, _: &[u8], _: Option<&[u8]>) -> Option<(u32, u32)> {
         None
     }
@@ -144,7 +152,7 @@ impl Env for LiveEnv {
         false
     }
 
-    fn sql_save(&self, _: &Entry) -> bool {
+    fn sql_save(&self, _: &Host, _: &Entry) -> bool {
         false
     }
 
@@ -391,7 +399,7 @@ mod tests {
             history_entries: 3600,
             page_size: 4096,
         };
-        let env = LiveEnv::new(Arc::clone(&hosts), Windows::default());
+        let env = LiveEnv::new(Arc::clone(&hosts), Windows::default(), false);
 
         // a new chart, collected every 3 seconds on a host of 1: never collected, no data
         let (slow, _) = host.charts().create(&spec("slow", 3));

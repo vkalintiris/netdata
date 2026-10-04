@@ -130,7 +130,7 @@ fn first_rule(row: &Row) -> Rule {
 fn adds_equal_c_outputs() {
     let rows = kind("add");
     assert_eq!(rows.len(), 10);
-    let health = Health::init(HealthConfig::default(), Box::new(|rule| panic!("a refused rule was stored: {rule:?}")), false);
+    let health = Health::init(HealthConfig::default(), Box::new(|rule| panic!("a refused rule was stored: {rule:?}")));
     for row in rows {
         let at = format!("c_unittest.tsv:{}", row.line);
         let message = row.str(13);
@@ -165,7 +165,7 @@ fn readfile_equals_c_outputs() {
     let path = dir.path().join("unittest.conf");
     std::fs::write(&path, row.bytes(0)).expect("the file");
 
-    let health = Health::init(HealthConfig::default(), Box::new(|_| {}), false);
+    let health = Health::init(HealthConfig::default(), Box::new(|_| {}));
     let read = health_readfile(&health, path.as_os_str().as_bytes(), false);
     assert_eq!(read, row.flag(2));
     let store: Vec<String> = health

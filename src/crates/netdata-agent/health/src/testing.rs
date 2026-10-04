@@ -8,6 +8,7 @@ use netdata_agent_rrd::host::{Host, HostInfo};
 use netdata_agent_rrd::labels::SRC_CONFIG;
 use netdata_agent_rrd::mode::DbMode;
 
+use netdata_agent_metadata::health_log::LoadedRow;
 use netdata_agent_query::value::{ValueRequest, ValueResult};
 
 use crate::Health;
@@ -190,7 +191,7 @@ pub(crate) fn health_with(text: &str) -> Arc<Health> {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let path = dir.path().join("test.conf");
     std::fs::write(&path, text).expect("the file");
-    let health = Health::init(HealthConfig::default(), Box::new(|_| {}), false);
+    let health = Health::init(HealthConfig::default(), Box::new(|_| {}));
     assert!(health_readfile(&health, path.as_os_str().as_bytes(), false));
     health
 }
@@ -205,14 +206,16 @@ pub(crate) fn rule_text(kind: &str, name: &str, on: &str, lines: &[&str]) -> Str
     text
 }
 
-/// An [`Env`] a test sets: the exit flag, whether a save marks an entry as saved, and the second every chart was
-/// last collected at, with data from 100 seconds before it (none: no chart is collected). It counts what it gave
-/// out, so every entry has its own ids.
+/// An [`Env`] a test sets: the exit flag, whether a save marks an entry as saved, the second every chart was last
+/// collected at, with data from 100 seconds before it (none: no chart is collected), and the rows the alert log's
+/// table gives a host's first pass (none: no database). It counts what it gave out, so every entry has its own
+/// ids.
 #[derive(Default)]
 pub struct Scripted {
     pub exiting: bool,
     pub saves: bool,
     pub collected: Option<i64>,
+    pub table: Option<Vec<LoadedRow>>,
     pub ids: std::cell::Cell<u64>,
 }
 
@@ -253,6 +256,10 @@ impl Env for Scripted {
         true
     }
 
+    fn load(&self, _: &Host) -> Option<Vec<LoadedRow>> {
+        self.table.clone()
+    }
+
     fn sql_alarm_id(&self, _: &Host, _: &[u8], _: Option<&[u8]>) -> Option<(u32, u32)> {
         None
     }
@@ -261,7 +268,7 @@ impl Env for Scripted {
         false
     }
 
-    fn sql_save(&self, _: &Entry) -> bool {
+    fn sql_save(&self, _: &Host, _: &Entry) -> bool {
         self.saves
     }
 

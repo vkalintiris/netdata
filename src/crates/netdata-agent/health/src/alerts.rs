@@ -2,23 +2,26 @@
 //! `rrdcalc.c`, `health_log.c`.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
+use netdata_agent_log::{Priority, Source, nd_log, netdata_log_error};
+use netdata_agent_metadata::health_log::LoadedRow;
 use netdata_agent_rrd::chart::Chart;
 use netdata_agent_rrd::host::Host;
 
 use crate::alert::{Alert, Run, Status, run_flags};
+use crate::config::HealthConfig;
 use crate::entry::{Entry, Transition, entry_flags};
 use crate::log::AlarmLog;
 use crate::pass::{Env, PassCounts, elapsed, hysteresis};
+use crate::prototype::Rule;
+use crate::tables::ACTION_OPTION_NO_CLEAR_NOTIFICATION;
+use crate::{Clock, journal, sql};
 
 /// The saves an entry's addition owes, in C's order, each with whether it is asynchronous: the older entry the new
 /// one replaced, then the new one. They are made once the store's lock and the alert's are released.
 type Saves = Vec<(u32, bool)>;
-use crate::prototype::Rule;
-use crate::tables::ACTION_OPTION_NO_CLEAR_NOTIFICATION;
-use crate::{Clock, journal};
 
 /// `RRDCALC_MAX_KEY_SIZE`: a key is cut to one byte less.
 const MAX_KEY_SIZE: usize = 1024;
@@ -134,6 +137,11 @@ pub struct HostAlerts {
     saving: Mutex<()>,
     /// `host->health.pending_transitions`: the saves the metadata queue holds; a pass is postponed while any is.
     pending_transitions: AtomicI32,
+    /// `host->health_log.max`: how many entries the alert log's query answers, 0 until the host's first pass.
+    log_max: AtomicU32,
+    /// `host->health_log.health_log_retention_s`: how long a replaced entry is kept, in the table and in memory. 0
+    /// until the host's first pass or a child's attach sets it.
+    log_retention_s: AtomicU32,
     /// `host->health.alert_status_snapshot`: the counts of the last complete pass, and how often counts were
     /// published, times two (C's generation is odd while a writer is at it).
     counts: Mutex<(u64, Option<PassCounts>)>,
@@ -189,7 +197,9 @@ impl HostAlerts {
                 return;
             }
         }
-        self.save_now(unique_id, &|entry| env.sql_save(entry));
+        if let Some(host) = self.owner.upgrade() {
+            self.save_now(unique_id, &|entry| env.sql_save(&host, entry));
+        }
     }
 
     /// `sql_health_alarm_log_save()` of the entry as it stands now, in the log or among those that left it with a
@@ -233,19 +243,94 @@ impl HostAlerts {
         self.initialized.load(Ordering::Acquire)
     }
 
-    /// `health_initialize_rrdhost()` up to its flag: the ids the host's log starts from. C takes the clock's second
-    /// for the next log id; with a database the load of an empty alert log then reads it twice more and makes the
-    /// next log id and the next alarm id one more than what it read. Without a database the alarm ids are seeded
-    /// by the first alarm.
-    pub(crate) fn initialize(&self, database: bool, clock: Clock) {
-        let mut store = self.store();
-        store.log.next_log_id = clock() as u32;
-        store.next_alarm_id = 0;
-        if database {
-            store.log.next_log_id = (clock() as u32).wrapping_add(1);
-            store.next_alarm_id = (clock() as u32).wrapping_add(1);
+    /// `health_initialize_rrdhost()` up to its flag: the log's limit and retention from the configuration, the ids
+    /// the host's log starts from, and the load of what the table has. C takes the clock's second for the next log
+    /// id; without a database that stays, and the alarm ids are seeded by the first alarm.
+    pub(crate) fn initialize(
+        &self,
+        host: &Host,
+        config: &HealthConfig,
+        env: &dyn Env,
+        clock: Clock,
+        running: &dyn Fn() -> bool,
+    ) {
+        self.log_max.store(config.health_log_entries_max, Ordering::Relaxed);
+        self.log_retention_s.store(config.health_log_retention_s, Ordering::Relaxed);
+        {
+            let mut store = self.store();
+            store.log.next_log_id = clock() as u32;
+            store.next_alarm_id = 0;
+        }
+        if let Some(rows) = env.load(host) {
+            self.load(host, rows, clock, running);
         }
         self.initialized.store(true, Ordering::Release);
+    }
+
+    /// `sql_health_alarm_log_load()` once the table gave its rows: each row that can be an entry goes in front of
+    /// the log (so the log is in reverse row order), marked as saved; the others are recorded and counted. The
+    /// next ids go on from the highest loaded ones; with nothing loaded the clock's second is read for each, so
+    /// both are one more than it. Then the record, and the memory log's retention cleanup.
+    ///
+    /// C also asks, per row, whether the host has a repeating alert named as the row's chart, to hand it the row's
+    /// last repeat and skip the row. No alert exists before the host's first pass (every path that makes one
+    /// looks for `RRDHOST_FLAG_INITIALIZED_HEALTH`, which this pass sets after the load and nothing clears), so
+    /// that look finds nothing and is not made here.
+    fn load(&self, host: &Host, rows: Vec<LoadedRow>, clock: Clock, running: &dyn Fn() -> bool) {
+        let hostname = host.hostname();
+        let (mut loaded, mut errored) = (0usize, 0usize);
+        let (mut max_unique_id, mut max_alarm_id) = (0u32, 0u32);
+        let mut store = self.store();
+        let mut rows = rows.into_iter();
+        // C looks at the service before it steps to each row, the step that finds no more rows included
+        while running() {
+            let Some(row) = rows.next() else {
+                break;
+            };
+            let entry = match sql::row_lacks(&row).map_or_else(|| sql::entry_of(row), Err) {
+                Ok(entry) => entry,
+                Err(wrong) => {
+                    netdata_log_error!("HEALTH [{hostname}]: {wrong}");
+                    errored += 1;
+                    continue;
+                }
+            };
+            max_unique_id = max_unique_id.max(entry.unique_id);
+            max_alarm_id = max_alarm_id.max(entry.alarm_id);
+            store.log.entries.push_front(entry);
+            loaded += 1;
+        }
+        if max_unique_id == 0 {
+            max_unique_id = clock() as u32;
+        }
+        if max_alarm_id == 0 {
+            max_alarm_id = clock() as u32;
+        }
+        store.log.next_log_id = max_unique_id.wrapping_add(1);
+        if store.next_alarm_id == 0 || store.next_alarm_id <= max_alarm_id {
+            store.next_alarm_id = max_alarm_id.wrapping_add(1);
+        }
+        drop(store);
+        let priority = if errored != 0 { Priority::Warning } else { Priority::Debug };
+        let text = format_args!("loaded {loaded} alarm entries, errors in {errored} entries.");
+        nd_log!(Source::Daemon, priority, "[{hostname}]: Table health_log, {text}");
+        self.log_cleanup(clock);
+    }
+
+    /// `host->health_log.max`.
+    pub fn log_max(&self) -> u32 {
+        self.log_max.load(Ordering::Relaxed)
+    }
+
+    /// `host->health_log.health_log_retention_s`.
+    pub fn log_retention_s(&self) -> u32 {
+        self.log_retention_s.load(Ordering::Relaxed)
+    }
+
+    /// A child's attach gives the host its own retention (`stream-receiver.c`); the host's first pass, when it
+    /// comes later, puts the configuration's back.
+    pub fn set_log_retention_s(&self, retention_s: u32) {
+        self.log_retention_s.store(retention_s, Ordering::Relaxed);
     }
 
     /// The host's alerts in the dictionary's order: the order the loop evaluates them in.
@@ -599,11 +684,11 @@ impl HostAlerts {
     /// `health_send_notification()` as far as the log goes, for a repeat's entry, which is in no log: it is offered
     /// for a notification, marked as processed and saved at once (never queued). What a notification is comes with
     /// its own commit.
-    pub(crate) fn notify_repeat(&self, entry: &mut Entry, env: &dyn Env) {
+    pub(crate) fn notify_repeat(&self, host: &Host, entry: &mut Entry, env: &dyn Env) {
         env.notify(entry);
         entry.flags |= entry_flags::PROCESSED;
         let _saving = self.saving.lock().unwrap_or_else(PoisonError::into_inner);
-        if env.sql_save(entry) {
+        if env.sql_save(host, entry) {
             entry.flags |= entry_flags::SAVED;
         }
     }
@@ -630,10 +715,14 @@ impl HostAlerts {
         self.store().log.mark_updated();
     }
 
-    /// `health_alarm_log_cleanup()`: the memory log's retention cleanup, asked after the table's cleanup and after
-    /// a load.
-    pub fn log_cleanup(&self, retention_s: u32, now: i64) {
-        self.store().log.cleanup(retention_s, now);
+    /// `health_alarm_log_cleanup()`: the memory log's retention cleanup, after a load and after the table's hourly
+    /// cleanup. An empty log reads no clock. C gives up when the log's lock is taken; here the store's lock is
+    /// waited for: nothing is held while it is asked for, and what the cleanup leaves shows nowhere but in memory.
+    pub fn log_cleanup(&self, clock: Clock) {
+        let mut store = self.store();
+        if !store.log.entries.is_empty() {
+            store.log.cleanup(self.log_retention_s(), clock());
+        }
     }
 
     /// `rrdhost_cleanup_data_collection_and_health()` once the host's charts are gone: C destroys the alert
@@ -651,6 +740,8 @@ mod tests {
     use super::*;
     use crate::pass::Idle;
     use crate::testing::{Scripted, chart, health_with, host, named, pair, rule_text};
+    use netdata_agent_metadata::health_log::Uuid;
+    use netdata_agent_text::units::format_value_and_unit;
 
     const NOW: i64 = 1_700_000_000;
 
@@ -919,24 +1010,149 @@ mod tests {
 
     /// `health_initialize_rrdhost()`: C takes the clock for the next log id; with a database the load of an empty
     /// alert log reads it twice more, and both counters start one above what it read. Without a database the log's
-    /// ids start at the second itself and the alarm ids are seeded by the first alarm.
+    /// ids start at the second itself and the alarm ids are seeded by the first alarm. The log's limit and its
+    /// retention are the configuration's from then on.
     #[test]
     fn a_host_s_first_pass_seeds_the_log_s_ids() {
+        let (host, config) = (host(&[]), HealthConfig::default());
         let reads = std::cell::Cell::new(0);
         let alerts = HostAlerts::default();
         assert!(!alerts.is_initialized());
         assert_eq!(alerts.latest_log_unique_id(), 0);
-        alerts.initialize(true, &counting(&reads));
+        assert_eq!((alerts.log_max(), alerts.log_retention_s()), (0, 0));
+        let empty = Scripted { table: Some(Vec::new()), ..Scripted::default() };
+        alerts.initialize(&host, &config, &empty, &counting(&reads), &|| true);
         assert!(alerts.is_initialized());
         assert_eq!(reads.get(), 3);
         assert_eq!(alerts.log_counters(), ((NOW + 2) as u32, (NOW + 3) as u32, 0));
         assert_eq!(alerts.latest_log_unique_id(), (NOW + 1) as u32);
+        assert_eq!((alerts.log_max(), alerts.log_retention_s()), (1000, 5 * 86400));
 
         let reads = std::cell::Cell::new(0);
         let alerts = HostAlerts::default();
-        alerts.initialize(false, &counting(&reads));
+        alerts.initialize(&host, &config, &Scripted::default(), &counting(&reads), &|| true);
         assert_eq!(reads.get(), 1);
         assert_eq!(alerts.log_counters(), (NOW as u32, 0, 0));
+    }
+
+    /// A row of the alert log's table: the entry of that unique id for that alarm, CLEAR since `NOW`.
+    fn row(unique_id: u32, alarm_id: u32) -> LoadedRow {
+        LoadedRow {
+            unique_id,
+            alarm_id,
+            alarm_event_id: 3,
+            config_hash_id: Uuid::Valid([7; 16]),
+            updated_by_id: 0,
+            updates_id: 0,
+            when: NOW,
+            duration: 0,
+            non_clear_duration: 0,
+            flags: entry_flags::PROCESSED,
+            exec_run_timestamp: 0,
+            delay_up_to_timestamp: NOW,
+            name: Some(b"a".to_vec()),
+            chart: Some(b"t.c".to_vec()),
+            exec: None,
+            recipient: Some(Vec::new()),
+            source: None,
+            units: Some(b"%".to_vec()),
+            info: None,
+            exec_code: 0,
+            new_status: 1,
+            old_status: 0,
+            delay: 0,
+            new_value: 12.0,
+            old_value: 0.0,
+            last_repeat: 0,
+            classification: None,
+            component: None,
+            r#type: None,
+            chart_context: Some(b"t.ctx".to_vec()),
+            transition_id: Uuid::Valid([unique_id as u8; 16]),
+            global_id: None,
+            chart_name: Some(b"t.c".to_vec()),
+            summary: None,
+        }
+    }
+
+    /// `sql_health_alarm_log_load()`: the rows that can be entries go in front of the log one after the other, so
+    /// the log is in reverse row order; each is marked as saved and gets its value strings again; a text that is
+    /// empty is no text. A row that cannot be an entry is recorded and counted. The ids go on from the highest
+    /// loaded ones, and the clock is read only for the log's first id and for the retention cleanup, which takes
+    /// what is older than the retention and replaced.
+    #[test]
+    fn a_first_pass_loads_what_the_table_has() {
+        let (host, config) = (host(&[]), HealthConfig::default());
+        let old = LoadedRow { when: NOW - 6 * 86400, flags: entry_flags::UPDATED, ..row(900, 77) };
+        let table = vec![
+            row(500, 40),
+            LoadedRow { unique_id: 0, ..row(501, 41) },
+            LoadedRow { alarm_id: 0, ..row(502, 42) },
+            LoadedRow { name: None, ..row(503, 43) },
+            LoadedRow { chart: None, ..row(504, 44) },
+            LoadedRow { transition_id: Uuid::Invalid, ..row(505, 45) },
+            LoadedRow { config_hash_id: Uuid::Invalid, ..row(506, 46) },
+            old,
+            LoadedRow { transition_id: Uuid::Null, config_hash_id: Uuid::Null, global_id: Some(9), ..row(507, 47) },
+        ];
+        let reads = std::cell::Cell::new(0);
+        let alerts = HostAlerts::default();
+        let env = Scripted { table: Some(table), ..Scripted::default() };
+        let ((), records) = netdata_agent_log::capture(|| {
+            alerts.initialize(&host, &config, &env, &counting(&reads), &|| true);
+        });
+        assert_eq!(reads.get(), 2, "the log's first id, and the cleanup's now");
+        assert_eq!(alerts.log_counters(), (901, 78, 0));
+
+        let entries = alerts.log_entries();
+        let ids: Vec<u32> = entries.iter().map(|entry| entry.unique_id).collect();
+        assert_eq!(ids, [507, 500], "reverse row order, without the old replaced entry");
+        let (last, first) = (&entries[0], &entries[1]);
+        assert_eq!(first.flags, entry_flags::PROCESSED | entry_flags::SAVED);
+        assert_eq!((first.new_status, first.old_status), (Status::Clear, Status::Uninitialized));
+        assert_eq!((first.alarm_id, first.alarm_event_id, first.global_id), (40, 3, 0));
+        assert_eq!((first.name.as_deref(), &first.chart[..]), (Some(&b"a"[..]), &b"t.c"[..]));
+        assert_eq!((&first.chart_context[..], &first.chart_name[..]), (&b"t.ctx"[..], &b"t.c"[..]));
+        assert_eq!(first.recipient, None, "an empty text is no text");
+        assert_eq!(first.new_value_string, format_value_and_unit(12.0, b"%"));
+        assert_eq!(first.old_value_string, format_value_and_unit(0.0, b"%"));
+        assert_eq!((first.transition_id, first.config_hash_id), ([244; 16], [7; 16]));
+        assert_eq!((last.transition_id, last.config_hash_id, last.global_id), ([0; 16], [0; 16], 9));
+
+        let messages: Vec<String> = records.iter().map(|record| record.message.clone().unwrap_or_default()).collect();
+        let hostname = host.hostname();
+        let wrong = [
+            "Got invalid unique id. Ignoring it.",
+            "Got invalid alarm id. Ignoring it.",
+            "Got null name field. Ignoring it.",
+            "Got null chart field. Ignoring it.",
+            "Got invalid transition id. Ignoring entry.",
+            "Got invalid config hash id. Ignoring entry.",
+        ];
+        let mut expected: Vec<String> = wrong.iter().map(|wrong| format!("HEALTH [{hostname}]: {wrong}")).collect();
+        expected.push(format!("[{hostname}]: Table health_log, loaded 3 alarm entries, errors in 6 entries."));
+        assert_eq!(messages, expected);
+        assert_eq!(records.last().map(|record| record.priority), Some(Priority::Warning));
+    }
+
+    /// The load looks at the service before each row, the one after the last too: a service that stops leaves the
+    /// rest of the table unread, and the host is initialized all the same.
+    #[test]
+    fn a_stopping_service_cuts_the_load_short() {
+        let (host, config) = (host(&[]), HealthConfig::default());
+        for (looks_allowed, loaded, looks_made) in [(0, 0, 1), (1, 1, 2), (2, 2, 3), (3, 2, 3)] {
+            let looks = std::cell::Cell::new(0);
+            let running = || {
+                looks.set(looks.get() + 1);
+                looks.get() <= looks_allowed
+            };
+            let alerts = HostAlerts::default();
+            let env = Scripted { table: Some(vec![row(500, 40), row(501, 41)]), ..Scripted::default() };
+            alerts.initialize(&host, &config, &env, &|| NOW, &running);
+            assert!(alerts.is_initialized());
+            assert_eq!(alerts.log_entries().len(), loaded, "{looks_allowed} looks allowed");
+            assert_eq!(looks.get(), looks_made, "{looks_allowed} looks allowed");
+        }
     }
 
     /// `rrdcalc_unlink_from_rrdset()`: unless the agent is exiting the clock is read before the alert's status is

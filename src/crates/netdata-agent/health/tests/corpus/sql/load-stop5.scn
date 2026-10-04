@@ -1,0 +1,25 @@
+# The service stops while a host's first pass loads its alert log: it runs for 5 more looks from the pass's start.
+# Four alarms are saved, the agent starts again, and the first pass is cut short; the host is initialized all the
+# same, so the next pass, with the service running again, loads nothing more.
+database real
+rules tests/corpus/sql/save.conf
+chart loop.s loop.s_name loop.sql disks things 1
+label loop.s kind ssd
+chart loop.t loop.t_name loop.sql disks things 1
+label loop.t kind hdd
+var loop.s v 10
+var loop.t v 70
+clock 0
+pass 0
+clock 1
+pass 1
+clock 100
+restart
+clock 101
+running-for 5
+pass 101
+running 1
+clock 102
+pass 102
+clock 103
+pass 103

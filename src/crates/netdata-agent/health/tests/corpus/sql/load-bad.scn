@@ -1,0 +1,35 @@
+# Rows the load cannot make entries of. Eight alarms (two rules on four charts) are saved; then, as a damaged table
+# would have them, the last entry of six is changed, one way each: a unique id of 0, an alarm id of 0, no name, no
+# chart, a transition id and a rule's hash that are no UUIDs. The agent starts again: the injection of REMOVED rows
+# meets the same rows first, then the load records each row it refuses and counts it, and loads the others.
+database real
+rules tests/corpus/sql/save.conf
+chart loop.a loop.a_name loop.sql disks things 1
+chart loop.b loop.b_name loop.sql disks things 1
+chart loop.c loop.c_name loop.sql disks things 1
+chart loop.d loop.d_name loop.sql disks things 1
+var loop.a v 10
+var loop.b v 10
+var loop.c v 10
+var loop.d v 10
+clock 0
+pass 0
+clock 1
+pass 1
+clock 50
+sql UPDATE health_log_detail SET unique_id = 0 WHERE transition_id = (SELECT last_transition_id FROM health_log WHERE chart = 'loop.a' AND name = 's_plain')
+sql UPDATE health_log_detail SET alarm_id = 0 WHERE transition_id = (SELECT last_transition_id FROM health_log WHERE chart = 'loop.a' AND name = 's_repeat')
+sql UPDATE health_log SET name = NULL WHERE chart = 'loop.b' AND name = 's_plain'
+sql UPDATE health_log SET chart = NULL WHERE chart = 'loop.b' AND name = 's_repeat'
+sql UPDATE health_log_detail SET transition_id = x'0102' WHERE transition_id = (SELECT last_transition_id FROM health_log WHERE chart = 'loop.c' AND name = 's_plain')
+sql UPDATE health_log SET last_transition_id = x'0102' WHERE chart = 'loop.c' AND name = 's_plain'
+sql INSERT INTO alert_hash (hash_id, date_updated, template, source) VALUES (x'0304', 0, 's_bad_hash', 'nowhere')
+sql UPDATE health_log SET config_hash_id = x'0304' WHERE chart = 'loop.c' AND name = 's_repeat'
+clock 100
+restart
+clock 101
+pass 101
+clock 102
+pass 102
+clock 103
+alarm-log 0

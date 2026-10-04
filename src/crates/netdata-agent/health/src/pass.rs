@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use netdata_agent_log::{Priority, Source, nd_log};
+use netdata_agent_metadata::health_log::LoadedRow;
 use netdata_agent_query::value::{ValueRequest, ValueResult};
 use netdata_agent_rrd::chart::Chart;
 use netdata_agent_rrd::host::Host;
@@ -49,6 +50,11 @@ pub trait Env {
     fn is_health_thread(&self) -> bool;
     /// `service_running(SERVICE_HEALTH)`, as the pass's `running` looks at it.
     fn service_running(&self) -> bool;
+    /// `sql_health_alarm_log_load()`'s statements at a host's first pass: the table gets a REMOVED entry for each
+    /// alarm whose last saved one is none (`sql_check_removed_alerts_state()`), then gives the last entry of each
+    /// alarm whose rule it knows. `None` without a database, or when the load's statement cannot be prepared: C
+    /// then returns with the host's ids as the first pass seeded them. No lock of health is held while it runs.
+    fn load(&self, host: &Host) -> Option<Vec<LoadedRow>>;
     /// `sql_get_alarm_id()`: the alarm id and the next event id the alert log's table has for a chart and a rule's
     /// name, whatever the rule's hash. No lock of health is held while it runs.
     fn sql_alarm_id(&self, host: &Host, chart: &[u8], name: Option<&[u8]>) -> Option<(u32, u32)>;
@@ -58,7 +64,7 @@ pub trait Env {
     /// `sql_health_alarm_log_save()`: the entry's row is inserted, or updated when the entry is marked as saved.
     /// True when a row was inserted: the caller marks the entry as saved. No lock of health but the host's save
     /// lock is held while it runs.
-    fn sql_save(&self, entry: &Entry) -> bool;
+    fn sql_save(&self, host: &Host, entry: &Entry) -> bool;
     /// `commit_alert_transitions()`: the metadata thread is asked for a store job now.
     fn commit_transitions(&self);
     /// `process_alert_pending_queue()`: the host's due rows of `alert_queue` move toward the Cloud's queue.
@@ -105,6 +111,10 @@ impl Env for Idle {
         true
     }
 
+    fn load(&self, _: &Host) -> Option<Vec<LoadedRow>> {
+        None
+    }
+
     fn sql_alarm_id(&self, _: &Host, _: &[u8], _: Option<&[u8]>) -> Option<(u32, u32)> {
         None
     }
@@ -113,7 +123,7 @@ impl Env for Idle {
         false
     }
 
-    fn sql_save(&self, _: &Entry) -> bool {
+    fn sql_save(&self, _: &Host, _: &Entry) -> bool {
         false
     }
 
@@ -535,7 +545,7 @@ impl Health {
                 if let Some(mut entry) = alerts.repeat(host, &alert, now, env) {
                     journal::log_alert(&hostname, &entry);
                     // the wait for the notification's execution comes with the notifications
-                    alerts.notify_repeat(&mut entry, env);
+                    alerts.notify_repeat(host, &mut entry, env);
                 }
             }
         }

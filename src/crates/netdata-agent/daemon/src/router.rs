@@ -561,7 +561,7 @@ mod tests {
             acl: test_acl(),
             first_request_timeout_s: 60,
             idle_timeout_s: 60,
-            health: netdata_agent_health::Health::init(Default::default(), Box::new(|_| {}), false),
+            health: netdata_agent_health::Health::init(Default::default(), Box::new(|_| {})),
             grouping_windows: Default::default(),
             release_channel: "nightly",
             netdata_conf: Default::default(),
@@ -994,7 +994,7 @@ mod tests {
         // own; the daemon's hosts share one)
         host.storage().set_health_hook({
             let health = Arc::clone(&s.health);
-            let env = crate::health::LiveEnv::new(Arc::clone(&s.hosts), Default::default());
+            let env = crate::health::LiveEnv::new(Arc::clone(&s.hosts), Default::default(), false);
             move |event| crate::health::database_event(&health, &env, event)
         });
         assert!(host.charts().free_if(&chart, |_| true));
