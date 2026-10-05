@@ -276,3 +276,11 @@
 68	template	1	200	text/plain	n	0	     template: u_name\x0a           on: loop.dyncfg\x0a       lookup: average -1m\x0a         calc: $v\x0a         warn: $this > 50\x0a	-
 68	job	0	200	text/plain	n	0	     template: d_tpl\x0a           on: loop.dyncfg\x0a       lookup: average -1m\x0a         calc: $v\x0a         warn: $this > 50\x0a	-
 68	job	1	200	text/plain	n	0	     template: d_tpl\x0a           on: loop.dyncfg\x0a       lookup: average -1m\x0a         calc: $v\x0a         warn: $this > 50\x0a	-
+69	template	0	200	text/plain	n	0	     template: u_name\x0a           on: loop.dyncfg\x0a       lookup: unknown -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a	-
+69	template	1	200	text/plain	n	0	     template: u_name\x0a           on: loop.dyncfg\x0a       lookup: unknown -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a	-
+69	job	0	200	text/plain	n	0	     template: d_tpl\x0a           on: loop.dyncfg\x0a       lookup: unknown -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a	-
+69	job	1	200	text/plain	n	0	     template: d_tpl\x0a           on: loop.dyncfg\x0a       lookup: unknown -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a	-
+70	template	0	200	text/plain	n	0	     template: u_name\x0a           on: loop.dyncfg\x0a       lookup: unknown -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a	-
+70	template	1	200	text/plain	n	0	     template: u_name\x0a           on: loop.dyncfg\x0a       lookup: unknown -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a	-
+70	job	0	200	text/plain	n	0	     template: d_tpl\x0a           on: loop.dyncfg\x0a       lookup: unknown -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a	-
+70	job	1	200	text/plain	n	0	     template: d_tpl\x0a           on: loop.dyncfg\x0a       lookup: unknown -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a	-
