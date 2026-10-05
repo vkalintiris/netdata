@@ -50,6 +50,26 @@ func c020Chart(id, context, units, algorithm string, value int, first int64) fix
 	return ch
 }
 
+// c020Holes counts a chart's holes: the spans of more than one update every between two samples of its first
+// dimension (the badge fixtures add one sample at the wall clock behind their four, so that the badge finds the chart
+// fresh: one hole).
+func c020Holes(ch fixture.Chart) int {
+	holes := 0
+	if len(ch.Dimensions) == 0 {
+		return holes
+	}
+	points := ch.Dimensions[0].Points
+	for i := 1; i < len(points); i++ {
+		if points[i].T-points[i-1].T > int64(max(ch.UpdateEvery, 1)) {
+			holes++
+		}
+	}
+	return holes
+}
+
+// c020PushCharts pushes the charts live and waits until the daemon reports each context's whole span. A fixture with a
+// hole settles on a ring's own first entry (daemon.ExpectedFirstEntryHoles): without that the wait never ends in the
+// one-tier ram profile, on the C agent itself.
 func c020PushCharts(t *testing.T, host, machineGUID string, charts ...fixture.Chart) {
 	t.Helper()
 
@@ -68,7 +88,7 @@ func c020PushCharts(t *testing.T, host, machineGUID string, charts ...fixture.Ch
 			continue
 		}
 		seen[ch.Context] = true
-		if _, err := td.WaitRetention(host, ch.Context, ch.FirstT(), ch.LastT(), 15*time.Second); err != nil {
+		if _, err := td.WaitRetentionHoles(host, ch.Context, ch.FirstT(), ch.LastT(), c020Holes(ch), 15*time.Second); err != nil {
 			t.Fatal(err)
 		}
 	}

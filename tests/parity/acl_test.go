@@ -22,6 +22,12 @@ import (
 // whatever token it carries. The oracle must give both answers (aclWant). A client with no right at all
 // (`everything-denied`) is refused before any route is looked up (web_client.c:1528-1537), a route that does not
 // exist too: no row asks the management route there.
+//
+// The badge route (M9 commit 10, D217; `/api/v1/badge.svg`, web_api_v1.c:37-44) asks for the `badges` right and no
+// other. Where the badges list leaves the address out (`features-denied`) the request is let in for the client's
+// management right and the route's own access bit refuses it (451). Where the dashboard list alone leaves it out
+// (`badges-only`: the badges list's default takes every address) the route answers (a badge, `chart not found`: the
+// agent has no chart of that name), while a data request of the same client is refused for the right it lacks (451).
 func TestWebACL(t *testing.T) {
 	webDir := oracleWebDir(t)
 	get := func(path string, headers ...string) []byte {
@@ -57,6 +63,15 @@ func TestWebACL(t *testing.T) {
 				"gzip-off": get("/nonexistent", "Accept-Encoding: gzip"),
 				// the management list takes this client: the route asks for the key
 				"manage-allowed": get("/api/v1/manage/health?cmd=LIST"),
+				// the badges list does not: the route's own access bit
+				"badge": get("/api/v1/badge.svg?chart=x"),
+			},
+		},
+		"badges-only": {
+			extra: "    allow dashboard from = localhost\n",
+			cases: map[string][]byte{
+				"badge": get("/api/v1/badge.svg?chart=x"),
+				"data":  get("/api/v1/data?chart=x"),
 			},
 		},
 		"everything-denied": {
@@ -87,11 +102,18 @@ func TestWebACL(t *testing.T) {
 			},
 		},
 	}
-	// what the oracle must answer the management route's rows with: the answer's start and its end
+	// what the oracle must answer the management route's rows and the badge route's with: the answer's start and its
+	// end
+	const denied = "\r\n\r\nYou need to be authorized to access this resource"
 	aclWant := map[string][2]string{
 		"features-denied/manage-allowed": {"HTTP/1.1 403 Forbidden\r\n", "\r\n\r\nAuth Error\n"},
-		"management-denied/manage":       {"HTTP/1.1 451 Unavailable For Legal Reasons\r\n", "\r\n\r\nYou need to be authorized to access this resource"},
+		"management-denied/manage":       {"HTTP/1.1 451 Unavailable For Legal Reasons\r\n", denied},
+		"features-denied/badge":          {"HTTP/1.1 451 Unavailable For Legal Reasons\r\n", denied},
+		"badges-only/badge":              {badgeOK, "</script></svg>"},
+		"badges-only/data":               {"HTTP/1.1 451 Unavailable For Legal Reasons\r\n", denied},
 	}
+	// a part the oracle's answer must hold besides
+	aclHolds := map[string]string{"badges-only/badge": ">chart not found</text>"}
 	for name, cfg := range configs {
 		t.Run(name, func(t *testing.T) {
 			p := StartPair(t, daemon.Options{WebDir: webDir, WebExtra: cfg.extra, StreamMemoryMode: "ram", StorageTiers: 1}, parentIdentity)
@@ -105,6 +127,9 @@ func TestWebACL(t *testing.T) {
 					}
 					if want, ok := aclWant[name+"/"+cname]; ok && !(strings.HasPrefix(string(got[0]), want[0]) && strings.HasSuffix(string(got[0]), want[1])) {
 						t.Fatalf("oracle: answered %q, want %q at its start and %q at its end", truncateBytes(got[0]), want[0], want[1])
+					}
+					if part := aclHolds[name+"/"+cname]; !strings.Contains(string(got[0]), part) {
+						t.Fatalf("oracle: answered %q, which does not hold %q", truncateBytes(got[0]), part)
 					}
 					if !bytes.Equal(got[0], got[1]) {
 						t.Errorf("responses differ\noracle:    %q\ncandidate: %q", truncateBytes(got[0]), truncateBytes(got[1]))

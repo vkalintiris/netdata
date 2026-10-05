@@ -43,8 +43,8 @@ func TestCorpusProfilesAreValid(t *testing.T) {
 		}
 	}
 
-	// Decision D25, D70.9 and D72.6 counts.
-	for name, want := range map[string][2]int{"ram": {118, 7}, "dbengine1": {111, 3}, "dbengine3": {39, 0}} {
+	// Decision D25, D70.9 and D72.6 counts, less the six badge contracts, which apply since the badge endpoint (D217 F5).
+	for name, want := range map[string][2]int{"ram": {112, 7}, "dbengine1": {105, 3}, "dbengine3": {33, 0}} {
 		whole, components := 0, 0
 		for scope := range corpusProfiles[name].notApplicable {
 			if scope.component == "" {
@@ -56,6 +56,14 @@ func TestCorpusProfilesAreValid(t *testing.T) {
 		if whole != want[0] || components != want[1] {
 			t.Errorf("%s profile: %d whole contracts and %d component scopes not applicable, want %d and %d",
 				name, whole, components, want[0], want[1])
+		}
+	}
+	// the badge contracts apply in every profile
+	for name, p := range corpusProfiles {
+		for contract := range manifest {
+			if _, na := p.notApplicableReason(contract, defaultContractComponent); na && strings.Contains(contract, "/badge-") {
+				t.Errorf("%s profile: %s is not applicable; the badge endpoint is in every profile", name, contract)
+			}
 		}
 	}
 	// each profile only adds what the one before cannot hold: dbengine1 to ram, dbengine3 to dbengine1

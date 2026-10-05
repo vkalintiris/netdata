@@ -1365,11 +1365,21 @@ func ringEntries(mode string) int64 {
 // ue apart: dbengine reports the first sample, a ring the start of its oldest stored interval
 // (rrddim_query_oldest_time_s, src/database/ram/rrddim_mem.c).
 func (d *Daemon) ExpectedFirstEntry(first, last, ue int64) int64 {
+	return d.ExpectedFirstEntryHoles(first, last, ue, 0)
+}
+
+// ExpectedFirstEntryHoles is ExpectedFirstEntry for a series with holes (spans of more than one update every between
+// two samples). A ring reports its first entry one update every earlier per hole: when a sample arrives after a
+// hole, C's store first writes an empty slot for every missed second and for the sample's own
+// (rrddim_fill_the_gap, src/database/ram/rrddim_mem.c:403-433: its loop runs while `now_store_s <= now_collect_s`),
+// then stores the sample in the next slot (:462-468), so the ring holds one slot more than the seconds it spans and
+// counts its oldest time back from the last one (:115-120, :651-654). dbengine reports the first sample as ever.
+func (d *Daemon) ExpectedFirstEntryHoles(first, last, ue int64, holes int) int64 {
 	n := ringEntries(streamMemoryMode(d.Opts))
 	if n == 0 {
 		return first
 	}
-	return max(first-ue, last-n*ue)
+	return max(first-ue*int64(1+holes), last-n*ue)
 }
 
 // WaitRetention polls the context on host until the daemon reports exactly
@@ -1378,6 +1388,11 @@ func (d *Daemon) ExpectedFirstEntry(first, last, ue int64) int64 {
 // from them with the context's db.update_every. It returns the last observed
 // retention on timeout.
 func (d *Daemon) WaitRetention(host, context string, first, last int64, timeout time.Duration) (Retention, error) {
+	return d.WaitRetentionHoles(host, context, first, last, 0, timeout)
+}
+
+// WaitRetentionHoles is WaitRetention for a series with `holes` holes (ExpectedFirstEntryHoles).
+func (d *Daemon) WaitRetentionHoles(host, context string, first, last int64, holes int, timeout time.Duration) (Retention, error) {
 	deadline := time.Now().Add(timeout)
 	var seen Retention
 	want := first
@@ -1392,7 +1407,7 @@ func (d *Daemon) WaitRetention(host, context string, first, last int64, timeout 
 					db, _ := doc["db"].(map[string]any)
 					ue, ok := jsonInt64(db["update_every"])
 					if ready = ok && ue > 0; ready {
-						want = d.ExpectedFirstEntry(first, last, ue)
+						want = d.ExpectedFirstEntryHoles(first, last, ue, holes)
 					}
 				}
 				if ready && ret.FirstEntry == want && ret.LastEntry == last {

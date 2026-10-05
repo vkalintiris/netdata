@@ -481,18 +481,31 @@ func TestExpectedFirstEntryFollowsTheMemoryMode(t *testing.T) {
 		mode              string
 		first, last, ue   int64
 		wantFirstReported int64
+		// holes are the series' spans of more than one update every between two samples
+		holes int
 	}{
-		"dbengine":           {"", 1000, 1990, 10, 1000},
-		"ram":                {"ram", 1000, 1990, 10, 990},
-		"alloc":              {"alloc", 1000, 1990, 10, 990},
-		"ram wrapped":        {"ram", 1000, 1000 + 9999*10, 10, 1000 + 9999*10 - ram*10},
-		"alloc wrapped":      {"alloc", 0, 4999, 1, 4999 - 3600},
-		"alloc exactly full": {"alloc", 1, 3600, 1, 0},
+		"dbengine":           {"", 1000, 1990, 10, 1000, 0},
+		"ram":                {"ram", 1000, 1990, 10, 990, 0},
+		"alloc":              {"alloc", 1000, 1990, 10, 990, 0},
+		"ram wrapped":        {"ram", 1000, 1000 + 9999*10, 10, 1000 + 9999*10 - ram*10, 0},
+		"alloc wrapped":      {"alloc", 0, 4999, 1, 4999 - 3600, 0},
+		"alloc exactly full": {"alloc", 1, 3600, 1, 0, 0},
+		// a ring's empty slot more per hole; dbengine's first sample whatever the holes
+		"ram, a hole":            {"ram", 500, 529, 1, 498, 1},
+		"ram, two holes":         {"ram", 1000, 1990, 10, 970, 2},
+		"alloc, a hole":          {"alloc", 500, 529, 1, 498, 1},
+		"dbengine, a hole":       {"", 500, 529, 1, 500, 1},
+		"alloc wrapped, a hole":  {"alloc", 0, 4999, 1, 4999 - 3600, 1},
+		"ram, a hole, 10 s each": {"ram", 1000, 1990, 10, 980, 1},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			d := &Daemon{Opts: Options{StreamMemoryMode: tc.mode}}
-			if got := d.ExpectedFirstEntry(tc.first, tc.last, tc.ue); got != tc.wantFirstReported {
+			if got := d.ExpectedFirstEntryHoles(tc.first, tc.last, tc.ue, tc.holes); got != tc.wantFirstReported {
+				t.Fatalf("ExpectedFirstEntryHoles(%d, %d, %d, %d) = %d, want %d",
+					tc.first, tc.last, tc.ue, tc.holes, got, tc.wantFirstReported)
+			}
+			if got := d.ExpectedFirstEntry(tc.first, tc.last, tc.ue); tc.holes == 0 && got != tc.wantFirstReported {
 				t.Fatalf("ExpectedFirstEntry(%d, %d, %d) = %d, want %d",
 					tc.first, tc.last, tc.ue, got, tc.wantFirstReported)
 			}
