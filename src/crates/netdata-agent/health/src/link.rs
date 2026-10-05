@@ -321,6 +321,32 @@ mod tests {
             + &rule_text("template", "elsewhere", "ctx.a", &["host labels: region=us"])
     }
 
+    /// `rrdcalc_from_rrdset_get()`, as a badge asks for an alarm: the alert of that name on the chart, found under
+    /// the chart's id. C then looks under the chart's NAME with a key that is made of chart ids, so what that
+    /// second look can find is the alert of ANOTHER chart whose id is this chart's name. A name without an alert
+    /// finds nothing.
+    #[test]
+    fn a_chart_s_alert_is_found_under_its_id_then_its_name() {
+        let health = health_with(&rules());
+        let host = host(&[("region", "eu")]);
+        // no rule matches this chart; it takes its name first, and the other chart then has that name as its id
+        // (a chart without a name of its own holds its id as its name, and a name is one chart's)
+        let alias = chart(&host, "t.x", Some("a1"), "ctx.none", &[]);
+        assert_eq!(alias.meta().name.as_deref(), Some("t.a1"));
+        let own = chart(&host, "t.a1", Some("own"), "ctx.a", &[]);
+        assert_eq!((own.id(), own.meta().name.as_deref()), ("t.a1", Some("t.own")));
+        health.host_link(&host, &|| NOW, &running);
+        assert_eq!(linked(&health, &host), [pair("on_a", "t.a1")]);
+
+        let alerts = health.host(&host).expect("the host's alerts");
+        let on_a = alert_of(&health, &host, &own, b"on_a");
+        let found = |chart: &Chart, name: &[u8]| alerts.chart_alert(chart, name);
+        assert!(found(&own, b"on_a").is_some_and(|alert| Arc::ptr_eq(&alert, &on_a)));
+        assert!(found(&alias, b"on_a").is_some_and(|alert| Arc::ptr_eq(&alert, &on_a)), "through the chart's name");
+        assert!(found(&own, b"on_b").is_none() && found(&alias, b"on_b").is_none());
+        assert!(found(&own, b"").is_none());
+    }
+
     /// A host's first pass links every chart, in the host's chart order and per chart in the store's order, alarms
     /// before templates within a name.
     #[test]

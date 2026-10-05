@@ -168,6 +168,6 @@ pub fn badge(route: &Route<'_>, host: &Host, query: &[u8]) -> Reply {
         no_cacheable: badge.no_cacheable,
         date: badge.date,
         expires: badge.expires,
-        headers: badge.refresh.map_or_else(Vec::new, |seconds| format!("Refresh: {seconds}\r\n").into_bytes()),
+        headers: badge.headers,
     }
 }

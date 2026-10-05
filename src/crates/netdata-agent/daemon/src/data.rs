@@ -37,10 +37,7 @@ pub(crate) fn profile_of(storage: &netdata_agent_rrd::storage::StorageLayout) ->
 
 /// `rrdset_find_and_acquire(host, id, false)`, then `rrdset_find_byname_and_acquire()`: discoverable charts only.
 pub fn find_chart(host: &Host, chart: &[u8]) -> Option<Arc<Chart>> {
-    let chart = std::str::from_utf8(chart).ok()?;
-    host.charts()
-        .find(chart, false)
-        .or_else(|| host.charts().find_by_name(chart))
+    host.charts().find_by_id_or_name(chart)
 }
 
 /// `api_v1_data()`.

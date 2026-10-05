@@ -150,7 +150,7 @@ pub(crate) fn variables_case_rules() -> String {
 
 /// The chart a request names: by id, then by name.
 pub(crate) fn find_chart(host: &Host, chart: &str) -> Arc<Chart> {
-    host.charts().find(chart, false).or_else(|| host.charts().find_by_name(chart)).expect("the chart")
+    host.charts().find_by_id_or_name(chart.as_bytes()).expect("the chart")
 }
 
 /// The alerts as (name, chart id), in the given order.

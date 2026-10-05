@@ -792,7 +792,8 @@ mod tests {
             let want = (status::BAD_REQUEST, ContentType::TextPlain, &b"No chart id is given at the request."[..]);
             assert_eq!((r.code, r.content_type, r.body.as_slice()), want, "{shown}");
         }
-        assert_eq!(asked(&s, b"/api/v2/badge.svg", b"chart=x", acl::bits::ALL_LISTENER_FEATURES).code, status::NOT_FOUND);
+        let v2 = asked(&s, b"/api/v2/badge.svg", b"chart=x", acl::bits::ALL_LISTENER_FEATURES);
+        assert_eq!(v2.code, status::NOT_FOUND);
         let subpath = asked(&s, b"/api/v1/badge.svg/x", b"chart=x", acl::bits::ALL_LISTENER_FEATURES);
         assert_eq!(subpath.code, status::BAD_REQUEST);
         assert_eq!(subpath.body, b"API command 'badge.svg' does not support subpaths.");
@@ -1095,6 +1096,78 @@ mod tests {
         // one alert inserted, one entry logged (its link)
         let data = body("/api/v2/data", "?contexts=t.ctx&options=minify");
         assert!(data.contains("\"alerts_hard_hash\":1,\"alerts_soft_hash\":1"), "{data}");
+
+        // the alert's badge through the route: its published status' color and its value with the chart's units.
+        // With a refresh the reply may be cached and carries the handler's date, an expiry exactly that many
+        // seconds later (C sets both from one reading of the clock), and the header line
+        let has = |body: &[u8], needle: &[u8]| body.windows(needle.len()).any(|w| w == needle);
+        let badge = request("/api/v1/badge.svg", "?chart=t.c&alarm=a&refresh=5");
+        assert_eq!((badge.code, badge.content_type), (status::OK, ContentType::ImageSvgXml));
+        assert!(!badge.no_cacheable);
+        assert!(badge.date > 1_700_000_000 && badge.expires == badge.date + 5, "{} {}", badge.date, badge.expires);
+        assert_eq!(badge.headers, b"Refresh: 5\r\n");
+        assert!(has(&badge.body, b">7 u</text>") && has(&badge.body, b"fill=\"#4c1\""));
+        assert!(has(&badge.body, b">a</text>"));
+        let plain = request("/api/v3/badge.svg", "?chart=t.c&alarm=a");
+        assert!(plain.no_cacheable && plain.headers.is_empty() && (plain.date, plain.expires) == (0, 0));
+        // the chart's own value: it has no stored point, so its value is too old to ask for: an empty badge, not
+        // to be cached, and no header whatever was asked
+        let stale = request("/api/v1/badge.svg", "?chart=t.c&refresh=5");
+        assert_eq!((stale.code, stale.content_type), (status::OK, ContentType::ImageSvgXml));
+        assert!(stale.no_cacheable && stale.headers.is_empty() && (stale.date, stale.expires) == (0, 0));
+        assert!(has(&stale.body, b">-</text>") && has(&stale.body, b">t.c</text>"));
+        // a chart collected up to now is asked for its value: one query, counted as a badge's in the pulse counters
+        // and not as data's or health's. Over the default window, which is relative, the body is not to be cached
+        // and still carries an expiry that many seconds from now beside its header line; the date is not set
+        {
+            use netdata_agent_rrd::collection;
+            use netdata_agent_rrd::pulse::QuerySource;
+            use netdata_agent_rrd::upstream::BufferSource;
+            let (fresh, _) = host.charts().create(&ChartSpec {
+                type_: "t",
+                id: "b",
+                name: None,
+                family: Some("f"),
+                context: Some("t.other"),
+                title: "T",
+                units: "u",
+                plugin: "p",
+                module: None,
+                priority: 1000,
+                update_every: 1,
+                chart_type: ChartType::Line,
+                mode: netdata_agent_rrd::mode::DbMode::Ram,
+                history_entries: 5,
+                page_size: 4096,
+            });
+            let (dim, _) = fresh.dim_add("d", None, 1, 1, Algorithm::Absolute);
+            let now = netdata_agent_rrd::clock::now_realtime_s();
+            for (i, value) in [10, 20, 30, 40].into_iter().enumerate() {
+                let at = (now - 3 + i as i64, 0);
+                collection::next_usec_unfiltered(&fresh, at, 1_000_000);
+                collection::set_value(&dim, at, value);
+                collection::timed_done(host, &fresh, at, false, 3, BufferSource::Thread);
+            }
+            let counted = || {
+                let queries = &s.hosts.storage().pulse().queries;
+                let sources = [QuerySource::ApiBadge, QuerySource::ApiData, QuerySource::Health];
+                sources.map(|source| queries.source(source).queries)
+            };
+            let before = counted();
+            let value = request("/api/v1/badge.svg", "?chart=t.b&refresh=5&precision=0");
+            let after = counted();
+            assert_eq!((after[0] - before[0], after[1] - before[1], after[2] - before[2]), (1, 0, 0));
+            assert_eq!((value.code, value.content_type), (status::OK, ContentType::ImageSvgXml));
+            assert!(!has(&value.body, b">-</text>"), "a value is shown");
+            assert_eq!(value.headers, b"Refresh: 5\r\n");
+            let asked_at = netdata_agent_rrd::clock::now_realtime_s();
+            assert!(value.no_cacheable && value.date == 0, "{}", value.date);
+            assert!((now + 5..=asked_at + 5).contains(&value.expires), "{}", value.expires);
+            // an alert's badge asks for nothing
+            let before = counted();
+            let _ = request("/api/v1/badge.svg", "?chart=t.c&alarm=a");
+            assert_eq!(counted(), before);
+        }
 
         // the chart's free reaches health through the database's hook (this fixture's localhost has a storage of its
         // own; the daemon's hosts share one)

@@ -490,13 +490,14 @@ pub struct Badge {
     /// `image/svg+xml`; else the dispatcher's `text/plain`.
     pub svg: bool,
     pub body: Vec<u8>,
-    /// The body is not to be cached; else it may be (an alert with a refresh, a value over an absolute window).
+    /// The body is not to be cached; else it may be: with a refresh, an alert's badge and a chart value over an
+    /// absolute window.
     pub no_cacheable: bool,
     /// The buffer's date and expiry; 0 for one the handler did not set.
     pub date: i64,
     pub expires: i64,
-    /// The `Refresh:` header's seconds.
-    pub refresh: Option<i32>,
+    /// The header lines the handler adds (C's `w->response.header`): `Refresh: N` with its line end, or nothing.
+    pub headers: Vec<u8>,
 }
 
 /// What the request asks of the daemon for a chart value.
@@ -523,7 +524,7 @@ fn notice(label: &[u8], scale: i32) -> Badge {
         text_color_lbl: None,
         text_color_val: None,
     };
-    Badge { code: 200, svg: true, body: buffer_svg(&svg), no_cacheable: true, date: 0, expires: 0, refresh: None }
+    Badge { code: 200, svg: true, body: buffer_svg(&svg), no_cacheable: true, date: 0, expires: 0, headers: Vec::new() }
 }
 
 /// `api_v1_badge()`: the badge of a request's decoded query. `alerts` are the host's, when health has any for it;
@@ -590,16 +591,11 @@ pub fn api_v1_badge(
 
     let Some(chart_id) = chart else {
         let body = b"No chart id is given at the request.".to_vec();
-        return Badge { code: 400, svg: false, body, no_cacheable: true, date: 0, expires: 0, refresh: None };
+        return Badge { code: 400, svg: false, body, no_cacheable: true, date: 0, expires: 0, headers: Vec::new() };
     };
     let scale = scale.map_or(100, str2i);
 
-    // by id among the charts a listing shows, else by name
-    let found = std::str::from_utf8(chart_id).ok().and_then(|id| {
-        let charts = host.charts();
-        charts.find(id, false).or_else(|| charts.find_by_name(id))
-    });
-    let Some(chart) = found else {
+    let Some(chart) = host.charts().find_by_id_or_name(chart_id) else {
         return notice(b"chart not found", scale);
     };
     chart.touch_last_accessed();
@@ -621,7 +617,8 @@ pub fn api_v1_badge(
     let points = points.map_or(1, str2i);
     let precision = precision.map_or(-1, str2i);
 
-    // what C leaves undefined (a difference past an int, the negation of the smallest int) wraps here
+    // C cuts the difference to an int (as `as i32` does); what C leaves undefined, a difference past 64 bits and
+    // the negation of the smallest int, wraps here
     let positive = |n: i32| if n < 0 { n.wrapping_neg() } else { n };
     let refresh = match refresh {
         None => 0,
@@ -651,11 +648,11 @@ pub fn api_v1_badge(
     };
 
     let mut badge =
-        Badge { code: 200, svg: true, body: Vec::new(), no_cacheable: true, date: 0, expires: 0, refresh: None };
+        Badge { code: 200, svg: true, body: Vec::new(), no_cacheable: true, date: 0, expires: 0, headers: Vec::new() };
     let (value, value_color) = match &alert {
         Some(alert) => {
             if refresh > 0 {
-                badge.refresh = Some(refresh);
+                badge.headers = format!("Refresh: {refresh}\r\n").into_bytes();
                 badge.date = clock();
                 badge.expires = badge.date + i64::from(refresh);
                 badge.no_cacheable = false;
@@ -701,7 +698,7 @@ pub fn api_v1_badge(
                     // the query marks the buffer by its window's kind
                     badge.no_cacheable = result.relative;
                     if refresh > 0 {
-                        badge.refresh = Some(refresh);
+                        badge.headers = format!("Refresh: {refresh}\r\n").into_bytes();
                         badge.expires = clock() + i64::from(refresh);
                     } else {
                         badge.no_cacheable = true;

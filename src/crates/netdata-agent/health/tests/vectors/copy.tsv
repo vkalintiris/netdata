@@ -1183,6 +1183,8 @@ tests/corpus/badge/badge.conf	copy	b_alert	0	$v	${v}	$this > 50	(${this} > 50)	$
 tests/corpus/badge/badge.conf	copy	b_plain	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/badge/badge.conf	copy	b_wait	0	\x00	\x00	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/badge/badge.conf	copy	b_name	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/badge/badge.conf	copy	b_undef	0	$nothing	${nothing}	\x00	\x00	\x00	\x00
+tests/corpus/badge/badge.conf	copy	b_idle	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/delay/delays.conf	copy	delay_000	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/delay/delays.conf	copy	delay_001	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/delay/delays.conf	copy	delay_002	0	1	1	\x00	\x00	\x00	\x00

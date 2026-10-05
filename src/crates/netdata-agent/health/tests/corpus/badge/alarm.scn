@@ -1,6 +1,7 @@
-# An alert's badge: each status' color, the label with its underscores as spaces, the units of the rule, none, and
-# given ones, the value times and over, a value that is no number, a given color, refresh (`auto` is the rule's
-# every), date and expiry both set; an alarm the chart has not; the alarm asked through the chart's name.
+# An alert's badge: the colors of WARNING, CRITICAL and CLEAR (the other statuses are `statuses.scn`'s), the label
+# with its underscores as spaces, the units of the rule, none, and given ones, the value times and over, a given
+# color, refresh (`auto` is the rule's every), date and expiry both set; an alarm the chart has not; the chart asked
+# by its name.
 rules tests/corpus/badge/badge.conf
 chart b.w b.w_name b.alarm fam things 1
 chart b.c b.c_name b.alarm fam things 1

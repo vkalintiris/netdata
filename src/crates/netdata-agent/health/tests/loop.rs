@@ -1544,7 +1544,6 @@ mod replay {
                     });
                     let clock = world.clock();
                     let after = |at: i64| if at == 0 { b"-".to_vec() } else { text(at - clock) };
-                    let refresh = badge.refresh.map_or_else(Vec::new, |n| format!("Refresh: {n}\r\n").into_bytes());
                     self.rows.push((
                         "badge",
                         vec![
@@ -1553,7 +1552,7 @@ mod replay {
                             if badge.no_cacheable { b"n".to_vec() } else { b"c".to_vec() },
                             after(badge.date),
                             after(badge.expires),
-                            refresh,
+                            badge.headers,
                             badge.body,
                         ],
                     ));
@@ -2067,12 +2066,13 @@ fn child_matches_c() {
 }
 
 /// `/api/v1/badge.svg` through C's own `api_v1_badge()`: a chart value with every parameter, the stale rule, the
-/// refresh headers over a relative and an absolute window, alerts in each status, an unknown chart or alarm, numbers
-/// at their edges: the code, the type, the cache word, date and expiry, the `Refresh` line and the body.
+/// refresh headers over a relative and an absolute window, alerts in each status, an alert found through its
+/// chart's name, an unknown chart or alarm, numbers at their edges: the code, the type, the cache word, date and
+/// expiry, the header line the handler adds and the body.
 #[test]
 fn badge_matches_c() {
-    // 87 requests and the alert scenario's two passes
-    assert_eq!(replayed("badge"), 89);
+    // 94 requests and the two alert scenarios' two passes each
+    assert_eq!(replayed("badge"), 98);
 }
 
 /// The reload of health's configuration: the nodes unregistered and registered with the model core's echoes, every

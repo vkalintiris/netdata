@@ -1692,6 +1692,14 @@ impl Charts {
         Some(chart)
     }
 
+    /// The chart a request names (`rrdset_find_and_acquire(host, id, false)`, then
+    /// `rrdset_find_byname_and_acquire()`): by id among the discoverable charts, else by name. Ids and names are
+    /// texts: bytes that are none name no chart.
+    pub fn find_by_id_or_name(&self, chart: &[u8]) -> Option<Arc<Chart>> {
+        let chart = std::str::from_utf8(chart).ok()?;
+        self.find(chart, false).or_else(|| self.find_by_name(chart))
+    }
+
     /// `rrdset_free()` of an obsolete chart, when `free` still holds under the index lock: the chart leaves the indexes
     /// and is marked freed (D94.1), then its dimensions and its instance go as C's delete callback takes them. Whether
     /// it was freed.
