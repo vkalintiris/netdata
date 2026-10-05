@@ -24,6 +24,7 @@
 pub mod alert;
 pub mod alerts;
 pub mod api;
+pub mod badge;
 pub mod config;
 pub mod dyncfg;
 pub mod entry;

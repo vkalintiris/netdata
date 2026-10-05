@@ -1,12 +1,12 @@
 //! The evaluation loop, the alert log and the notifications against C (`tests/oracle/gen-loop-vectors.c`: the
-//! tables `units.tsv`, `delay.tsv`, `edit.tsv`, `sanitize.tsv` and `decide.tsv`; C's own pass over the scenarios of
-//! `loop.tsv`, `queue.tsv` and `sql.tsv`).
+//! tables `units.tsv`, `badge-format.tsv`, `delay.tsv`, `edit.tsv`, `sanitize.tsv` and `decide.tsv`; C's own pass over
+//! the scenarios of `loop.tsv`, `queue.tsv` and `sql.tsv`).
 
 mod common;
 
 use common::rows;
 use netdata_agent_health::sql::edit_command_from_source;
-use netdata_agent_text::units::format_value_and_unit;
+use netdata_agent_text::units::{format_value_and_unit, format_value_and_unit_precision};
 
 /// A double as the loop's vectors hold it: `nan`, or its bits in hex.
 fn double(field: &str) -> f64 {
@@ -37,6 +37,32 @@ fn units_match_c() {
     let shown = failures[..failures.len().min(20)].join("\n");
     assert!(failures.is_empty(), "{} of {checked} differ:\n{shown}", failures.len());
     assert_eq!(checked, 2784);
+}
+
+/// C's text for each value under eight units at twelve precisions, as a badge prints its value (the automatic
+/// precision is `units_match_c`'s): a fixed precision keeps every zero and stops at 50 digits, and a negative one
+/// other than -1 is automatic too.
+#[test]
+fn values_with_a_precision_match_c() {
+    let (mut checked, mut failures) = (0, Vec::new());
+    for row in rows("badge-format.tsv") {
+        let (value, units) = (double(row.str(0)), row.bytes(1));
+        let precision: i32 = row.str(2).parse().expect("a precision");
+        let text = format_value_and_unit_precision(value, units, precision);
+        if text != row.bytes(3) {
+            failures.push(format!(
+                "badge-format.tsv:{}: {value:?} {:?} at {precision}: C {:?}, Rust {:?}",
+                row.line,
+                String::from_utf8_lossy(units),
+                String::from_utf8_lossy(row.bytes(3)),
+                String::from_utf8_lossy(&text)
+            ));
+        }
+        checked += 1;
+    }
+    let shown = failures[..failures.len().min(20)].join("\n");
+    assert!(failures.is_empty(), "{} of {checked} differ:\n{shown}", failures.len());
+    assert_eq!(checked, 8352);
 }
 
 /// C's edit command for each source text of a rule: the new form, the old one with an `@`, and texts of neither.

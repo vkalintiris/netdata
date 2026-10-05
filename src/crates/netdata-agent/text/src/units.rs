@@ -1,6 +1,7 @@
 //! A value with its units as text: `format_value_and_unit()` of C's
 //! `src/web/api/v1/api_v1_badge/web_buffer_svg.c`, as the health alert log makes an entry's value texts (C calls it
-//! with a 100-byte buffer length and precision -1, `src/health/health_log.c`).
+//! with a 100-byte buffer length and precision -1, `src/health/health_log.c`) and as a badge prints its value (with
+//! the request's precision).
 //!
 //! Some units are not printed but read: a number of seconds, minutes or hours becomes a duration, a number under a
 //! two-word unit (`on/off`, `up/down`, `ok/error`, `ok/failed`) becomes one of the two words. Every other value is
@@ -75,9 +76,20 @@ fn time(value: f64, shape: impl FnOnce(u64) -> String) -> Vec<u8> {
     }
 }
 
-/// C's `format_value_with_precision_and_unit()` for a negative precision: the digits follow the value's size, and
-/// trailing zeros (then the point) go, but never the first digit.
-fn number(value: f64, units: &[u8]) -> Vec<u8> {
+/// C's `format_value_with_precision_and_unit()`. For a negative precision the digits follow the value's size, and
+/// trailing zeros (then the point) go, but never the first digit. Any other precision is that many digits, 50 at
+/// most, with every zero kept.
+fn number(value: f64, units: &[u8], precision: i32) -> Vec<u8> {
+    if precision >= 0 {
+        let mut out = Vec::with_capacity(64);
+        print_fixed(&mut out, value, precision.min(50) as usize);
+        if units.first().is_some_and(u8::is_ascii_alphanumeric) {
+            out.push(b' ');
+        }
+        out.extend_from_slice(units);
+        out.truncate(VALUE_STRING_MAX);
+        return out;
+    }
     let abs = value.abs();
     let (precision, trim_zeros) = if abs >= 1000.0 {
         (0, false)
@@ -124,9 +136,15 @@ fn number(value: f64, units: &[u8]) -> Vec<u8> {
     out
 }
 
-/// C's `format_value_and_unit(buf, 100, value, units, -1)`. Units are bytes up to their first NUL; C's NULL units
-/// are the empty text.
+/// C's `format_value_and_unit(buf, 100, value, units, -1)`, as the alert log asks. Units are bytes up to their first
+/// NUL; C's NULL units are the empty text.
 pub fn format_value_and_unit(value: f64, units: &[u8]) -> Vec<u8> {
+    format_value_and_unit_precision(value, units, -1)
+}
+
+/// C's `format_value_and_unit(buf, 100, value, units, precision)`, as a badge asks: the precision counts only for a
+/// value that is printed as a number.
+pub fn format_value_and_unit_precision(value: f64, units: &[u8], precision: i32) -> Vec<u8> {
     let units = crate::c::c_str(units);
     let format = FORMATTERS.iter().find(|(name, _)| *name == units).map_or(Format::None, |(_, format)| *format);
 
@@ -170,7 +188,7 @@ pub fn format_value_and_unit(value: f64, units: &[u8]) -> Vec<u8> {
     if !value.is_finite() {
         return b"-".to_vec();
     }
-    number(value, units)
+    number(value, units, precision)
 }
 
 #[cfg(test)]
