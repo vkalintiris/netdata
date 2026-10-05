@@ -110,8 +110,11 @@ func (h *healthPair) watchFile(i int) func() string {
 }
 
 // healthFlags is a view of /api/v1/alarms?all as each alert's flags: `name silenced=… disabled=…`.
-func (h *healthPair) flags(i int) string {
-	v := h.get(i, "/api/v1/alarms?all")
+func (h *healthPair) flags(i int) string { return h.flagsOf(h.n[i], i, "") }
+
+// flagsOf is flags for another host's alerts (`/host/<name>`), with that host's normalizer.
+func (h *healthPair) flagsOf(n *healthNorm, i int, prefix string) string {
+	v := h.getAs(n, i, prefix+"/api/v1/alarms?all")
 	out := []string{strings.SplitN(v, "\n", 2)[0]}
 	for _, m := range healthAlarmFlagsRe.FindAllStringSubmatch(healthBody(v), -1) {
 		out = append(out, fmt.Sprintf("%s disabled=%s silenced=%s", m[1], m[2], m[3]))

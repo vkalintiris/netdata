@@ -952,3 +952,89 @@ func TestStreamConfRendering(t *testing.T) {
 		t.Error("StreamSection with StreamTo is accepted")
 	}
 }
+
+// The rail on stream.conf (validateStreamHealth; M9 commit 9, D214 F7): a line that may turn a child's health on is
+// taken only when netdata.conf's [health] section names the run directory's recording stub as the notifier, with the
+// parent's health on or off; `health enabled = no` (and its older name) needs nothing.
+func TestStreamHealthRails(t *testing.T) {
+	const (
+		guid   = "\n[5a1e0000-0000-4000-8000-0000000000c1]\n    type = machine\n"
+		stub   = "    script to execute on alarm = {run}/notify/stub\n"
+		refuse = "may turn a child's health on"
+	)
+	// the installed notifier's file name is put together here: no command line of a run may hold it
+	installed := "    script to execute on alarm = /usr/libexec/netdata/plugins.d/alarm-" + "notify.sh\n"
+	child := func(line string) string { return guid + "    " + line + "\n" }
+	key := "5a1e0000-0000-4000-8000-0000000000aa"
+	for name, c := range map[string]struct {
+		o    Options
+		want string // a part of the error; empty: accepted
+	}{
+		"the template alone":             {Options{}, ""},
+		"no stream key":                  {Options{NoStreamKey: true}, ""},
+		"a child's section without it":   {Options{StreamExtra: guid + "    postpone alerts on connect = 0\n"}, ""},
+		"no, health off":                 {Options{StreamExtra: child("health enabled = no")}, ""},
+		"no, health on":                  {Options{HealthOn: true, HealthExtra: stub, StreamExtra: child("health enabled = no")}, ""},
+		"no, without spaces":             {Options{StreamExtra: child("health enabled=no")}, ""},
+		"no, the older name":             {Options{StreamExtra: child("health enabled by default = no")}, ""},
+		"a comment":                      {Options{StreamExtra: child("# health enabled = yes")}, ""},
+		"another key":                    {Options{StreamExtra: child("health log retention = 1d")}, ""},
+		"yes, no notifier":               {Options{StreamExtra: child("health enabled = yes")}, refuse},
+		"yes, health off, the stub":      {Options{HealthExtra: stub, StreamExtra: child("health enabled = yes")}, ""},
+		"yes, health on, the stub":       {Options{HealthOn: true, HealthExtra: stub, StreamExtra: child("health enabled = yes")}, ""},
+		"auto, no notifier":              {Options{StreamExtra: child("health enabled = auto")}, refuse},
+		"auto, the stub":                 {Options{HealthExtra: stub, StreamExtra: child("health enabled = auto")}, ""},
+		"on demand":                      {Options{StreamExtra: child("health enabled = on demand")}, refuse},
+		"true":                           {Options{StreamExtra: child("health enabled = true")}, refuse},
+		"on":                             {Options{StreamExtra: child("health enabled = on")}, refuse},
+		"a word C does not know":         {Options{StreamExtra: child("health enabled = maybe")}, refuse},
+		"false is not the word":          {Options{StreamExtra: child("health enabled = false")}, refuse},
+		"NO is not the word either":      {Options{StreamExtra: child("health enabled = NO")}, refuse},
+		"the key in upper case, no":      {Options{StreamExtra: child("Health Enabled = no")}, ""},
+		"an empty value":                 {Options{StreamExtra: child("health enabled =")}, refuse},
+		"no `=`":                         {Options{StreamExtra: child("health enabled yes")}, refuse},
+		"no, then more":                  {Options{StreamExtra: child("health enabled = no yes")}, refuse},
+		"the older name, yes":            {Options{StreamExtra: child("health enabled by default = yes")}, refuse},
+		"the key in upper case":          {Options{StreamExtra: child("Health Enabled = yes")}, refuse},
+		"the key with two spaces":        {Options{StreamExtra: child("health  enabled = yes")}, refuse},
+		"a tab before the key":           {Options{StreamExtra: guid + "\thealth enabled = yes\n"}, refuse},
+		"a key that holds it":            {Options{StreamExtra: child("my health enabled = yes")}, refuse},
+		"the second of two lines":        {Options{StreamExtra: child("health enabled = no") + "    health enabled = yes\n"}, refuse},
+		"in the [stream] section":        {Options{StreamSection: "    health enabled = yes\n"}, refuse},
+		"in the [stream] section, stub":  {Options{HealthExtra: stub, StreamSection: "    health enabled = yes\n"}, ""},
+		"in a child's own [stream]":      {Options{NoStreamKey: true, StreamTo: &StreamTo{Destination: "h:1", APIKey: key, Extra: "    health enabled = yes\n"}}, refuse},
+		"yes, another program":           {Options{HealthExtra: "    script to execute on alarm = /bin/true\n", StreamExtra: child("health enabled = yes")}, refuse},
+		"yes, the installed notifier":    {Options{HealthExtra: installed, StreamExtra: child("health enabled = yes")}, refuse},
+		"yes, an empty script":           {Options{HealthExtra: "    script to execute on alarm =\n", StreamExtra: child("health enabled = yes")}, refuse},
+		"yes, a sibling of the stub":     {Options{HealthExtra: "    script to execute on alarm = {run}/notify/stub2\n", StreamExtra: child("health enabled = yes")}, refuse},
+		"yes, another directory's stub":  {Options{HealthExtra: "    script to execute on alarm = /other/notify/stub\n", StreamExtra: child("health enabled = yes")}, refuse},
+		"yes, the stub then another":     {Options{HealthExtra: stub + "    script to execute on alarm = /bin/true\n", StreamExtra: child("health enabled = yes")}, refuse},
+		"yes, another then the stub":     {Options{HealthExtra: "    script to execute on alarm = /bin/true\n" + stub, StreamExtra: child("health enabled = yes")}, ""},
+		"yes, the stub in a comment":     {Options{HealthExtra: "#" + stub, StreamExtra: child("health enabled = yes")}, refuse},
+		"yes, the stub in [web]":         {Options{WebExtra: stub, StreamExtra: child("health enabled = yes")}, refuse},
+		"yes, health on, another script": {Options{HealthOn: true, HealthExtra: "    script to execute on alarm = /bin/true\n", StreamExtra: child("health enabled = yes")}, refuse},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c.o.RunDir, c.o.Port, c.o.StorageTiers = "/r", 1, 1
+			err := validateOptions(c.o)
+			switch {
+			case c.want == "" && err != nil:
+				t.Errorf("refused: %v", err)
+			case c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)):
+				t.Errorf("got %v, want an error naming %q", err, c.want)
+			}
+		})
+	}
+	// without a run directory there is no stub to name
+	if err := validateOptions(Options{HealthExtra: "    script to execute on alarm = notify/stub\n", StreamExtra: child("health enabled = yes")}); err == nil {
+		t.Error("a child's health on is accepted without a run directory")
+	}
+	// the texts judged are the ones a start writes
+	o := Options{RunDir: "/r", HealthExtra: stub, StreamExtra: child("health enabled = yes")}
+	if err := validateStreamHealth(renderStreamConf(o, key), renderNetdataConf(o, "h"), "/r"); err != nil {
+		t.Errorf("the rendered texts: %v", err)
+	}
+	if err := validateStreamHealth(renderStreamConf(o, key), renderNetdataConf(o, "h"), "/other"); err == nil {
+		t.Error("the stub of another run directory is accepted")
+	}
+}

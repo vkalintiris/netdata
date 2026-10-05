@@ -396,9 +396,21 @@ func (n *healthNorm) command(record string) string {
 // :562), so the order the stubs started in is each side's pass phase.
 func (n *healthNorm) calls(t *testing.T, d *daemon.Daemon) []string {
 	t.Helper()
+	return n.callsOf(t, d, "")
+}
+
+// callsOf is calls for the notifications of one host, named by its machine GUID (argument 28; empty: every call). A
+// parent's notifier is called for its children's alerts too, and each host's ids count from its own seeds: a case
+// with alerts on two hosts reads each host's calls with that host's normalizer. The calls' numbers are their
+// positions among the host's.
+func (n *healthNorm) callsOf(t *testing.T, d *daemon.Daemon, guid string) []string {
+	t.Helper()
 	calls, err := notify.Calls(d.Opts.RunDir)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if guid != "" {
+		calls = slices.DeleteFunc(calls, func(c notify.Call) bool { return len(c.Argv) <= healthArgGUID || c.Argv[healthArgGUID] != guid })
 	}
 	if r := healthGet(d, n.log); r.Status == http.StatusOK {
 		n.observe(string(r.Body))

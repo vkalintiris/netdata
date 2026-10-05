@@ -24,6 +24,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/netdata/netdata/tests/query-corpus/notify"
 )
 
 const (
@@ -295,6 +297,46 @@ func validateOptions(o Options) error {
 		}
 	}
 
+	// the texts are the ones the start renders: the hostname and the stream key are no part of what is judged
+	return validateStreamHealth(renderStreamConf(o, "key"), renderNetdataConf(o, "host"), o.RunDir)
+}
+
+// healthEnabledKey is the stream.conf key that turns a child's health on, in the section of its machine GUID or of
+// its API key (streaming/stream-conf.c:447-450); `health enabled by default` is its older name, which C moves to it
+// in every section (:310).
+const healthEnabledKey = "health enabled"
+
+// validateStreamHealth is the rail on stream.conf (M9 commit 9, D214 F7). A parent runs health for a child whose
+// section says so, whatever its own `[health] enabled` is: yes and auto are alike, and a value C does not know falls
+// back to the API key's or to the parent's own switch (libnetdata/inicfg/inicfg_api.c:278-301). With the parent's
+// health off such a child has no rule until the first reload (`netdatacli reload-health`, SIGUSR2), which loads the
+// rules whatever the switch says (health/health.c:215-218): from then on the child's alerts run the notifier the
+// [health] section names, and the default is the installed alarm-notify.sh, which may send mail. So every line of
+// the stream.conf an agent is about to read that names the key must turn it off with the one word `no`; any other
+// line that names it (another value, an empty one, no `=`, the key in another case, the older name) is taken only
+// when netdata.conf's [health] section names the recording stub of the run directory as its notifier
+// (notify.Path), health on or off. A line C reads as a comment is not judged.
+func validateStreamHealth(streamConf, conf, runDir string) error {
+	_, _, script := healthConfKeys(conf)
+	for n, line := range strings.Split(streamConf, "\n") {
+		line = strings.TrimSpace(line)
+		folded := strings.ToLower(strings.Join(strings.Fields(line), " "))
+		if strings.HasPrefix(line, "#") || !strings.Contains(folded, healthEnabledKey) {
+			continue
+		}
+		// the key in any case and with any spaces between its words; the value as C compares it, byte for byte
+		key, _, _ := strings.Cut(folded, "=")
+		_, value, ok := strings.Cut(line, "=")
+		if key = strings.TrimSpace(key); ok && (key == healthEnabledKey || key == healthEnabledKey+" by default") &&
+			strings.TrimSpace(value) == "no" {
+			continue
+		}
+		if runDir == "" || script != notify.Path(runDir) {
+			return fmt.Errorf("daemon: stream.conf line %d (%q) may turn a child's health on, and netdata.conf's [health] `%s` is %q, "+
+				"not the recording stub %q: a reload gives such a child the rules, and the default notifier may send mail",
+				n+1, line, healthScriptKey, script, notify.Path(runDir))
+		}
+	}
 	return nil
 }
 
@@ -304,8 +346,22 @@ func validateOptions(o Options) error {
 // section line is `[name]` once trimmed, the name as written); its last `enabled` is HealthOn's; and with health on
 // its last `script to execute on alarm` names a script (the default is the installed alarm-notify.sh).
 func validateHealthConf(conf string, on bool) error {
-	sections, in := 0, false
-	enabled, script := "", ""
+	sections, enabled, script := healthConfKeys(conf)
+	switch {
+	case sections != 1:
+		return fmt.Errorf("daemon: netdata.conf has %d [health] sections: an option's text reopens it; use HealthOn and HealthExtra", sections)
+	case enabled != yesNo(on):
+		return fmt.Errorf("daemon: netdata.conf's [health] `enabled` is %q, HealthOn says %q: HealthOn is the switch", enabled, yesNo(on))
+	case on && script == "":
+		return fmt.Errorf("daemon: HealthOn without `%s`: the default notifier may send mail", healthScriptKey)
+	}
+	return nil
+}
+
+// healthConfKeys reads a netdata.conf text as validateHealthConf judges it: how many [health] sections it has, and
+// the last `enabled` and the last `script to execute on alarm` of them.
+func healthConfKeys(conf string) (sections int, enabled, script string) {
+	in := false
 	for _, line := range strings.Split(conf, "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
@@ -325,15 +381,7 @@ func validateHealthConf(conf string, on bool) error {
 			script = strings.TrimSpace(value)
 		}
 	}
-	switch {
-	case sections != 1:
-		return fmt.Errorf("daemon: netdata.conf has %d [health] sections: an option's text reopens it; use HealthOn and HealthExtra", sections)
-	case enabled != yesNo(on):
-		return fmt.Errorf("daemon: netdata.conf's [health] `enabled` is %q, HealthOn says %q: HealthOn is the switch", enabled, yesNo(on))
-	case on && script == "":
-		return fmt.Errorf("daemon: HealthOn without `%s`: the default notifier may send mail", healthScriptKey)
-	}
-	return nil
+	return sections, enabled, script
 }
 
 // ValidateHealthRules checks a health.d text a check is about to lay out: a rule's own `exec` line replaces, for that

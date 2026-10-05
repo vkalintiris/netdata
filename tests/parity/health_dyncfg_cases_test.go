@@ -77,8 +77,11 @@ func healthDcRule(warn int, set ...any) map[string]any {
 // all, changes and log are the views of the alerts the DynCfg cases compare.
 func (h *healthPair) all(i int) string     { return h.get(i, "/api/v1/alarms?all") }
 func (h *healthPair) changes(i int) string { return h.transitions(i, "") }
-func (h *healthPair) log(i int) string {
-	view := h.get(i, "/api/v1/alarm_log")
+func (h *healthPair) log(i int) string     { return h.logOf(h.n[i], i, "/api/v1/alarm_log") }
+
+// logOf is log for the alert log at path (a child's: `/host/<name>/api/v1/alarm_log`), with its host's normalizer.
+func (h *healthPair) logOf(n *healthNorm, i int, path string) string {
+	view := h.getAs(n, i, path)
 	return h.keep(i, healthReplaced(healthSinceLink(view)), h.raw[i][view])
 }
 

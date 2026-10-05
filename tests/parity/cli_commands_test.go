@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -81,8 +82,10 @@ func rawCommand(t *testing.T, pipe string, payload []byte, pause time.Duration, 
 	return b
 }
 
-// commandRecords are the records the commands write.
-var commandRecords = regexp.MustCompile(`msg="(COMMAND: |write-config |Cannot execute read-config|Reopening all log files\.|Log files re-opened\.|pipe_read_cb: |RRDLABEL: Cannot reload)`)
+// commandRecords are the records the commands write: their own, and what `reload-health` says of a rule directory it
+// cannot open (libnetdata/paths/paths.c:232-235, :274-277: the run directory has no `etc/health.d`; the record carries
+// the failed open's errno, on the command's worker thread).
+var commandRecords = regexp.MustCompile(`msg="(COMMAND: |write-config |Cannot execute read-config|Reopening all log files\.|Log files re-opened\.|pipe_read_cb: |RRDLABEL: Cannot reload|CONFIG cannot open [a-z -]+ directory '[^']*/health\.d'\.)`)
 
 // labelLines keeps reload-labels' lines, sorted (C lists them in pointer order).
 func labelLines(stdout string) string {
@@ -147,6 +150,51 @@ func TestCLICommands(t *testing.T) {
 	} {
 		cli(c.name, c.args...)
 	}
+	// What `reload-health` left (M9 commit 9, D214 F6). Health is off here and the installed stock rules are on: C's
+	// reload reads the rule files all the same (health/health.c:215-218 tests no switch), registers health's DynCfg
+	// template with a job per alert name, and reads the two directories' keys, which `/netdata.conf` lists from then
+	// on; no host's health is on, so no alert is linked. The tree is read as anybody may read it (no token is laid
+	// out here), each health node as its id and status, in the tree's order.
+	reloaded := func(name string, get func(d *daemon.Daemon) string, guard func(oracle string) error) {
+		t.Helper()
+		oracle, candidate := get(p.Oracle), get(p.Candidate)
+		if err := guard(oracle); err != nil {
+			t.Errorf("oracle: %s: %v", name, err)
+		}
+		// a thousand nodes are not printed whole
+		if oracle != candidate {
+			t.Errorf("%s differs: %s", name, healthFirstDifference(oracle, candidate))
+			return
+		}
+		lines := strings.Split(oracle, "\n")
+		t.Logf("%s, both sides: %d lines, the first %q", name, len(lines), lines[:min(3, len(lines))])
+	}
+	reloaded("reload-health: health's DynCfg nodes", func(d *daemon.Daemon) string {
+		r := healthGet(d, "/api/v1/config?action=tree&path=/health")
+		return healthView(r, strings.Join(healthNodeStatuses(healthView(r, string(r.Body))), "\n"))
+	}, func(oracle string) error {
+		if nodes := strings.Split(healthBody(oracle), "\n"); !strings.HasPrefix(oracle, "HTTP 200, ") ||
+			!slices.Contains(nodes, healthJobPrefix+" accepted") || len(nodes) < 100+1 {
+			return fmt.Errorf("%d health nodes, want the template, accepted, and at least 100 jobs: %.300s", len(nodes), oracle)
+		}
+		return nil
+	})
+	reloaded("reload-health: /api/v1/alarms?all", func(d *daemon.Daemon) string {
+		r := healthGet(d, "/api/v1/alarms?all")
+		return healthView(r, healthClock(string(r.Body)))
+	}, healthHostOff)
+	reloaded("reload-health: the health directories' keys", func(d *daemon.Daemon) string {
+		r := healthGet(d, "/netdata.conf")
+		return healthView(r, strings.Join(healthDirLines(string(r.Body), d.Opts.RunDir), "\n"))
+	}, func(oracle string) error {
+		// both keys, at their defaults, which the dump prints as comments (their order is the agent's, and is compared)
+		lines := strings.Split(healthBody(oracle), "\n")
+		slices.Sort(lines)
+		if len(lines) != 2 || lines[0] != "# health config = {run}/etc/health.d" || !strings.HasPrefix(lines[1], "# stock health config = /") {
+			return fmt.Errorf("the keys are %q", lines)
+		}
+		return nil
+	})
 	compare("reload-labels", func(d *daemon.Daemon) string {
 		r := runCLI(t, d, "reload-labels")
 		return fmt.Sprintf("%d %q %s", r.Exit, r.Stderr, labelLines(r.Stdout))

@@ -168,6 +168,10 @@ type healthPair struct {
 	// bound, when set, is how far apart, in seconds, the pair's two agents may hold the time of one event (near), in
 	// place of healthBound: for a case whose events follow each side's metadata thread (healthStoreBound)
 	bound int64
+	// atRelease, when set, runs in every release right before the fake plugins get their file, at the middle of the
+	// second: what a case switches there (a streaming child's values) takes effect at the same whole second as the
+	// plugins' next phase
+	atRelease func()
 }
 
 // healthOptions are a case's options: the fake plugin's (one tier, ram children, pulse off), health on (off for a case
@@ -715,6 +719,9 @@ func (h *healthPair) release(t *testing.T, file string, phase int, hold time.Dur
 		time.Sleep(wait)
 	}
 	want := healthMidSecondOn(h.c.grid)
+	if h.atRelease != nil {
+		h.atRelease()
+	}
 	for i := range h.ls {
 		if err := h.ls[i].Release(file); err != nil {
 			t.Fatal(err)

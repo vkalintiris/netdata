@@ -310,8 +310,14 @@ func healthCallsEnded(code int) func([]healthCall) error {
 // to show the same, without a verdict (one that serves no alert log is not waited for).
 func (h *healthPair) processed(t *testing.T, what, name, status string) {
 	t.Helper()
+	h.processedAs(t, h.n, "", what, name, status)
+}
+
+// processedAs is processed for the alert log of another host (`/host/<name>`), with that host's normalizers.
+func (h *healthPair) processedAs(t *testing.T, n [2]*healthNorm, prefix, what, name, status string) {
+	t.Helper()
 	newest := func(i int) error {
-		entries, err := h.entriesAs(h.n[i], i, "/api/v1/alarm_log")
+		entries, err := h.entriesAs(n[i], i, prefix+"/api/v1/alarm_log")
 		if err != nil {
 			return err
 		}
@@ -327,7 +333,7 @@ func (h *healthPair) processed(t *testing.T, what, name, status string) {
 	}
 	h.waitOracle(t, what+": the alert log", func() (string, error) { return "", newest(0) })
 	for end := time.Now().Add(healthCandidateWait); time.Now().Before(end) && newest(1) != nil; time.Sleep(250 * time.Millisecond) {
-		if r := healthGet(h.p.Candidate, "/api/v1/alarm_log"); r.Status != 200 {
+		if r := healthGet(h.p.Candidate, prefix+"/api/v1/alarm_log"); r.Status != 200 {
 			return
 		}
 	}
