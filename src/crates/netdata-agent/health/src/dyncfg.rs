@@ -1136,7 +1136,8 @@ mod tests {
 
     /// `health_plugin_reload()`: the rules are read again and registered, and every host of the index whose health
     /// is enabled and ran once has its alerts deleted and linked from the new rules, in the index's order; a host
-    /// with health off keeps what it has, and one that had no pass links the new rules at its first one.
+    /// with health off keeps what it has, and one that had no pass links the new rules at its first one, as does
+    /// one whose only pass met a stopping service (it has its alert store, and is not initialized).
     #[test]
     fn a_reload_reaches_only_the_hosts_whose_health_ran() {
         let health = health_with(&rule_text("template", "old", "ctx.a", &[]));
@@ -1145,7 +1146,8 @@ mod tests {
         let off = Arc::new(Host::new("22222222-2222-4333-8444-555555555555", false, off_info));
         let later = host_of("33333333-2222-4333-8444-555555555555", &[]);
         let second = host_of("44444444-2222-4333-8444-555555555555", &[]);
-        for host in [&ran, &off, &later, &second] {
+        let cut_short = host_of("55555555-2222-4333-8444-555555555555", &[]);
+        for host in [&ran, &off, &later, &second, &cut_short] {
             chart(host, "t.a", None, "ctx.a", &[]);
         }
         let clock = || NOW;
@@ -1155,10 +1157,13 @@ mod tests {
             health.host_link(host, &clock, &|| true);
         }
         off.set_health_enabled(false);
+        health.host_link(&cut_short, &clock, &|| false);
+        assert!(health.host(&cut_short).is_some_and(|alerts| !alerts.is_initialized()));
 
         let (_dir, dirs) = rules_dir(&rule_text("template", "new", "ctx.a", &[]));
         let probe = Probe { health: &health, calls: Cell::new(0) };
-        let index = Index(vec![Arc::clone(&ran), Arc::clone(&off), Arc::clone(&later), Arc::clone(&second)]);
+        let hosts = [&ran, &off, &later, &second, &cut_short];
+        let index = Index(hosts.into_iter().map(Arc::clone).collect());
         let ctx = Ctx { nodes: &probe, cloud: &probe, hosts: &index, env: &Idle, clock: &clock };
         health.plugin_reload(&dirs, &ctx);
 
@@ -1170,9 +1175,40 @@ mod tests {
         assert_eq!(linked(&ran), [pair("new", "t.a")]);
         assert_eq!(linked(&second), [pair("new", "t.a")]);
         assert_eq!(linked(&off), [pair("old", "t.a")]);
-        assert!(linked(&later).is_empty());
-        health.host_link(&later, &clock, &|| true);
-        assert_eq!(linked(&later), [pair("new", "t.a")]);
+        for host in [&later, &cut_short] {
+            assert!(linked(host).is_empty());
+            health.host_link(host, &clock, &|| true);
+            assert_eq!(linked(host), [pair("new", "t.a")]);
+        }
+    }
+
+    /// The walk's stop test (C's `is_health_thread && !service_running(SERVICE_HEALTH)`): on the HEALTH thread a
+    /// stopping service ends the walk before the first chart, after the host's alerts were deleted. No reload runs
+    /// there (the command's worker and the main thread do), so only this shows the line; the oracle's
+    /// `reload/stopping` shows the other half, a walk off that thread going on to its end.
+    #[test]
+    fn a_reload_s_walk_on_the_health_thread_ends_at_a_stopping_service() {
+        use crate::testing::Scripted;
+        let health = health_with(&rule_text("template", "old", "ctx.a", &[]));
+        let host = host_of("11111111-2222-4333-8444-555555555555", &[]);
+        chart(&host, "t.a", None, "ctx.a", &[]);
+        let clock = || NOW;
+        health.host_link(&host, &clock, &|| true);
+        let linked = || health.host(&host).map(|alerts| named(&alerts.alerts())).unwrap_or_default();
+        assert_eq!(linked(), [pair("old", "t.a")]);
+
+        let (_dir, dirs) = rules_dir(&rule_text("template", "new", "ctx.a", &[]));
+        let index = Index(vec![Arc::clone(&host)]);
+        // the HEALTH thread, and a service that is stopping at its first look
+        let stopping = Scripted { running_for: Cell::new(Some(0)), ..Default::default() };
+        let ctx = Ctx { nodes: &Quiet, cloud: &Quiet, hosts: &index, env: &stopping, clock: &clock };
+        health.plugin_reload(&dirs, &ctx);
+        assert!(linked().is_empty(), "deleted, and no chart linked again");
+
+        // the same walk with the service running links the new rule
+        let ctx = Ctx { nodes: &Quiet, cloud: &Quiet, hosts: &index, env: &Idle, clock: &clock };
+        health.plugin_reload(&dirs, &ctx);
+        assert_eq!(linked(), [pair("new", "t.a")]);
     }
 
     /// A reload on the command's thread and a child's detach on its receiver's thread, each beside HEALTH's linking
