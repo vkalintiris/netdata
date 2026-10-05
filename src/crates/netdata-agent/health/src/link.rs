@@ -2,9 +2,10 @@
 //! and its helpers; `health_event_loop.c` `health_initialize_rrdhost()`,
 //! `health_execute_delayed_initializations()`), and a host's pass (`health_event_loop_for_host()`) around them.
 //!
-//! Nothing links outside the health loop: the collecting threads only raise flags on a chart and its host, and a
-//! host's pass takes them before it evaluates anything. Unlinking also happens where a chart is freed and where a
-//! host is cleaned up.
+//! The collecting threads link nothing: they only raise flags on a chart and its host, and a host's pass takes
+//! them before it evaluates anything. Beside the health loop, a DynCfg change of one alert's rules links and
+//! unlinks that name's alerts on the thread of the change ([`crate::dyncfg`]); unlinking also happens where a chart
+//! is freed and where a host is cleaned up.
 
 use std::sync::Arc;
 

@@ -452,7 +452,8 @@ impl HostAlerts {
                     drop(store);
                     let in_table = self.owner.upgrade().and_then(|host| env.sql_alarm_id(&host, chart_id, name));
                     store = self.store();
-                    // nothing else links, but the chart can have been freed meanwhile
+                    // another thread can have linked this key meanwhile (a DynCfg change beside HEALTH), and the
+                    // chart can have been freed
                     if chart.is_freed() || store.by_key.contains_key(&key) {
                         drop(store);
                         self.run_saves(env, &saves);

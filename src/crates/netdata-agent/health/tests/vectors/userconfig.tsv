@@ -240,3 +240,27 @@
 59	template	1	200	text/plain	n	0	     template: u_name\x0a           on: loop.dyncfg\x0a       lookup: average -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a      summary: a text with a \x23 sign and \xc3\xa9\x0a	-
 59	job	0	200	text/plain	n	0	     template: d_tpl\x0a           on: loop.dyncfg\x0a       lookup: average -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a      summary: a text with a \x23 sign and \xc3\xa9\x0a	-
 59	job	1	200	text/plain	n	0	     template: d_tpl\x0a           on: loop.dyncfg\x0a       lookup: average -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a      summary: a text with a \x23 sign and \xc3\xa9\x0a	-
+60	template	0	200	text/plain	n	0	     template: u_name\x0a           on: loop.dyncfg\x0a       lookup: percentile95(0.00) -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a	-
+60	template	1	200	text/plain	n	0	     template: u_name\x0a           on: loop.dyncfg\x0a       lookup: percentile95(0.00) -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a	-
+60	job	0	200	text/plain	n	0	     template: d_tpl\x0a           on: loop.dyncfg\x0a       lookup: percentile95(0.00) -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a	-
+60	job	1	200	text/plain	n	0	     template: d_tpl\x0a           on: loop.dyncfg\x0a       lookup: percentile95(0.00) -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a	-
+61	template	0	200	text/plain	n	0	     template: u_name\x0a           on: loop.dyncfg\x0a       lookup: percentile95(-0.00) -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a	-
+61	template	1	200	text/plain	n	0	     template: u_name\x0a           on: loop.dyncfg\x0a       lookup: percentile95(-0.00) -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a	-
+61	job	0	200	text/plain	n	0	     template: d_tpl\x0a           on: loop.dyncfg\x0a       lookup: percentile95(-0.00) -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a	-
+61	job	1	200	text/plain	n	0	     template: d_tpl\x0a           on: loop.dyncfg\x0a       lookup: percentile95(-0.00) -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a	-
+62	template	0	200	text/plain	n	0	     template: u_name\x0a           on: loop.dyncfg\x0a       lookup: countif(=0.00) -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a	-
+62	template	1	200	text/plain	n	0	     template: u_name\x0a           on: loop.dyncfg\x0a       lookup: countif(=0.00) -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a	-
+62	job	0	200	text/plain	n	0	     template: d_tpl\x0a           on: loop.dyncfg\x0a       lookup: countif(=0.00) -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a	-
+62	job	1	200	text/plain	n	0	     template: d_tpl\x0a           on: loop.dyncfg\x0a       lookup: countif(=0.00) -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a	-
+63	template	0	200	text/plain	n	0	     template: u_name\x0a           on: loop.dyncfg\x0a       lookup: average -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a        delay: up 5s\x0a	-
+63	template	1	200	text/plain	n	0	     template: u_name\x0a           on: loop.dyncfg\x0a       lookup: average -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a        delay: up 5s\x0a	-
+63	job	0	200	text/plain	n	0	     template: d_tpl\x0a           on: loop.dyncfg\x0a       lookup: average -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a        delay: up 5s\x0a	-
+63	job	1	200	text/plain	n	0	     template: d_tpl\x0a           on: loop.dyncfg\x0a       lookup: average -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a        delay: up 5s\x0a	-
+64	template	0	200	text/plain	n	0	     template: u_name\x0a           on: loop.dyncfg\x0a       lookup: average -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a        delay: up 5s\x0a	-
+64	template	1	200	text/plain	n	0	     template: u_name\x0a           on: loop.dyncfg\x0a       lookup: average -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a        delay: up 5s\x0a	-
+64	job	0	200	text/plain	n	0	     template: d_tpl\x0a           on: loop.dyncfg\x0a       lookup: average -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a        delay: up 5s\x0a	-
+64	job	1	200	text/plain	n	0	     template: d_tpl\x0a           on: loop.dyncfg\x0a       lookup: average -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a        delay: up 5s\x0a	-
+65	template	0	400	application/json	n	-	{"status":400,"message":"type is 'tttttttttttttttttttttttttttttt\xc3', but it can only be 'instance' or 'template'"}	-
+65	template	1	400	application/json	n	-	{"status":400,"message":"type is 'tttttttttttttttttttttttttttttt\xc3', but it can only be 'instance' or 'template'"}	-
+65	job	0	400	application/json	n	-	{"status":400,"message":"type is 'tttttttttttttttttttttttttttttt\xc3', but it can only be 'instance' or 'template'"}	-
+65	job	1	400	application/json	n	-	{"status":400,"message":"type is 'tttttttttttttttttttttttttttttt\xc3', but it can only be 'instance' or 'template'"}	-

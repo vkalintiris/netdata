@@ -19,7 +19,8 @@ use serde_json::{Map, Number, Value};
 const TOKENER_DEPTH: usize = 32;
 
 /// The text json-c's tokener reads, as serde reads it: up to its first NUL, with U+FFFD in place of each invalid UTF-8
-/// sequence (D89), and the control bytes json-c takes raw inside a string escaped.
+/// sequence (D89), the control bytes json-c takes raw inside a string escaped, and the number `-0` without its sign:
+/// json-c types it as the integer 0, where serde makes the double -0.0 of it (as both do of `-0.0` and `-0e0`).
 fn prepare(text: &[u8]) -> Cow<'_, [u8]> {
     let text = match String::from_utf8_lossy(c_str(text)) {
         Cow::Borrowed(s) => Cow::Borrowed(s.as_bytes()),
@@ -29,6 +30,12 @@ fn prepare(text: &[u8]) -> Cow<'_, [u8]> {
     for (i, &c) in text.iter().enumerate() {
         if in_string && !escaped && c < 0x20 {
             out.get_or_insert_with(|| text[..i].to_vec()).extend_from_slice(format!("\\u{c:04x}").as_bytes());
+            continue;
+        }
+        let whole_zero =
+            || text.get(i + 1) == Some(&b'0') && !matches!(text.get(i + 2), Some(b'0'..=b'9' | b'.' | b'e' | b'E'));
+        if !in_string && c == b'-' && whole_zero() {
+            out.get_or_insert_with(|| text[..i].to_vec());
             continue;
         }
         if let Some(out) = &mut out {
@@ -989,6 +996,15 @@ mod tests {
         assert_eq!(tokener_parse(repeated(30).as_bytes()), Some(serde_json::json!({"x": 1})));
         assert_eq!(tokener_parse(br#"{"a\u0000b":1}"#), None);
         assert_eq!(tokener_parse(br#"{"a":"b\u0000"}"#), Some(serde_json::json!({"a": "b\u{0}"})));
+        // a minus zero is the integer 0; with a fraction or an exponent it is the double, and a text is a text
+        let zeros = tokener_parse(br#"{"i":-0,"d":-0.0,"e":-0e0,"t":"-0","a":[-0,-0]}"#).expect("a document");
+        assert_eq!(zeros["i"].as_u64(), Some(0));
+        assert_eq!(zeros["a"], serde_json::json!([0, 0]));
+        for member in ["d", "e"] {
+            assert!(zeros[member].as_f64().is_some_and(|d| d == 0.0 && d.is_sign_negative()), "{member}");
+            assert!(!zeros[member].is_u64());
+        }
+        assert_eq!(zeros["t"], "-0");
     }
 
     /// `json_parser_format_error()`: 235 bytes fit after the prefix, a longer text keeps 232 and `...`.

@@ -668,8 +668,11 @@ impl Health {
         payload: Option<&[u8]>,
         alert: &[u8],
     ) -> u16 {
-        let Some((enabled, any_rule_enabled)) = self.prototypes().get(alert).map(|prototype| {
-            (prototype.enabled(), prototype.rules().iter().any(|rule| rule.r#match.enabled))
+        // what C reads through the item it holds while it answers: the flags, and for a GET the chain itself
+        let Some((enabled, any_rule_enabled, shown)) = self.prototypes().get(alert).map(|prototype| {
+            let rules: Vec<&Rule> = prototype.rules().iter().collect();
+            let shown = (cmd == Cmds::GET).then(|| prototype_to_json(alert, &rules, false));
+            (prototype.enabled(), rules.iter().any(|rule| rule.r#match.enabled), shown)
         }) else {
             return default_response(reply, 404, "no alert prototype is available by the name given");
         };
@@ -678,9 +681,7 @@ impl Health {
         match cmd {
             Cmds::SCHEMA => default_response(reply, 501, "schema not implemented yet"),
             Cmds::GET => {
-                let prototypes = self.prototypes();
-                let rules: Vec<&Rule> = prototypes.get(alert).map(|p| p.rules().iter().collect()).unwrap_or_default();
-                reply.body = prototype_to_json(alert, &rules, false);
+                reply.body = shown.unwrap_or_default();
                 reply.content_type = ContentType::ApplicationJson;
                 reply.expires = 0;
                 reply.cacheable = false;
@@ -839,7 +840,8 @@ impl Health {
 
             let host_labels = host.labels();
             let prototypes = self.prototypes();
-            let Some(prototype) = prototypes.get(name) else {
+            // a name that is gone or not enabled gives no chart anything: C does not walk the charts for it
+            let Some(prototype) = prototypes.get(name).filter(|prototype| prototype.enabled()) else {
                 continue;
             };
             let enabled_alerts = &self.config().enabled_alerts;
@@ -928,6 +930,27 @@ mod tests {
         }
     }
 
+    /// A core and a Cloud that take every call and do nothing.
+    struct Quiet;
+
+    impl Nodes for Quiet {
+        fn add(&self, _: &NodeSpec<'_>) -> bool {
+            true
+        }
+
+        fn del(&self, _: &[u8]) {}
+
+        fn status(&self, _: &[u8], _: Status) {}
+    }
+
+    impl Cloud for Quiet {
+        fn has(&self, _: &[u8; 16]) -> bool {
+            true
+        }
+
+        fn send_configuration(&self, _: &[u8; 16]) {}
+    }
+
     struct Index(Vec<Arc<Host>>);
 
     impl HostIndex for Index {
@@ -966,6 +989,67 @@ mod tests {
         // the unregistration's two
         assert_eq!(probe.calls.get(), 2 + 3 + 2 + 1 + 1 + 1 + 2);
         assert!(health.prototypes().get(b"added").is_none());
+    }
+
+    /// A DynCfg change runs on a web worker while HEALTH links and evaluates the same host: neither waits for the
+    /// other for ever, and when both are done the host has the one alert the last change left.
+    #[test]
+    fn a_change_beside_a_pass_ends_and_leaves_one_alert() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (done, ended) = mpsc::channel();
+        std::thread::spawn(move || {
+            let health = health_with(&rule_text("template", "from_file", "ctx.a", &[]));
+            let host = host_of("11111111-2222-4333-8444-555555555555", &[]);
+            for id in ["t.a", "t.b", "t.c"] {
+                chart(&host, id, None, "ctx.a", &[]);
+            }
+            let clock = || NOW;
+            health.host_link(&host, &clock, &|| true);
+
+            std::thread::scope(|scope| {
+                // HEALTH: passes that link what the flags ask for and unlink a chart's alerts
+                scope.spawn(|| {
+                    for round in 0..200 {
+                        host.raise_pending_flags(netdata_agent_rrd::host::pending_flags::LABEL_RECHECK);
+                        health.host_link(&host, &clock, &|| true);
+                        if round % 7 == 0 {
+                            health.apply_prototypes_to_host(&host, &Idle, &clock, &|| true);
+                        }
+                    }
+                });
+                // a web worker: the same job added, updated, disabled, enabled and removed again and again
+                scope.spawn(|| {
+                    let index = Index(vec![Arc::clone(&host)]);
+                    let ctx = Ctx { nodes: &Quiet, cloud: &Quiet, hosts: &index, env: &Idle, clock: &clock };
+                    let job = b"health:alert:prototype:added";
+                    for round in 0..200 {
+                        let mut reply = Reply::new(ContentType::TextPlain);
+                        let on = if round % 2 == 0 { "ctx.a" } else { "ctx.none" };
+                        health.dyncfg_callback(&ctx, &mut reply, TEMPLATE_ID, Cmds::ADD, Some(b"added"), Some(&payload(on, true)));
+                        health.dyncfg_callback(&ctx, &mut reply, job, Cmds::DISABLE, None, None);
+                        health.dyncfg_callback(&ctx, &mut reply, job, Cmds::ENABLE, None, None);
+                        health.dyncfg_callback(&ctx, &mut reply, job, Cmds::UPDATE, None, Some(&payload("ctx.a", true)));
+                        if round != 199 {
+                            health.dyncfg_callback(&ctx, &mut reply, job, Cmds::REMOVE, None, None);
+                        }
+                    }
+                });
+            });
+
+            // a last pass: every chart has the file's alert and the added one, each once
+            host.raise_pending_flags(netdata_agent_rrd::host::pending_flags::LABEL_RECHECK);
+            health.host_link(&host, &clock, &|| true);
+            let mut linked = named(&health.host(&host).expect("the host's alerts").alerts());
+            linked.sort();
+            let _ = done.send(linked);
+        });
+        let linked = ended.recv_timeout(Duration::from_secs(60)).expect("the two threads deadlocked");
+        let mut expected: Vec<_> =
+            ["t.a", "t.b", "t.c"].iter().flat_map(|chart| [pair("added", chart), pair("from_file", chart)]).collect();
+        expected.sort();
+        assert_eq!(linked, expected);
     }
 
     /// `health_prototype_apply_to_all_hosts()` and the removal walk the hosts of the index in its order and pass

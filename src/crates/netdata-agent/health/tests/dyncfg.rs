@@ -54,7 +54,7 @@ fn messages_of<T>(f: impl FnOnce() -> T) -> (T, Vec<u8>) {
 }
 
 /// Why Rust reads a payload otherwise than C, by decision: what marks the payload, and the decision.
-const DECIDED: [(&[u8], &str); 18] = [
+const DECIDED: [(&[u8], &str); 19] = [
     // D46.1: what json-c reads and serde_json refuses is refused
     (b"/* a comment */", "a comment"),
     (b"// a comment", "a comment"),
@@ -71,6 +71,8 @@ const DECIDED: [(&[u8], &str); 18] = [
     (b"sum\\u0000mary", "a NUL in a name"),
     // D89: a byte that is not UTF-8 is read as U+FFFD
     (b"\xff", "a byte that is not UTF-8"),
+    // a `type` text C cuts inside a character at its buffer's 31 bytes: C's answer holds the cut bytes, Rust's U+FFFD
+    (b"tttttttttttttttttttttttttttt\\u", "a text cut inside a character"),
     // an integer past 64 bits is a double for serde_json; json-c saturates it
     (b"123456789012345678901234567890", "an integer past 64 bits"),
     (b"18446744073709551616", "an integer past 64 bits"),
@@ -184,7 +186,7 @@ fn payloads_parse_as_c() {
         .collect();
     assert!(same.is_empty(), "marks no payload differs from C by: {same:?}");
     // how many parses differ by decision: a growth of this number is a new difference from C
-    assert_eq!(differing.iter().sum::<usize>(), 58);
+    assert_eq!(differing.iter().sum::<usize>(), 62);
 }
 
 /// A store as the generator's tables have it: `base.conf` read into it.
