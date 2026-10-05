@@ -8,7 +8,7 @@
 
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use netdata_agent_dyncfg::Dyncfg;
@@ -23,6 +23,7 @@ use netdata_agent_health::notify::{Execution, Waiting};
 use netdata_agent_health::pass::{ChartFacts, Env, Pass};
 use netdata_agent_health::store::alert_hash_row;
 use netdata_agent_health::{Health, StoreSink};
+use netdata_agent_inicfg::Config;
 use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_metadata::health_log::LoadedRow;
 use netdata_agent_metadata::open::MetaDb;
@@ -40,7 +41,7 @@ use netdata_agent_spawn::client::Waited;
 use netdata_agent_spawn::popen::Popen;
 use netdata_agent_text::print::print_uuid_lower;
 
-use crate::conf::Conf;
+use crate::conf::{Conf, health_config_dirs};
 use crate::heartbeat::{Phase, Thread};
 use crate::metasync::MetaQueue;
 use crate::shutdown;
@@ -60,21 +61,56 @@ pub fn plugin_init(
     database: bool,
     queue: MetaQueue,
     dynamic: &Dynamic<'_>,
-) -> Arc<Health> {
+) -> Arc<Plugin> {
     let store: StoreSink = if database {
         Box::new(move |rule| queue.execute_store_statement(alert_hash_row(rule)))
     } else {
         Box::new(|_| crate::meta_store::no_database("sql_alert_store_config"))
     };
     let health = Health::init(config, store);
+    let link = DyncfgLink::new(&health, dynamic);
     if health.config().enabled {
         let dirs = conf.health_config_dirs(health.config().stock_enabled);
-        let link = DyncfgLink::new(&health, dynamic);
         health.reload_prototypes(&dirs, Some(&link.ctx()));
         // with health off the silencers' file is not read: the state stays empty until a request changes it
         health.silencers().init();
     }
-    health
+    Arc::new(Plugin {
+        health,
+        link,
+        user_config_dir: conf.dirs.user_config.clone(),
+        stock_config_dir: conf.dirs.stock_config.clone(),
+    })
+}
+
+/// Health as the daemon holds it: the plugin's state, its one link to the configuration core, and the two
+/// configuration directories of the start, under which the `health.d` trees are by default.
+///
+/// The link is made with health on or off and lives as long as this: the core's callbacks hold clones of it, a
+/// reload's unregistration drops them all, and the registration that follows needs the link again.
+pub struct Plugin {
+    pub health: Arc<Health>,
+    link: Arc<DyncfgLink>,
+    user_config_dir: String,
+    stock_config_dir: String,
+}
+
+impl Plugin {
+    /// `health_plugin_reload()`, for `netdatacli reload-health` and SIGUSR2, on the caller's thread: the rules read
+    /// again and registered again, then every alert of every host health ran for unlinked and linked again.
+    ///
+    /// There is no test of `[health] enabled`: with health off this is the first time the two directory keys are
+    /// read, the trees loaded and the nodes registered. `[health]` itself and the silencers' file are not read again.
+    ///
+    /// netdata.conf's lock is held only for the two keys, as C's getter takes it per call.
+    pub fn reload(&self, netdata: &Mutex<Config>) {
+        let dirs = {
+            let mut netdata = netdata.lock().unwrap_or_else(PoisonError::into_inner);
+            let stock_enabled = self.health.config().stock_enabled;
+            health_config_dirs(&mut netdata, &self.user_config_dir, &self.stock_config_dir, stock_enabled)
+        };
+        self.health.plugin_reload(&dirs, &self.link.ctx());
+    }
 }
 
 /// What health's DynCfg nodes need of the daemon: the configuration core, the hosts, and the environment a change
@@ -692,7 +728,8 @@ mod tests {
         let mut conf = conf(root.path(), "");
         let config = conf.health_load_config_defaults();
         let core = core(root.path());
-        let health = plugin_init(&mut conf, config, true, MetaQueue::unread().0, &core.dynamic());
+        let plugin = plugin_init(&mut conf, config, true, MetaQueue::unread().0, &core.dynamic());
+        let health = Arc::clone(&plugin.health);
 
         let template = core.node("health:alert:prototype").expect("the template");
         assert_eq!((template.kind, template.current.status), (Type::Template, NodeStatus::Accepted));
@@ -731,7 +768,8 @@ mod tests {
             let mut conf = conf(root.path(), "");
             let config = conf.health_load_config_defaults();
             let core = core(root.path());
-            let health = plugin_init(&mut conf, config, true, MetaQueue::unread().0, &core.dynamic());
+            let plugin = plugin_init(&mut conf, config, true, MetaQueue::unread().0, &core.dynamic());
+            let health = Arc::clone(&plugin.health);
             let added = core.call("config health:alert:prototype add d_new", Some(&payload("d.ctx", "$this > 1")));
             assert_eq!(added, (202, "{\"status\":202,\"message\":\"accepted\"}".into()));
             let updated =
@@ -749,7 +787,8 @@ mod tests {
         let mut conf = conf(root.path(), "");
         let config = conf.health_load_config_defaults();
         let core = core(root.path());
-        let health = plugin_init(&mut conf, config, true, MetaQueue::unread().0, &core.dynamic());
+        let plugin = plugin_init(&mut conf, config, true, MetaQueue::unread().0, &core.dynamic());
+        let health = Arc::clone(&plugin.health);
         assert_eq!(names(&health), ["user_a", "stock_b", "d_new"]);
         {
             let prototypes = health.prototypes();
@@ -821,6 +860,197 @@ mod tests {
         );
     }
 
+    /// Health's nodes in the core's order, without the template's id in front: the template itself reads ``.
+    fn ids(core: &Core) -> Vec<String> {
+        let nodes = core.dyncfg.nodes().lock();
+        let ids = nodes.keys().filter_map(|id| id.strip_prefix(b"health:alert:prototype".as_slice()));
+        ids.map(|id| String::from_utf8_lossy(id).into_owned()).collect()
+    }
+
+    /// netdata.conf as the daemon holds it after its start: with the web server, under its lock.
+    fn shared(conf: &mut Conf) -> Mutex<Config> {
+        Mutex::new(std::mem::take(&mut conf.netdata))
+    }
+
+    /// A reload on the core the start registered on: the rules are read again, the nodes of the first registration
+    /// are deleted (none was saved) and registered anew, each with its first echo, and a user still reaches a job.
+    /// The plugin's own link is what the second registration is made through: every callback's clone of it went
+    /// with the unregistration.
+    #[test]
+    fn a_reload_registers_again_on_the_real_core() {
+        use netdata_agent_dyncfg::model::{SourceType, Status as NodeStatus, Type};
+        let root = tempfile::tempdir().unwrap();
+        trees(root.path());
+        let mut conf = conf(root.path(), "");
+        let config = conf.health_load_config_defaults();
+        let (queue, unread) = MetaQueue::unread();
+        let core = core(root.path());
+        let plugin = plugin_init(&mut conf, config, true, queue, &core.dynamic());
+        let netdata = shared(&mut conf);
+        assert_eq!(ids(&core), ["", ":user_a", ":stock_b"]);
+        assert_eq!(templates(&unread.statements()), ["user_a", "stock_b"]);
+
+        // the user's file now holds another name; its stock twin stays shadowed
+        rule_file(root.path(), "user/health.d/a.conf", "user_a2");
+        for round in 0..2 {
+            let ((), records) = netdata_agent_log::capture(|| plugin.reload(&netdata));
+            assert!(records.is_empty(), "round {round}: {records:?}");
+            assert_eq!(names(&plugin.health), ["user_a2", "stock_b"], "round {round}");
+            assert_eq!(ids(&core), ["", ":user_a2", ":stock_b"], "round {round}");
+            let template = core.node("health:alert:prototype").expect("the template");
+            assert_eq!((template.kind, template.current.status), (Type::Template, NodeStatus::Accepted));
+            for (name, source_type) in [("user_a2", SourceType::User), ("stock_b", SourceType::Stock)] {
+                let job = core.node(&format!("health:alert:prototype:{name}")).expect("a job");
+                assert_eq!((job.kind, job.current.status), (Type::Job, NodeStatus::Running), "{name}");
+                assert_eq!(job.current.source_type, source_type, "{name}");
+            }
+            let (code, body) = core.call("config health:alert:prototype:user_a2 get", None);
+            assert_eq!(code, 200, "{body}");
+            assert!(body.starts_with("{\"format_version\":1,\"name\":\"user_a2\","), "{body}");
+            assert!(core.node("health:alert:prototype:user_a").is_none(), "the name the file no longer holds");
+        }
+        // every rule's `alert_hash` row is made again at each load
+        assert_eq!(templates(&unread.statements()), ["user_a2", "stock_b", "user_a2", "stock_b"]);
+        // the keys were read at the start; a reload reads them where they are
+        assert_eq!(directory_keys(&mut netdata.lock().unwrap()), ["stock health config", "health config"]);
+    }
+
+    /// What the user changed in this session comes back at a reload as at a start, from the core's own nodes: a
+    /// job the user saved stays in the core without its method when health unregisters, the template (never saved)
+    /// is deleted and so comes back last in the core's order, its registration replays `add` for every job whose
+    /// rules are DynCfg's, in the core's order, and a job the user disabled is told to disable itself again.
+    #[test]
+    fn a_reload_replays_what_the_user_saved_in_this_session() {
+        use netdata_agent_dyncfg::model::{Cmds, SourceType, Status as NodeStatus};
+        let root = tempfile::tempdir().unwrap();
+        trees(root.path());
+        let mut conf = conf(root.path(), "");
+        let config = conf.health_load_config_defaults();
+        let core = core(root.path());
+        let plugin = plugin_init(&mut conf, config, true, MetaQueue::unread().0, &core.dynamic());
+        let health = Arc::clone(&plugin.health);
+        let netdata = shared(&mut conf);
+
+        let added = core.call("config health:alert:prototype add d_new", Some(&payload("d.ctx", "$this > 1")));
+        assert_eq!(added.0, 202, "{added:?}");
+        let updated = core.call("config health:alert:prototype:user_a update", Some(&payload("u.ctx", "$this > 2")));
+        assert_eq!(updated.0, 202, "{updated:?}");
+        assert_eq!(core.call("config health:alert:prototype:stock_b disable", None).0, 200);
+        let gone = core.call("config health:alert:prototype add d_gone", Some(&payload("g.ctx", "$this > 3")));
+        assert_eq!(gone.0, 202, "{gone:?}");
+        assert_eq!(core.call("config health:alert:prototype:d_gone remove", None).0, 200);
+        assert_eq!(names(&health), ["user_a", "stock_b", "d_new"]);
+        assert_eq!(ids(&core), ["", ":user_a", ":stock_b", ":d_new"]);
+
+        let state = |core: &Core| {
+            let job = |name: &str| core.node(&format!("health:alert:prototype:{name}")).unwrap();
+            let of = |name: &str| {
+                let job = job(name);
+                (job.current.status, job.current.source_type, job.cmds.contains(Cmds::REMOVE), job.stored.saves)
+            };
+            [of("user_a"), of("stock_b"), of("d_new")]
+        };
+        let before = state(&core);
+
+        for round in 0..2 {
+            plugin.reload(&netdata);
+            // the file's `user_a` is replaced in its place by the saved payload's; the added name follows the files'
+            assert_eq!(names(&health), ["user_a", "stock_b", "d_new"], "round {round}");
+            // the three saved jobs stayed; the template was deleted and inserted anew
+            assert_eq!(ids(&core), [":user_a", ":stock_b", ":d_new", ""], "round {round}");
+            {
+                let prototypes = health.prototypes();
+                let rule = |name: &[u8]| &prototypes.get(name).unwrap().rules()[0];
+                assert_eq!(rule(b"user_a").config.source_type, SourceType::Dyncfg);
+                assert_eq!(rule(b"user_a").r#match.on.as_deref(), Some(b"u.ctx".as_slice()));
+                assert_eq!(prototypes.get(b"user_a").unwrap().rules().len(), 1);
+                assert_eq!(rule(b"d_new").r#match.on.as_deref(), Some(b"d.ctx".as_slice()));
+                assert_eq!(rule(b"stock_b").config.source_type, SourceType::Stock);
+                assert!(prototypes.get(b"user_a").unwrap().enabled() && prototypes.get(b"d_new").unwrap().enabled());
+                assert!(!prototypes.get(b"stock_b").unwrap().enabled(), "the user's disable came back");
+                assert!(prototypes.get(b"d_gone").is_none());
+            }
+            assert_eq!(
+                state(&core),
+                [
+                    (NodeStatus::Accepted, SourceType::Dyncfg, true, before[0].3),
+                    (NodeStatus::Disabled, SourceType::Stock, false, before[1].3),
+                    (NodeStatus::Accepted, SourceType::Dyncfg, true, before[2].3),
+                ],
+                "round {round}"
+            );
+            assert!(core.node("health:alert:prototype:d_gone").is_none());
+        }
+        // nothing was saved by a reload, and the user still reaches what came back
+        assert!(before.iter().all(|job| job.3 >= 1), "{before:?}");
+        let (code, body) = core.call("config health:alert:prototype:d_new get", None);
+        assert_eq!(code, 200, "{body}");
+        let enabled = core.call("config health:alert:prototype:stock_b enable", None);
+        assert_eq!(enabled, (202, "{\"status\":202,\"message\":\"enabled\"}".into()));
+        assert!(health.prototypes().get(b"stock_b").unwrap().enabled());
+    }
+
+    /// With health off the start loads and registers nothing, and a reload does it all, because C's reload has no
+    /// test of `[health] enabled`: the two directory keys are read for the first time, both trees are loaded, every
+    /// rule gets its row, and the template and the jobs are on the core. The silencers' file is still not read.
+    #[test]
+    fn a_reload_with_health_off_registers_and_reads_the_keys() {
+        use netdata_agent_dyncfg::model::Status as NodeStatus;
+        let root = tempfile::tempdir().unwrap();
+        trees(root.path());
+        let mut conf = conf(root.path(), "enabled = no\n");
+        let config = conf.health_load_config_defaults();
+        let (queue, unread) = MetaQueue::unread();
+        let core = core(root.path());
+        let plugin = plugin_init(&mut conf, config, true, queue, &core.dynamic());
+        let netdata = shared(&mut conf);
+        assert!(ids(&core).is_empty() && names(&plugin.health).is_empty());
+        assert!(directory_keys(&mut netdata.lock().unwrap()).is_empty());
+
+        let ((), records) = netdata_agent_log::capture(|| plugin.reload(&netdata));
+        assert!(records.is_empty(), "{records:?}");
+        assert_eq!(names(&plugin.health), ["user_a", "stock_b"]);
+        assert_eq!(templates(&unread.statements()), ["user_a", "stock_b"]);
+        assert_eq!(ids(&core), ["", ":user_a", ":stock_b"]);
+        for name in ["user_a", "stock_b"] {
+            let job = core.node(&format!("health:alert:prototype:{name}")).unwrap();
+            assert_eq!(job.current.status, NodeStatus::Running, "{name}");
+        }
+        assert_eq!(directory_keys(&mut netdata.lock().unwrap()), ["stock health config", "health config"]);
+        assert!(!plugin.health.config().enabled);
+    }
+
+    /// Each load reads the two `[directories]` keys again, as C's getters do, so a reload loads the trees the
+    /// configuration names then (for an agent with health off that is the keys' first read). Here a key is changed
+    /// between two loads to show the read. A tree that is not there leaves C's record and no rule.
+    #[test]
+    fn a_reload_reads_the_directories_again() {
+        use netdata_agent_inicfg::SECTION_DIRECTORIES;
+        let root = tempfile::tempdir().unwrap();
+        trees(root.path());
+        let mut conf = conf(root.path(), "");
+        let config = conf.health_load_config_defaults();
+        let core = core(root.path());
+        let plugin = plugin_init(&mut conf, config, true, MetaQueue::unread().0, &core.dynamic());
+        let netdata = shared(&mut conf);
+        assert_eq!(names(&plugin.health), ["user_a", "stock_b"]);
+
+        rule_file(root.path(), "other/a.conf", "other_a");
+        rule_file(root.path(), "shipped/z.conf", "shipped_z");
+        let path = |dir: &str| root.path().join(dir).to_string_lossy().into_owned();
+        netdata.lock().unwrap().set(SECTION_DIRECTORIES, "health config", &path("other"));
+        netdata.lock().unwrap().set(SECTION_DIRECTORIES, "stock health config", &path("shipped"));
+        plugin.reload(&netdata);
+        assert_eq!(names(&plugin.health), ["other_a", "shipped_z"]);
+        assert_eq!(ids(&core), ["", ":other_a", ":shipped_z"]);
+
+        netdata.lock().unwrap().set(SECTION_DIRECTORIES, "health config", &path("missing"));
+        let ((), records) = netdata_agent_log::capture(|| plugin.reload(&netdata));
+        let messages: Vec<_> = records.into_iter().filter_map(|record| record.message).collect();
+        assert_eq!(messages, [format!("CONFIG cannot open user-config directory '{}'.", path("missing"))]);
+        assert_eq!(names(&plugin.health), ["shipped_z"]);
+    }
+
     /// The record of health's start when there is no silencers file, which no test here lays.
     fn no_silencers(root: &Path) -> String {
         let file = root.join("lib").join("health.silencers.json");
@@ -841,8 +1071,8 @@ mod tests {
     }
 
     /// The names of the health keys under `[directories]`, in the order they were first read.
-    fn directory_keys(conf: &mut Conf) -> Vec<String> {
-        let dump = String::from_utf8(conf.netdata.generate(false, true)).unwrap();
+    fn directory_keys(netdata: &mut Config) -> Vec<String> {
+        let dump = String::from_utf8(netdata.generate(false, true)).unwrap();
         let lines = dump.lines().filter(|line| line.contains("health config = "));
         lines.map(|line| line.trim_start_matches(['#', ' ', '\t']).split(" = ").next().unwrap().to_owned()).collect()
     }
@@ -863,8 +1093,9 @@ mod tests {
         let config = conf.health_load_config_defaults();
         let (queue, unread) = MetaQueue::unread();
         let core = core(root.path());
-        let (health, records) =
+        let (plugin, records) =
             netdata_agent_log::capture(|| plugin_init(&mut conf, config, true, queue, &core.dynamic()));
+        let health = Arc::clone(&plugin.health);
         // with health on the silencers' file is read after the rules: there is none, and the record carries the
         // failed open's errno
         let records: Vec<_> = records.into_iter().map(|record| (record.errno, record.message)).collect();
@@ -873,7 +1104,7 @@ mod tests {
         assert_eq!(names(&health), ["user_a", "stock_b"]);
         assert_eq!(templates(&unread.statements()), ["user_a", "stock_b"]);
         // C reads the stock key first
-        assert_eq!(directory_keys(&mut conf), ["stock health config", "health config"]);
+        assert_eq!(directory_keys(&mut conf.netdata), ["stock health config", "health config"]);
         // the defaults are filled after the row was made
         let prototypes = health.prototypes();
         let rule = &prototypes.get(b"user_a").unwrap().rules()[0];
@@ -889,10 +1120,16 @@ mod tests {
         let config = conf.health_load_config_defaults();
         let (queue, unread) = MetaQueue::unread();
         let core = core(root.path());
-        let health = plugin_init(&mut conf, config, true, queue, &core.dynamic());
+        let plugin = plugin_init(&mut conf, config, true, queue, &core.dynamic());
+        let health = Arc::clone(&plugin.health);
         assert_eq!(names(&health), ["user_a"]);
         assert_eq!(templates(&unread.statements()), ["user_a"]);
-        assert_eq!(directory_keys(&mut conf), ["health config"]);
+        assert_eq!(directory_keys(&mut conf.netdata), ["health config"]);
+        // nor does a reload read the stock key
+        let netdata = shared(&mut conf);
+        plugin.reload(&netdata);
+        assert_eq!(names(&health), ["user_a"]);
+        assert_eq!(directory_keys(&mut netdata.lock().unwrap()), ["health config"]);
     }
 
     /// The alert log's part of the live environment when the agent has no metadata database, and when the exit
@@ -1163,14 +1400,15 @@ mod tests {
         let config = conf.health_load_config_defaults();
         let (queue, unread) = MetaQueue::unread();
         let core = core(root.path());
-        let (health, records) =
+        let (plugin, records) =
             netdata_agent_log::capture(|| plugin_init(&mut conf, config, true, queue, &core.dynamic()));
+        let health = Arc::clone(&plugin.health);
         assert!(records.is_empty(), "{records:?}");
         // with health off no node of health's is registered
         assert!(core.node("health:alert:prototype").is_none());
         assert!(names(&health).is_empty());
         assert!(unread.statements().is_empty());
-        assert!(directory_keys(&mut conf).is_empty());
+        assert!(directory_keys(&mut conf.netdata).is_empty());
     }
 
     /// Without `netdata-meta.db` C's statement cannot be prepared: one record per rule, and no row.
@@ -1182,8 +1420,9 @@ mod tests {
         let config = conf.health_load_config_defaults();
         let (queue, unread) = MetaQueue::unread();
         let core = core(root.path());
-        let (health, records) =
+        let (plugin, records) =
             netdata_agent_log::capture(|| plugin_init(&mut conf, config, false, queue, &core.dynamic()));
+        let health = Arc::clone(&plugin.health);
         assert_eq!(names(&health), ["user_a", "stock_b"]);
         assert!(unread.statements().is_empty());
         let messages: Vec<String> = records.into_iter().filter_map(|record| record.message).collect();

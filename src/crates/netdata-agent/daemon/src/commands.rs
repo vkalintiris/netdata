@@ -272,6 +272,8 @@ pub struct Ctx {
     pub meta: Weak<MetaDb>,
     /// METASYNC's queue, which takes the dimensions of a removed host.
     pub metaqueue: MetaQueue,
+    /// Health, which `reload-health` and SIGUSR2 reload.
+    pub health: Arc<crate::health::Plugin>,
 }
 
 static CTX: OnceLock<Ctx> = OnceLock::new();
@@ -370,9 +372,12 @@ fn run(idx: usize, args: &[u8]) -> (Status, Option<Vec<u8>>) {
             Some(b"Agent is not connected to Netdata Cloud".to_vec()),
         ),
         RELOAD_HEALTH => {
-            // the reload of the health configuration is not ported: only its record
+            // cmd_reload_health_execute(): every record of the reload is written, whatever the flood limits
             netdata_agent_log::limits_unlimited();
             netdata_log_info!("COMMAND: Reloading HEALTH configuration.");
+            if let Some(ctx) = CTX.get() {
+                ctx.health.reload(&ctx.shared.netdata_conf);
+            }
             netdata_agent_log::limits_reset();
             (SUCCESS, None)
         }

@@ -1409,20 +1409,29 @@ impl Conf {
         }
     }
 
-    /// `health_user_config_dir()` and `health_stock_config_dir()` as `health_reload_prototypes()` reads them, each
-    /// time it loads: the stock key first (C evaluates the two arguments of its walk from the right), and only with
-    /// the stock rules on. Neither key is read with health off.
+    /// The two `health.d` trees at the start: `health_config_dirs()` over this configuration and its directories.
     pub fn health_config_dirs(&mut self, stock_enabled: bool) -> ConfigDirs {
-        let stock = stock_enabled.then(|| {
-            let default = format!("{}/health.d", self.dirs.stock_config);
-            self.netdata
-                .get_path(SECTION_DIRECTORIES, "stock health config", Some(&default))
-                .unwrap_or_default()
-        });
-        let default = format!("{}/health.d", self.dirs.user_config);
-        let user = self.netdata.get_path(SECTION_DIRECTORIES, "health config", Some(&default)).unwrap_or_default();
-        ConfigDirs { user, stock }
+        health_config_dirs(&mut self.netdata, &self.dirs.user_config, &self.dirs.stock_config, stock_enabled)
     }
+}
+
+/// `health_user_config_dir()` and `health_stock_config_dir()` as `health_reload_prototypes()` reads them, each time
+/// it loads (the start, and every reload after it, when netdata.conf lives with the web server): the stock key
+/// first (C evaluates the two arguments of its walk from the right), and only with the stock rules on. The defaults
+/// are under the two configuration directories of the start. Neither key is read with health off until a reload.
+pub fn health_config_dirs(
+    netdata: &mut Config,
+    user_config: &str,
+    stock_config: &str,
+    stock_enabled: bool,
+) -> ConfigDirs {
+    let stock = stock_enabled.then(|| {
+        let default = format!("{stock_config}/health.d");
+        netdata.get_path(SECTION_DIRECTORIES, "stock health config", Some(&default)).unwrap_or_default()
+    });
+    let default = format!("{user_config}/health.d");
+    let user = netdata.get_path(SECTION_DIRECTORIES, "health config", Some(&default)).unwrap_or_default();
+    ConfigDirs { user, stock }
 }
 
 /// `health_internals.h` and `health.h` (the retention default is streaming's).

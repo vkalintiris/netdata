@@ -778,7 +778,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     let health_env = Arc::new(health_env.with_user_config_dir(&conf.dirs.user_config));
     // health_plugin_init(): with health on the rules are loaded and their DynCfg nodes registered on localhost
     let dynamic = health::Dynamic { dyncfg, hosts: &hosts, env: &health_env };
-    let health = health::plugin_init(&mut conf, health_config, meta.is_some(), metasync.queue(), &dynamic);
+    let health_plugin = health::plugin_init(&mut conf, health_config, meta.is_some(), metasync.queue(), &dynamic);
+    let health = Arc::clone(&health_plugin.health);
     let health_cancel = health_env.cancel_flag();
     // a data query counts, filters by and lists the alerts of the charts it selects
     hosts.storage().set_alert_view(Arc::new(health::View(Arc::clone(&health))));
@@ -1338,6 +1339,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         plugins_dir: conf.primary_plugins_dir(),
         meta: meta_main.as_ref().map(Arc::downgrade).unwrap_or_default(),
         metaqueue,
+        health: health_plugin,
     });
     command_server::init(&uv_pool, conf.threads.thread_stack_size);
     startup.step("agent start timings");
