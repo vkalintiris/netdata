@@ -3,9 +3,10 @@
 //! `health_execute_delayed_initializations()`), and a host's pass (`health_event_loop_for_host()`) around them.
 //!
 //! The collecting threads link nothing: they only raise flags on a chart and its host, and a host's pass takes
-//! them before it evaluates anything. Beside the health loop, a DynCfg change of one alert's rules links and
-//! unlinks that name's alerts on the thread of the change ([`crate::dyncfg`]); unlinking also happens where a chart
-//! is freed and where a host is cleaned up.
+//! them before it evaluates anything. Beside the health loop, two things link and unlink on their caller's thread:
+//! a DynCfg change of one alert's rules, for that name's alerts ([`crate::dyncfg`]), and a reload of the
+//! configuration, for every alert of every host health ran for. Unlinking alone also happens where a chart is
+//! freed, where a host is cleaned up, and where a child's receiver leaves its host.
 
 use std::sync::Arc;
 
@@ -101,19 +102,21 @@ impl Health {
         self.alerts_for_chart_incrementally(host, alerts, chart, env, clock, running);
     }
 
+    /// The alerts of a host whose rules may be applied outside its own pass: C tests, before it touches anything in
+    /// `health_apply_prototypes_to_host()` and in DynCfg's two walks, that the host's health is enabled and ran once.
+    pub(crate) fn host_that_ran(&self, host: &Host) -> Option<Arc<HostAlerts>> {
+        if !host.health_enabled() {
+            return None;
+        }
+        self.host(host).filter(|alerts| alerts.is_initialized())
+    }
+
     /// `health_apply_prototypes_to_host()`: every alert of the host goes, the log's entries that are no removals
     /// count as replaced, then every chart gets its alerts again, in the host's chart order.
     pub fn apply_prototypes_to_host(&self, host: &Host, env: &dyn Env, clock: Clock, running: &dyn Fn() -> bool) {
-        // C tests both before it touches anything: the host's health is enabled, and ran once
-        if !host.health_enabled() {
-            return;
-        }
-        let Some(alerts) = self.host(host) else {
+        let Some(alerts) = self.host_that_ran(host) else {
             return;
         };
-        if !alerts.is_initialized() {
-            return;
-        }
         alerts.delete_all(env, clock);
         alerts.mark_log_updated();
         for chart in host.charts().all() {

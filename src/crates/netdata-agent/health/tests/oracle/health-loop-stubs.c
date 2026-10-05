@@ -270,6 +270,14 @@ char *api_secret = "oracle-key";
 // Each is a `call` row `echo <id> <command> <name> <payload>` before the callback runs and `echoed <id> <command>
 // <code> <body>` after it; what the callback itself calls lies between the two. The rows judge health given these
 // calls; that the core makes these calls, in this order, is for the checks against the running agent.
+//
+// Where the model is not the core, at a second registration (a reload):
+//   - the core replays `add` only for a job whose current source type is DynCfg's (dyncfg.c, dyncfg_send_updates()),
+//     and a second registration of a node it kept gives the node the new registration's source type. So for a name
+//     a file defines, whose saved payload health refuses, the core sends `add` at the start and only the `update` at
+//     a reload; the model sends `add` again. No scenario has that case; one that needs it needs the model to keep
+//     each node's current source type;
+//   - the core replays in its nodes' order, the model in the scenario's `dyncfg-saved` order.
 
 #define DYNCFG_TEMPLATE_ID "health:alert:prototype"
 

@@ -509,8 +509,9 @@ impl AlertView for View {
     }
 }
 
-/// What the database tells health as it lets go of a chart or a host: C calls `rrdcalc.c` from the chart's delete
-/// callback and from the host's cleanup. An unlink is logged unless the agent is exiting.
+/// What the database tells health as it lets go of a chart or a host, and as a child's receiver leaves its host:
+/// C calls `rrdcalc.c` from the chart's delete callback, from the host's cleanup and from the receiver's detach.
+/// An unlink is logged unless the agent is exiting.
 pub fn database_event(health: &Health, env: &LiveEnv, event: HealthEvent<'_>) {
     match event {
         HealthEvent::ChartFreed(host, chart) => health.chart_freed(host, chart, env, &now_realtime_s),

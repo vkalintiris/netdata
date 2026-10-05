@@ -1836,7 +1836,9 @@ impl Host {
         }
         self.contexts.child_disconnected();
         // rrdcalc_child_disconnected(), for a receiver whose health was on: the host's alerts go and are asked for
-        // again at its return. Told with no index lock held: a free of the host waits for this receiver
+        // again at its return. Told with no index lock held: a free of the host waits for this receiver. The
+        // host's health is off already here (C turns it off after this, with its lock taken again): the detach's
+        // work in health does not read it
         if slot.health {
             self.storage().health_event(HealthEvent::ChildDisconnected(self));
         }
@@ -3338,44 +3340,53 @@ mod tests {
     }
 
     /// What health hears of a detach (C's `rrdcalc_child_disconnected()`): one event from the receiver whose health
-    /// was on, none from one whose health was off, none from a slot that is not the attached one. At the event the
-    /// host's health is off already and the receiver lock is released: health takes the host's alerts and charts
-    /// there, and a new receiver or a free of the host is not kept waiting for it.
+    /// was on, none from one whose health was off, none from a slot that is not the attached one. The event comes
+    /// where C calls (`stream-receiver.c:1479-1485`): after the host's sender is told to stop, before its parents
+    /// are reset, with the receiver lock released (health takes the host's alerts and charts there, and a new
+    /// receiver or a free of the host is not kept waiting for it). The host's health is off by then, which C turns
+    /// off only afterwards (`:1503`); nothing health does at the event reads it.
     #[test]
     fn health_hears_of_a_detach_only_from_a_receiver_whose_health_was_on() {
         use crate::storage::HealthEvent;
         let storage = Arc::new(StorageLayout::default());
         let heard = Arc::new(Mutex::new(Vec::new()));
+        let upstream = Arc::new(crate::testing::Recorder::default());
         storage.set_health_hook({
-            let heard = Arc::clone(&heard);
+            let (heard, upstream) = (Arc::clone(&heard), Arc::clone(&upstream));
             move |event| {
                 if let HealthEvent::ChildDisconnected(host) = event {
                     let unlocked = host.receiver.try_lock().is_ok();
                     lock(&heard).push((host.machine_guid().to_owned(), host.health_enabled(), unlocked));
+                    lock(&upstream.calls).push(("health told", 0));
                 }
             }
         });
         let heard = || std::mem::take(&mut *lock(&heard));
+        let calls = || std::mem::take(&mut *lock(&upstream.calls));
         let host = Host::with_storage("guid-c", false, info("c"), &storage);
+        host.set_upstream(Arc::clone(&upstream) as Arc<dyn Upstream>);
         let slot = |health: bool| {
-            Arc::new(ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {})).with_health(health))
+            let slot = ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {}));
+            Arc::new(slot.with_health(health))
         };
 
         // health on for the receiver: one event at its detach, none for a second detach of the same slot
         let on = slot(true);
         host.set_health_enabled(true);
         assert_eq!(host.set_receiver(Arc::clone(&on)), Attach::Attached);
-        host.clear_receiver(&on, 0);
+        host.clear_receiver(&on, -19);
         assert_eq!(heard(), [("guid-c".to_owned(), false, true)]);
-        host.clear_receiver(&on, 0);
-        assert!(heard().is_empty());
+        assert_eq!(calls(), [("receiver_left", -19), ("health told", 0), ("parents_reset", -19)]);
+        host.clear_receiver(&on, -19);
+        assert!(heard().is_empty() && calls().is_empty());
 
         // health off for the receiver (`health enabled = no`), and a slot that is not the attached one: none
         let off = slot(false);
         assert_eq!(host.set_receiver(Arc::clone(&off)), Attach::Attached);
-        host.clear_receiver(&slot(true), 0);
-        host.clear_receiver(&off, 0);
+        host.clear_receiver(&slot(true), -5);
+        host.clear_receiver(&off, -5);
         assert!(heard().is_empty());
+        assert_eq!(calls(), [("receiver_left", -5), ("parents_reset", -5)]);
     }
 
     /// What health hears of the database: a chart freed, a host's cleanup before its charts are freed and once

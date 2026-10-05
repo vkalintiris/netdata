@@ -265,7 +265,8 @@ pub fn uuid_text(id: &[u8; 16]) -> Vec<u8> {
 /// (`tests/oracle/health-loop-stubs.c`): every call health makes is recorded with its fields, and a registration
 /// is answered as the model of the core there answers it: the template's with an `add` per saved job, a job's with
 /// `disable` (the user disabled it or the template, or it is registered disabled) or `enable`, and then, for a
-/// job that is no DynCfg one and has a saved payload, with an `update`.
+/// job that is no DynCfg one and has a saved payload, with an `update`. Where that model is not the core at a
+/// second registration is said in the stubs' header; the daemon's units run a reload on the real core.
 pub struct Core<'a> {
     pub health: &'a Health,
     pub hosts: &'a dyn HostIndex,

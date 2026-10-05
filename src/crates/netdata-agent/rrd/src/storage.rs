@@ -91,8 +91,8 @@ impl std::fmt::Debug for DimensionRowHook {
 }
 
 /// What health hears from the database. C calls `rrdcalc.c` from these places directly, on the object being
-/// freed; here health is above this crate, so the daemon installs what answers. A chart index knows its host by
-/// machine GUID only.
+/// freed or on the host whose child left; here health is above this crate, so the daemon installs what answers.
+/// A chart index knows its host by machine GUID only.
 #[derive(Debug, Clone, Copy)]
 pub enum HealthEvent<'a> {
     /// `rrdset_delete_callback()`: this chart of that host was freed.

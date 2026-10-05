@@ -1490,15 +1490,17 @@ mod replay {
                     self.dirs.stock = (args[1] != "-").then(|| args[1].as_bytes().to_vec());
                 }
                 "health-enabled" => self.host.set_health_enabled(flag(args[0])),
-                // a child's detach, as the streaming receiver makes it, off the HEALTH thread
+                // a child's detach, as the streaming receiver makes it, off the HEALTH thread. The host's health
+                // is turned off before health is told, as `Host::clear_receiver_then` does; C tells first and
+                // turns it off after, and the vectors, which are C's, show that it makes no difference
                 "disconnect" => {
                     let (health, world, host) = (self.health(), &self.world, &self.host);
                     let health_thread = world.health_thread.replace(false);
                     world.gate.set(false);
+                    host.set_health_enabled(false);
                     let ((), records) = netdata_agent_log::capture(|| {
                         health.child_disconnected(host, world, &|| world.clock());
                     });
-                    host.set_health_enabled(false);
                     world.health_thread.set(health_thread);
                     self.dump(line, None, records);
                 }
@@ -1978,10 +1980,11 @@ fn child_matches_c() {
 
 /// The reload of health's configuration: the nodes unregistered and registered with the model core's echoes, every
 /// alert deleted and linked again, over the same files, changed files, a missing directory, a stock tree, saved
-/// DynCfg jobs and a job the user disabled, before a host's first pass, with health off, under the silencers.
+/// DynCfg jobs and a job the user disabled, before a host's first pass, with health off, under the silencers, and
+/// while the service stops (the walk is not HEALTH's, so it goes on to its end).
 #[test]
 fn reload_matches_c() {
-    assert_eq!(replayed("reload"), 87);
+    assert_eq!(replayed("reload"), 96);
 }
 
 /// The management key of the generator's world (`api_secret` of its stubs).

@@ -820,16 +820,8 @@ impl Health {
 
     /// The hosts a DynCfg change is applied to: those whose health is enabled and ran once.
     fn dyncfg_hosts(&self, ctx: &Ctx<'_>) -> Vec<(Arc<Host>, Arc<crate::alerts::HostAlerts>)> {
-        let mut hosts = Vec::new();
-        for host in ctx.hosts.all() {
-            if !host.health_enabled() {
-                continue;
-            }
-            if let Some(alerts) = self.host(&host).filter(|alerts| alerts.is_initialized()) {
-                hosts.push((host, alerts));
-            }
-        }
-        hosts
+        let hosts = ctx.hosts.all().into_iter();
+        hosts.filter_map(|host| self.host_that_ran(&host).map(|alerts| (host, alerts))).collect()
     }
 
     /// `health_prototype_apply_to_all_hosts()`: on every such host the alerts of the name go, and, when the name
