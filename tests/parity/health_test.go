@@ -84,6 +84,10 @@ type healthCase struct {
 	// (relative to the link's directory) for a symbolic link, or healthUnreadable. They are made in path order, the same
 	// on both sides.
 	files map[string]string
+	// saved are DynCfg files laid out before the start (`<run>/lib/config/<name>`, the directory an agent saves its
+	// DynCfg nodes in and loads at its start): the value is the file's text, `{run}` in it each side's run directory.
+	// A file's payload is replayed by the agent, so it is held to the payload rail (healthPrepare).
+	saved map[string]string
 	// stockDir makes <run>/stock the stock configuration directory, so <run>/stock/health.d is the case's stock tree
 	// (with `stock`: else no stock rule is read)
 	stockDir bool
@@ -155,6 +159,15 @@ type healthPair struct {
 	// saved counts the requests of the management API a case's oracle saved its silencers after, for the guard on
 	// the records they left
 	saved int
+	// tx counts the DynCfg requests a case sent (cfgStep): the n-th carries the transaction healthCfgTx(n) on both
+	// sides
+	tx int
+	// hashes are, per side, the rule hashes a case that sends an agent's own JSON back has seen, in the order they
+	// first showed (healthPair.aliased)
+	hashes [2][]string
+	// bound, when set, is how far apart, in seconds, the pair's two agents may hold the time of one event (near), in
+	// place of healthBound: for a case whose events follow each side's metadata thread (healthStoreBound)
+	bound int64
 }
 
 // healthOptions are a case's options: the fake plugin's (one tier, ram children, pulse off), health on (off for a case
@@ -215,7 +228,9 @@ func healthScenario(emit, chart, context string, dims []string, phases ...map[st
 // side's run directory), the case's other files, the notifier with its rules and the management key's file (the
 // fixed key, or the state the case names: healthMakeKey). A rule that
 // names a notifier of its own (`exec`) is refused unless it stays under the side's notifier directory or names a
-// path nothing can be executed under: the rails on netdata.conf do not see a rule's line.
+// path nothing can be executed under: the rails on netdata.conf do not see a rule's line. A saved DynCfg file
+// (healthCase.saved) is refused unless its payload's `execute` is empty or a file of the side's notifier directory
+// (healthSavedFile): the agent replays the payload at its start.
 func healthPrepare(t *testing.T, runDir string, c healthCase, stub string) {
 	t.Helper()
 	dir := filepath.Join(runDir, "etc", "health.d")
@@ -240,9 +255,21 @@ func healthPrepare(t *testing.T, runDir string, c healthCase, stub string) {
 		}
 	}
 	for _, path := range slices.Sorted(maps.Keys(c.files)) {
+		// a saved DynCfg file names its own notifier in its payload: those go through `saved`, behind the rail
+		if rel, err := filepath.Rel(dcConfigDir(runDir), filepath.Join(runDir, path)); err != nil || !strings.HasPrefix(rel, "..") ||
+			strings.HasSuffix(path, ".dyncfg") {
+			t.Fatalf("harness: %s is a DynCfg file, or under the DynCfg directory: lay it out with healthCase.saved", path)
+		}
 		if err := healthMakeFile(filepath.Join(runDir, path), c.files[path]); err != nil {
 			t.Fatal(err)
 		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(c.saved)) {
+		text, err := healthSavedFile(runDir, name, c.saved[name])
+		if err != nil {
+			t.Fatal(err)
+		}
+		dcWriteFile(t, filepath.Join(dcConfigDir(runDir), name), text)
 	}
 	if err := notify.Install(runDir, stub, c.ctl); err != nil {
 		t.Fatal(err)
@@ -789,6 +816,11 @@ var healthEventRe = regexp.MustCompile(`"(when|delay_up_to_timestamp|exec_run|la
 // healthNear is the bound beside the clock masks (D187 point 4): two answers whose masked views are equal hold the
 // same events, whose times, paired in the answers' order, are within healthBound of each other.
 func healthNear(oracle, candidate string) error {
+	return healthNearWithin(oracle, candidate, healthBound)
+}
+
+// healthNearWithin is healthNear with a bound of the caller's (healthPair.bound).
+func healthNearWithin(oracle, candidate string, bound int64) error {
 	mo, mc := healthEventRe.FindAllStringSubmatch(oracle, -1), healthEventRe.FindAllStringSubmatch(candidate, -1)
 	if len(mo) != len(mc) {
 		return fmt.Errorf("%d event times on the oracle, %d on the candidate", len(mo), len(mc))
@@ -796,9 +828,9 @@ func healthNear(oracle, candidate string) error {
 	for k := range mo {
 		a, _ := strconv.ParseInt(mo[k][2], 10, 64)
 		b, _ := strconv.ParseInt(mc[k][2], 10, 64)
-		if mo[k][1] != mc[k][1] || b-a > healthBound || a-b > healthBound {
+		if mo[k][1] != mc[k][1] || b-a > bound || a-b > bound {
 			return fmt.Errorf("event time %d: `%s` is %d on the oracle, `%s` is %d on the candidate: more than %d s apart", k+1,
-				mo[k][1], a, mc[k][1], b, healthBound)
+				mo[k][1], a, mc[k][1], b, bound)
 		}
 	}
 	return nil
@@ -808,22 +840,29 @@ func healthNear(oracle, candidate string) error {
 // clock at the read, the last collection's second), paired in the answers' order, are within healthBound of each
 // other. Both sides are read within a poll of each other and collect at the same second.
 func healthClocksNear(oracle, candidate []int64) error {
+	return healthClocksNearWithin(oracle, candidate, healthBound)
+}
+
+// healthClocksNearWithin is healthClocksNear with a bound of the caller's (healthPair.bound).
+func healthClocksNearWithin(oracle, candidate []int64, bound int64) error {
 	if len(oracle) != len(candidate) {
 		return fmt.Errorf("%d masked seconds on the oracle, %d on the candidate", len(oracle), len(candidate))
 	}
 	for k := range oracle {
-		if d := candidate[k] - oracle[k]; d > healthBound || -d > healthBound {
+		if d := candidate[k] - oracle[k]; d > bound || -d > bound {
 			return fmt.Errorf("masked second %d is %d on the oracle, %d on the candidate: more than %d s apart", k+1, oracle[k],
-				candidate[k], healthBound)
+				candidate[k], bound)
 		}
 	}
 	return nil
 }
 
 // near applies healthClocksNear to the seconds two equal views masked, and healthNear to the answers they were
-// rendered from (a view no answer was kept for has none).
+// rendered from (a view no answer was kept for has none), with the pair's own bound when the case set one
+// (healthPair.bound).
 func (h *healthPair) near(oracle, candidate string) error {
-	if err := healthClocksNear(h.clocks[0][oracle], h.clocks[1][candidate]); err != nil {
+	bound := cmp.Or(h.bound, healthBound)
+	if err := healthClocksNearWithin(h.clocks[0][oracle], h.clocks[1][candidate], bound); err != nil {
 		return err
 	}
 	ro, ok := h.raw[0][oracle]
@@ -831,7 +870,7 @@ func (h *healthPair) near(oracle, candidate string) error {
 	if !ok || !also {
 		return nil
 	}
-	return healthNear(ro, rc)
+	return healthNearWithin(ro, rc, bound)
 }
 
 // settle waits until a host's alert log (localhost's for an empty prefix, else `/host/<name>`) shows its first

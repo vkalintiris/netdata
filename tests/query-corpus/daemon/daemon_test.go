@@ -251,6 +251,114 @@ func TestHealthOnRails(t *testing.T) {
 	}
 }
 
+// A DynCfg payload's rail: a payload names its own notifier in `action.execute`, which no rail on a file or on
+// netdata.conf sees. Only an empty one, or a file directly under the side's notifier directory, may be sent to an
+// agent or laid out as a saved DynCfg file.
+func TestHealthPayloadRails(t *testing.T) {
+	rule := func(action string) string {
+		return `{"format_version":1,"rules":[{"enabled":true,"type":"instance","config":{"match":{"on":"c.a"},"action":` + action + `}}]}`
+	}
+	for name, c := range map[string]struct {
+		body string
+		ok   bool
+	}{
+		"no action":                          {`{"format_version":1,"rules":[{"enabled":true,"type":"instance","config":{}}]}`, true},
+		"no execute":                         {rule(`{"recipient":"root"}`), true},
+		"an empty execute":                   {rule(`{"execute":""}`), true},
+		"a null execute":                     {rule(`{"execute":null}`), true},
+		"the stub":                           {rule(`{"execute":"/r/notify/stub"}`), true},
+		"a name that does not exist":         {rule(`{"execute":"/r/notify/absent"}`), true},
+		"a name with a dot and a dash":       {rule(`{"execute":"/r/notify/a-b_c.d"}`), true},
+		"the installed notifier":             {rule(`{"execute":"/usr/libexec/netdata/plugins.d/alarm-notify.sh"}`), false},
+		"another program":                    {rule(`{"execute":"/bin/true"}`), false},
+		"a relative name":                    {rule(`{"execute":"notify/stub"}`), false},
+		"a sibling of the directory":         {rule(`{"execute":"/r/notify-other/stub"}`), false},
+		"the directory itself":               {rule(`{"execute":"/r/notify/"}`), false},
+		"the directory without a slash":      {rule(`{"execute":"/r/notify"}`), false},
+		"a subdirectory":                     {rule(`{"execute":"/r/notify/sub/stub"}`), false},
+		"up and out":                         {rule(`{"execute":"/r/notify/../../bin/true"}`), false},
+		"a hidden name":                      {rule(`{"execute":"/r/notify/.stub"}`), false},
+		"dots alone":                         {rule(`{"execute":"/r/notify/.."}`), false},
+		"an argument after the stub":         {rule(`{"execute":"/r/notify/stub x"}`), false},
+		"a second command":                   {rule(`{"execute":"/r/notify/stub;/bin/true"}`), false},
+		"a substitution":                     {rule(`{"execute":"/r/notify/$(true)"}`), false},
+		"a quote":                            {rule(`{"execute":"/r/notify/stub'"}`), false},
+		"a newline":                          {rule(`{"execute":"/r/notify/stub\n/bin/true"}`), false},
+		"a space before":                     {rule(`{"execute":" /r/notify/stub"}`), false},
+		"a number (C reads its text)":        {rule(`{"execute":5}`), false},
+		"true (C reads its text)":            {rule(`{"execute":true}`), false},
+		"an object":                          {rule(`{"execute":{"a":"/r/notify/stub"}}`), false},
+		"an array":                           {rule(`{"execute":["/r/notify/stub"]}`), false},
+		"the name written with an escape":    {rule(`{"\u0065xecute":"/bin/true"}`), false},
+		"the value written with an escape":   {rule(`{"execute":"\/bin\/true"}`), false},
+		"an escaped value under the dir":     {rule(`{"execute":"\/r\/notify\/stub"}`), true},
+		"repeated, the first one bad":        {rule(`{"execute":"/bin/true","execute":"/r/notify/stub"}`), false},
+		"repeated, the last one bad":         {rule(`{"execute":"/r/notify/stub","execute":"/bin/true"}`), false},
+		"at the root":                        {`{"execute":"/bin/true","format_version":1,"rules":[]}`, false},
+		"deep in a member no reader names":   {`{"format_version":1,"x":[[{"y":{"execute":"/bin/true"}}]]}`, false},
+		"the second rule's":                  {`{"rules":[{"config":{"action":{"execute":""}}},{"config":{"action":{"execute":"/bin/true"}}}]}`, false},
+		"as a value, not a name":             {`{"info":"execute","summary":"execute: /bin/true"}`, true},
+		"another name that holds it":         {`{"executes":"/bin/true","noexecute":"/bin/true"}`, true},
+		"the name in upper case":             {`{"EXECUTE":"/bin/true"}`, true},
+		"no document: plain text":            {`not json`, true},
+		"no document: cut short":             {`{"format_version":1,"rules":[`, true},
+		"no document: empty":                 {``, true},
+		"no document, but the name is there": {`{"action":{"execute":"/r/notify/stub"}`, false},
+		"a comment, as json-c takes one":     {`{/* c */ "action":{"execute":"/bin/true"}}`, false},
+		"single quotes, as json-c takes":     {`{'action':{'execute':'/bin/true'}}`, false},
+		"a trailing comma, the name there":   {`{"action":{"execute":"/bin/true"},}`, false},
+		"a trailing comma, no such name":     {`{"format_version":1,}`, true},
+		"no document, a backslash":           {`{'\u0065xecute':'/bin/true'}`, false},
+		"a second document after the first":  {`{"format_version":1}{"execute":"/bin/true"}`, false},
+		"a second document, harmless":        {`{"format_version":1} {"a":1}`, true},
+		"a NUL, then the name":               {"{\"format_version\":1}\x00{\"execute\":\"/bin/true\"}", false},
+		"a scalar":                           {`5`, true},
+		"an array of rules":                  {`[{"execute":"/bin/true"}]`, false},
+	} {
+		err := ValidateHealthPayload([]byte(c.body), "/r/notify/")
+		if (err == nil) != c.ok {
+			t.Errorf("a payload's execute, %s: %v, want accepted: %v", name, err, c.ok)
+		}
+	}
+	// the directory with and without its slash; no directory, or an empty one, allows only an empty execute
+	stub := []byte(rule(`{"execute":"/r/notify/stub"}`))
+	if err := ValidateHealthPayload(stub, "/r/notify"); err != nil {
+		t.Errorf("the directory without a slash: %v", err)
+	}
+	if err := ValidateHealthPayload(stub, "/other/notify/", "/r/notify/"); err != nil {
+		t.Errorf("the second directory: %v", err)
+	}
+	if ValidateHealthPayload(stub) == nil || ValidateHealthPayload(stub, "") == nil || ValidateHealthPayload(stub, "/") == nil {
+		t.Errorf("no directory, an empty one or the root allows an execute")
+	}
+	if err := ValidateHealthPayload([]byte(rule(`{"execute":""}`))); err != nil {
+		t.Errorf("an empty execute without a directory: %v", err)
+	}
+
+	// a saved DynCfg file: its payload, what follows the first `---` line
+	file := func(payload string) []byte {
+		return []byte("version=1\nid=health:alert:prototype:a\nsource=x\ncmds=get \ncontent_type=application/json\ncontent_length=" +
+			fmt.Sprint(len(payload)) + "\n---\n" + payload)
+	}
+	for name, c := range map[string]struct {
+		text []byte
+		ok   bool
+	}{
+		"no payload":                 {[]byte("version=1\nid=health:alert:prototype:a\nuser_disabled=true\ncmds=get \n"), true},
+		"no payload, the name in it": {[]byte("version=1\nsource=execute=/bin/true\n"), true},
+		"the stub":                   {file(rule(`{"execute":"/r/notify/stub"}`)), true},
+		"another program":            {file(rule(`{"execute":"/bin/true"}`)), false},
+		"a payload health refuses":   {file(`{"format_version":2,"rules":[]}`), true},
+		"a payload cut short":        {file(`{"format_version":1,"rules":[{"config":{"action":{"execute":"/bin/true"`), false},
+		"the separator first":        {[]byte("---\n" + rule(`{"execute":"/bin/true"}`)), false},
+		"a second separator":         {file("{}\n---\n" + rule(`{"execute":"/bin/true"}`)), false},
+	} {
+		if err := ValidateDynCfgFile(c.text, "/r/notify/"); (err == nil) != c.ok {
+			t.Errorf("a saved file, %s: %v, want accepted: %v", name, err, c.ok)
+		}
+	}
+}
+
 // In PluginsStock mode PluginsExtra may name installed plugins, never the internal collectors or the mode's own keys.
 func TestPluginsStockMayNameInstalledPlugins(t *testing.T) {
 	got := map[string]bool{}

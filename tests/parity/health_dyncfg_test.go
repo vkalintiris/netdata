@@ -4,6 +4,7 @@ package parity
 
 import (
 	"fmt"
+	"maps"
 	"net/http"
 	"regexp"
 	"slices"
@@ -39,7 +40,8 @@ func healthJobs(view string) []string {
 // (health_dyncfg.c:886-943), as the admin. `user`, for the config check's user file: the tree under /health, each
 // job's `get` (its rules as JSON, the source and the notifier under the side's run directory), the template's schema
 // and a job's; then, both stopped, the DynCfg records. `stock-tree`: the tree under /health of the installed stock
-// rules (one job per alert name, in the tree's order).
+// rules (one job per alert name, in the tree's order). The cases that send commands to the nodes are
+// healthDynCfgCases' (health_dyncfg_cases_test.go; M9 commit 8, D212).
 func TestHealthDynCfg(t *testing.T) {
 	started := time.Now()
 	names := []string{"hc_alarm", "hc_tmpl", "hc_chain", "hc_bad", "hc_off"}
@@ -63,7 +65,8 @@ func TestHealthDynCfg(t *testing.T) {
 		h.compareLines(t, "the DynCfg records", func(i int) []string { return dcRecords(t, h.p.Each()[i].Daemon) },
 			func([]string) error { return nil })
 	}
-	runHealthCases(t, map[string]healthCase{
+	cases := healthDynCfgCases()
+	maps.Copy(cases, map[string]healthCase{
 		"user": {
 			conf:  healthCfgConf,
 			extra: healthCfgExtra,
@@ -102,4 +105,5 @@ func TestHealthDynCfg(t *testing.T) {
 			after: records,
 		},
 	})
+	runHealthCases(t, cases)
 }

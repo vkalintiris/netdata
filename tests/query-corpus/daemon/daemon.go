@@ -378,6 +378,119 @@ func ValidateHealthRules(text string, allowed ...string) error {
 	return judge(strings.Count(text, "\n")+1, pending)
 }
 
+// healthExecMember is the member of a health DynCfg payload that names a rule's notifier (health_dyncfg.c:210).
+const healthExecMember = "execute"
+
+// ValidateHealthPayload checks the body of a DynCfg request to health's nodes (`/api/v1/config`, `add`, `update`,
+// `userconfig`) before a check sends it, and the payload of a saved DynCfg file before a check lays it out: a rule's
+// `action.execute` replaces, for that rule, the notifier the [health] section names (health_dyncfg.c:210,
+// health_notifications.c:453), and neither the rails on netdata.conf nor ValidateHealthRules see a payload. Every
+// member named `execute`, at any depth and at every repetition of the name (json-c keeps a repeated member's last
+// value, a reader may keep another), must be null, an empty text, or the path of a file directly under one of
+// `dirs` (the side's own notifier directory, where only the recording stub lives): the directory, a slash, then a
+// name of letters, digits, `.`, `_` and `-` that does not begin with a dot. C reads a number or a boolean there as
+// its text (json-c-parser-inline.h:86-104), so any other value is refused. The command goes through `/bin/sh -c`,
+// so no other byte is let into the name.
+//
+// A body Go's decoder does not take as one JSON document may still be one to json-c (a comment, single quotes, a
+// trailing comma: json_tokener's default mode): it is accepted only when it can hold no such member, that is when it
+// has neither the member's name nor a backslash, by which a name could be written otherwise.
+func ValidateHealthPayload(body []byte, dirs ...string) error {
+	allowed := func(v string) bool {
+		if v == "" {
+			return true
+		}
+		for _, dir := range dirs {
+			name, under := strings.CutPrefix(v, strings.TrimSuffix(dir, "/")+"/")
+			if dir == "" || !under || name == "" || name[0] == '.' {
+				continue
+			}
+			if !strings.ContainsFunc(name, func(r rune) bool {
+				return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-')
+			}) {
+				return true
+			}
+		}
+		return false
+	}
+	refused := false
+	refuse := func(v any) error {
+		refused = true
+		return fmt.Errorf("daemon: a health DynCfg payload's `%s` is %#v, which is not a file directly under %q: a rule's notifier may send mail",
+			healthExecMember, v, dirs)
+	}
+	dec := json.NewDecoder(strings.NewReader(string(body)))
+	dec.UseNumber()
+	// walk reads one value; `judged` says the value is an `execute` member's
+	var walk func(judged bool) error
+	walk = func(judged bool) error {
+		tok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		switch v := tok.(type) {
+		case json.Delim:
+			if judged {
+				return refuse(v.String())
+			}
+			for dec.More() {
+				member := false
+				if v == '{' {
+					key, err := dec.Token()
+					if err != nil {
+						return err
+					}
+					name, _ := key.(string)
+					member = name == healthExecMember
+				}
+				if err := walk(member); err != nil {
+					return err
+				}
+			}
+			// the closing delimiter
+			_, err := dec.Token()
+			return err
+		case string:
+			if judged && !allowed(v) {
+				return refuse(v)
+			}
+		case nil:
+		default:
+			if judged {
+				return refuse(v)
+			}
+		}
+		return nil
+	}
+	err := walk(false)
+	if err == nil {
+		// one document, and nothing after it
+		if _, more := dec.Token(); more == io.EOF {
+			return nil
+		}
+		err = errors.New("more than one JSON value")
+	}
+	if refused {
+		return err
+	}
+	if text := string(body); strings.Contains(text, healthExecMember) || strings.Contains(text, `\`) {
+		return fmt.Errorf("daemon: a health DynCfg payload that is no JSON document to this harness (%v) holds `%s` or a backslash: "+
+			"what json-c would read there cannot be checked", err, healthExecMember)
+	}
+	return nil
+}
+
+// ValidateDynCfgFile checks a saved DynCfg file a check is about to lay out in a run directory (`<varlib>/config/`,
+// dyncfg-files.c:33-65): the agent replays its payload at the next start (dyncfg.c:299-318), so the payload is held
+// to ValidateHealthPayload. The payload is what follows the first `---` line; a file without one has none.
+func ValidateDynCfgFile(text []byte, dirs ...string) error {
+	_, payload, found := strings.Cut("\n"+string(text), "\n---\n")
+	if !found {
+		return nil
+	}
+	return ValidateHealthPayload([]byte(payload), dirs...)
+}
+
 // pluginsBlock is the template's [plugins] block for the mode: netdataConfTemplate's own (every installed plugin and
 // internal collector off), or pluginsStock.
 func pluginsBlock(stock bool) string {
