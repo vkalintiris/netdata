@@ -12,6 +12,9 @@
 #   tests/vectors/silencers-file.tsv,      from gen-loop-vectors.c: C's own health_silencers.c over file texts, request
 #   manage.tsv, silencers-match.tsv,       sequences and alerts, a process per case; and the pass with it, under
 #   silencers.tsv                          tests/corpus/silencers/
+#   tests/vectors/badge-*.tsv              from gen-loop-vectors.c: six tables of C's own web_buffer_svg.c (the value
+#                                          text with a precision, widths, the XML escape, color expressions, color
+#                                          arguments, the SVG), its static functions reached by badge-splice.inc
 #   tests/vectors/c_unittest.tsv           from C's own unit test (health-config-unittest.c), which must pass, with
 #                                          health-unittest-dump.inc and health-unittest-main.inc spliced into a copy
 #
@@ -88,7 +91,15 @@ for source in "${LOOP_SOURCES[@]}"; do
         -Dsql_get_alarm_id=c_sql_get_alarm_id -Dsql_alert_store_config=c_sql_alert_store_config
         -Dsql_health_get_last_executed_event=c_sql_health_get_last_executed_event
     )
-    run cc "${CFLAGS[@]}" "${defines[@]}" -c "${SRC}/src/${source}" -o "${object}"
+    compile="${SRC}/src/${source}"
+    # the badge's helpers are static: its file is compiled as a copy with the splice appended (its own includes are
+    # relative to its directory)
+    if [[ "${source}" == web/api/v1/api_v1_badge/web_buffer_svg.c ]]; then
+        compile="${WORK}/web_buffer_svg.c"
+        cat -- "${SRC}/src/${source}" "${SCRIPT_DIR}/badge-splice.inc" >"${compile}"
+        defines=(-iquote "${SRC}/src/web/api/v1/api_v1_badge")
+    fi
+    run cc "${CFLAGS[@]}" "${defines[@]}" -c "${compile}" -o "${object}"
     LOOP_OBJECTS+=("${object}")
 done
 
@@ -172,6 +183,8 @@ done
 (cd -- "${CRATE_DIR}" && LC_ALL=C TZ=UTC run "${WORK}/gen-loop-vectors" dyncfg tests/vectors \
     "${WORK}/dyncfg.records" >"${WORK}/loop.log" 2>&1) \
     || die "the loop generator's DynCfg tables failed: $(tail -n 5 "${WORK}/loop.log")"
+(cd -- "${CRATE_DIR}" && LC_ALL=C TZ=UTC run "${WORK}/gen-loop-vectors" badge tests/vectors >"${WORK}/loop.log" 2>&1) \
+    || die "the loop generator's badge tables failed: $(tail -n 5 "${WORK}/loop.log")"
 (
     cd -- "${CRATE_DIR}"
     # C prints a record's notification time as a local date

@@ -228,6 +228,18 @@ static void die(const char *what, const char *detail) {
     exit(1);
 }
 
+// the values of units.tsv and of badge-format.tsv
+static const NETDATA_DOUBLE unit_values[] = {
+    0.0, -0.0, NAN, INFINITY, -INFINITY,
+    0.00001, 0.0001, 0.00012345, 0.001, 0.0099, 0.01, 0.0999, 0.1, 0.4, 0.5, 0.6, 0.99, 0.999, 0.9999, 1.0,
+    1.4, 1.5, 1.23456789, 9.99, 9.994, 9.995, 9.9999, 10.0, 10.5, 59.0, 59.5, 60.0, 61.0, 99.4, 99.5, 99.94,
+    99.95, 99.99, 100.0, 100.5, 119.0, 120.0, 125.0, 999.4, 999.5, 999.94, 999.95, 999.99, 1000.0, 1000.5,
+    1439.0, 1440.0, 1441.0, 3599.0, 3600.0, 3601.0, 3700.0, 86399.0, 86400.0, 86401.0, 90061.0, 172800.0,
+    172801.0, 1e6, 1.5e6, 1e9, 1e12, 1e15, 1e18, 1e20, 18446744073709551615.0, 1e300,
+    -0.00012345, -0.5, -1.0, -1.5, -9.995, -59.0, -60.0, -99.95, -999.95, -1000.0, -3600.0, -86400.0, -90061.0,
+    -1e9, -1e18,
+};
+
 static void put_double(FILE *f, NETDATA_DOUBLE v) {
     char text[32];
     oracle_double(text, sizeof(text), v);
@@ -283,21 +295,11 @@ static void tables(const char *dir) {
         "empty", "null", "percentage", "percent", "pcent",
         "", "%", "things", "MiB", "requests/s", "Seconds", "seconds  ago", "ms", "a unit with spaces",
     };
-    static const NETDATA_DOUBLE values[] = {
-        0.0, -0.0, NAN, INFINITY, -INFINITY,
-        0.00001, 0.0001, 0.00012345, 0.001, 0.0099, 0.01, 0.0999, 0.1, 0.4, 0.5, 0.6, 0.99, 0.999, 0.9999, 1.0,
-        1.4, 1.5, 1.23456789, 9.99, 9.994, 9.995, 9.9999, 10.0, 10.5, 59.0, 59.5, 60.0, 61.0, 99.4, 99.5, 99.94,
-        99.95, 99.99, 100.0, 100.5, 119.0, 120.0, 125.0, 999.4, 999.5, 999.94, 999.95, 999.99, 1000.0, 1000.5,
-        1439.0, 1440.0, 1441.0, 3599.0, 3600.0, 3601.0, 3700.0, 86399.0, 86400.0, 86401.0, 90061.0, 172800.0,
-        172801.0, 1e6, 1.5e6, 1e9, 1e12, 1e15, 1e18, 1e20, 18446744073709551615.0, 1e300,
-        -0.00012345, -0.5, -1.0, -1.5, -9.995, -59.0, -60.0, -99.95, -999.95, -1000.0, -3600.0, -86400.0, -90061.0,
-        -1e9, -1e18,
-    };
     for(size_t u = 0; u < sizeof(units) / sizeof(units[0]); u++)
-        for(size_t v = 0; v < sizeof(values) / sizeof(values[0]); v++) {
+        for(size_t v = 0; v < sizeof(unit_values) / sizeof(unit_values[0]); v++) {
             char buf[100 + 1];
-            char *text = format_value_and_unit(buf, 100, values[v], units[u], -1);
-            put_double(f, values[v]);
+            char *text = format_value_and_unit(buf, 100, unit_values[v], units[u], -1);
+            put_double(f, unit_values[v]);
             fputc('\t', f);
             oracle_esc(f, units[u]);
             fputc('\t', f);
@@ -2216,6 +2218,248 @@ static void dyncfg_tables(const char *dir, const char *records_path) {
     if(ferror(f) || fclose(f) != 0) die("cannot write", "actions.tsv");
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// the badge: C's own web_buffer_svg.c, its static functions through tests/oracle/badge-splice.inc
+
+double oracle_verdana11_width(const char *s);
+size_t oracle_escape_xmlz(char *dst, const char *src, size_t len);
+void oracle_calc_colorz(const char *color, char *final, size_t len, NETDATA_DOUBLE value);
+const char *oracle_parse_color_argument(const char *arg, const char *def);
+void oracle_buffer_svg(BUFFER *wb, const char *label, NETDATA_DOUBLE value, const char *units, const char *label_color,
+                       const char *value_color, int precision, int scale, uint32_t options, int fixed_width_lbl,
+                       int fixed_width_val, const char *text_color_lbl, const char *text_color_val);
+
+static void badge_width_row(FILE *f, const char *text) {
+    oracle_esc(f, text);
+    fputc('\t', f);
+    put_double(f, oracle_verdana11_width(text));
+    fputc('\n', f);
+}
+
+static void badge_escape_row(FILE *f, const char *text, size_t limit) {
+    char out[1024 + 1];
+    size_t used = oracle_escape_xmlz(out, text, limit);
+    oracle_esc(f, text);
+    fprintf(f, "\t%zu\t", limit);
+    oracle_esc(f, out);
+    fprintf(f, "\t%zu\n", used);
+}
+
+// `n` bytes of `c`, then `tail`
+static char *badge_run(char c, size_t n, const char *tail) {
+    static char buf[8192];
+    if(n + strlen(tail) >= sizeof(buf)) die("a text too long for", "badge_run");
+    memset(buf, c, n);
+    strcpy(buf + n, tail);
+    return buf;
+}
+
+static void badge_svg_row(FILE *f, const char *label, NETDATA_DOUBLE value, const char *units, const char *label_color,
+                          const char *value_color, int precision, int scale, uint32_t options, int width_lbl,
+                          int width_val, const char *text_lbl, const char *text_val) {
+    BUFFER *wb = buffer_create(0, NULL);
+    oracle_buffer_svg(wb, label, value, units, label_color, value_color, precision, scale, options, width_lbl,
+                      width_val, text_lbl, text_val);
+    oracle_esc(f, label);
+    fputc('\t', f);
+    put_double(f, value);
+    fputc('\t', f);
+    oracle_esc(f, units);
+    fputc('\t', f);
+    oracle_esc(f, label_color);
+    fputc('\t', f);
+    oracle_esc(f, value_color);
+    fprintf(f, "\t%d\t%d\t%u\t%d\t%d\t", precision, scale, (unsigned)options, width_lbl, width_val);
+    oracle_esc(f, text_lbl);
+    fputc('\t', f);
+    oracle_esc(f, text_val);
+    fprintf(f, "\t%d\t", (int)wb->content_type);
+    oracle_esc(f, buffer_tostring(wb));
+    fputc('\n', f);
+    buffer_free(wb);
+}
+
+static void badge_tables(const char *dir) {
+    // format_value_and_unit() with a precision: -1 is units.tsv's
+    FILE *f = table(dir, "badge-format.tsv", "value (the double's bits, or nan), units, precision, text");
+    static const int precisions[] = { -2, 0, 1, 2, 3, 7, 15, 17, 49, 50, 51, INT_MAX };
+    static const char *format_units[] = { "", "things", "%", "seconds", "minutes ago", "hours", "up/down", "null" };
+    for(size_t u = 0; u < sizeof(format_units) / sizeof(format_units[0]); u++)
+        for(size_t p = 0; p < sizeof(precisions) / sizeof(precisions[0]); p++)
+            for(size_t v = 0; v < sizeof(unit_values) / sizeof(unit_values[0]); v++) {
+                char buf[100 + 1];
+                char *text = format_value_and_unit(buf, 100, unit_values[v], format_units[u], precisions[p]);
+                put_double(f, unit_values[v]);
+                fputc('\t', f);
+                oracle_esc(f, format_units[u]);
+                fprintf(f, "\t%d\t", precisions[p]);
+                oracle_esc(f, text);
+                fputc('\n', f);
+            }
+    if(ferror(f) || fclose(f) != 0) die("cannot write", "badge-format.tsv");
+
+    // verdana11_width() at the badge's font size
+    f = table(dir, "badge-width.tsv", "text, the width (the double's bits)");
+    for(int c = 1; c < 256; c++) {
+        char one[2] = { (char)c, 0 };
+        badge_width_row(f, one);
+    }
+    static const char *width_texts[] = {
+        "", "-", "chart not found", "alarm not found", "cpu", "system.cpu", "used ram", "12.3 %", "1,234.5 MiB",
+        "a b", "WWWW", "iiii", "il1|", "\xc3\xa9", "caf\xc3\xa9", "\xe2\x82\xac", "\xf0\x9f\x98\x80",
+        "a\xc3\xa9\xe2\x82\xac\xf0\x9f\x98\x80z", "a\xc3", "\xc3", "\xe2\x82", "\x80", "\xbf\xbf", "a\x80z",
+        "\xc3\xa9\xc3\xa9", "\xff\xfe", "\t", "a\tb", "\x7f", "0123456789", "%%", "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+        "abcdefghijklmnopqrstuvwxyz", "~!@#$%^&*()_+{}|:\"<>?`-=[]\\;',./",
+    };
+    for(size_t i = 0; i < sizeof(width_texts) / sizeof(width_texts[0]); i++)
+        badge_width_row(f, width_texts[i]);
+    badge_width_row(f, badge_run('m', 300, ""));
+    badge_width_row(f, badge_run(' ', 50, "x"));
+    if(ferror(f) || fclose(f) != 0) die("cannot write", "badge-width.tsv");
+
+    // escape_xmlz() at the label's and the value's sizes
+    f = table(dir, "badge-escape.tsv", "text, limit, the escaped text, the function's result");
+    static const char *specials[] = { "&", "<", ">", "\"", "'", "\\", "a", "\xc3\xa9", "&&", "<>", "&x" };
+    static const size_t limits[] = { 200, 100 };
+    for(size_t l = 0; l < sizeof(limits) / sizeof(limits[0]); l++) {
+        for(size_t s = 0; s < sizeof(specials) / sizeof(specials[0]); s++) {
+            badge_escape_row(f, specials[s], limits[l]);
+            for(size_t before = limits[l] - 7; before <= limits[l] + 1; before++)
+                badge_escape_row(f, badge_run('a', before, specials[s]), limits[l]);
+        }
+        badge_escape_row(f, "", limits[l]);
+        badge_escape_row(f, "a < b && c > \"d\" 'e' \\ f", limits[l]);
+        badge_escape_row(f, badge_run('&', 60, ""), limits[l]);
+        badge_escape_row(f, badge_run('\\', 250, ""), limits[l]);
+    }
+    if(ferror(f) || fclose(f) != 0) die("cannot write", "badge-escape.tsv");
+
+    // calc_colorz(), then parse_color_argument() of its text as buffer_svg() asks, with the default 555
+    f = table(dir, "badge-color.tsv", "expression, value (the double's bits, or nan), the chosen text, the color");
+    static const char *expressions[] = {
+        "red", "4c1", "#fff", "", "|", "red|", "|red", "red|green",
+        "red>10", "red>=10", "red<10", "red<=10", "red=10", "red:10", "red!=10", "red!10", "red<>10", "red<)10",
+        "red<}10", "red)10", "red}10", "red(10", "red{10", "red)=10", "red(=10", "red}=10", "red{=10", "red==10",
+        "red>100", "red<-5", "red>-5", "red=-5", "red=0", "red>0", "red<0", "red!=0",
+        "red>10|green", "red>10|yellow>5|green", "green<5|yellow<10|red", "red>10|yellow>5", "red<0|yellow<5|green<10",
+        "red:null", "red=null", "red!=null", "red>null", "red<null", "red:", "red=", "red>", "red<", "red!",
+        "red:null|green", "green|red:null", "red:null|yellow>5|green", "grey:null|green<10|red",
+        "red>10.9", "red>abc", "red> 7", "red>7 ", "red>1e2", "red>0x10", "red>+5", "red>--5", "red>10abc",
+        ">10", ">10|green", "=5", ":null", "|>10", "red>10|>5|green", "red>10||green",
+        "red>5>10", "red>5<10", "red>10=5", "red>=<5", "red=!5", "red<=>5", "red>10!", "red!>5",
+        "RED>10", "Red", "brightgreen>5|yellowgreen>0|orange", "lightgrey:null|blue", "gray|grey",
+        "#ff0000>5|#00ff00", "ff0000>5|00ff00", "f00>5|0f0", "ff00>5", "abcdefg>5",
+        "red>5|", "red>5||", "||red", "red|>5", "a>5|b>6|c>7|d>8|e>9|f>10|g>11|h>12",
+        "red>9223372036854775807", "red>-9223372036854775808", "red>99999999999999999999",
+        "re d>5", "red>5 |green", " red>5", "red >5", "red\t>5",
+        "red>5|green:null", "green:null|red>5", "red>=5|yellow>=0|blue", "red<=5|yellow<=10|blue",
+        "red!=5|green", "red<>5|green", "red:5|green", "red=5|yellow=10|green=0.5",
+    };
+    static const NETDATA_DOUBLE color_values[] = { NAN, INFINITY, -INFINITY, -5.0, -0.0, 0.0, 0.5, 5.0, 10.0, 10.5,
+                                                   11.0, 100.0, 1e30 };
+    char longs[3][600];
+    for(int i = 0; i < 3; i++) {
+        // a color of 255, 256 and 257 bytes before the operator, and a threshold of as many zeros before a 9
+        memset(longs[i], 'c', 255 + i);
+        strcpy(longs[i] + 255 + i, ">5|green");
+    }
+    char thresholds[3][600];
+    for(int i = 0; i < 3; i++) {
+        strcpy(thresholds[i], "red>");
+        memset(thresholds[i] + 4, '0', 254 + i);
+        strcpy(thresholds[i] + 4 + 254 + i, "9|green");
+    }
+    size_t fixed = sizeof(expressions) / sizeof(expressions[0]);
+    for(size_t e = 0; e < fixed + 6; e++) {
+        const char *expression = e < fixed ? expressions[e] : e < fixed + 3 ? longs[e - fixed] : thresholds[e - fixed - 3];
+        for(size_t v = 0; v < sizeof(color_values) / sizeof(color_values[0]); v++) {
+            char chosen[100 + 1];
+            oracle_calc_colorz(expression, chosen, 100, color_values[v]);
+            oracle_esc(f, expression);
+            fputc('\t', f);
+            put_double(f, color_values[v]);
+            fputc('\t', f);
+            oracle_esc(f, chosen);
+            fputc('\t', f);
+            oracle_esc(f, oracle_parse_color_argument(chosen, "555"));
+            fputc('\n', f);
+        }
+    }
+    if(ferror(f) || fclose(f) != 0) die("cannot write", "badge-color.tsv");
+
+    // parse_color_argument()
+    f = table(dir, "badge-color-arg.tsv", "argument (\\x00: none), default, result");
+    static const char *arguments[] = {
+        NULL, "", "brightgreen", "green", "yellow", "yellowgreen", "orange", "red", "blue", "grey", "gray", "lightgrey",
+        "lightgray", "Red", "RED", "greenish", "gree", " red", "red ", "black", "white",
+        "f", "ff", "fff", "ffff", "fffff", "ffffff", "fffffff", "ffffffff", "F", "FF", "FFF", "FFFF", "FFFFFF",
+        "FFFFFFFF", "aBc", "aBcDeF", "aBcDeF12", "#fff", "#ffffff", "ggg", "fgf", "12g", "000", "000000", "123",
+        "1234567", "12345678", "123456789", "abcdef1", "0x123", "a", "ab", "4c1", "97CA00", "e05d44", "007ec6",
+        "1234567890123456789", "12345678901234567890", "123456789012345678901", "aaaaaaaaaaaaaaaaaaa",
+        "aaaaaaaaaaaaaaaaaaaa", "re", "r", "\xc3\xa9\xc3\xa9", "fff ", " fff", "ff f", "ffg", "FfF",
+    };
+    static const char *defaults[] = { "555", "999", NULL };
+    for(size_t d = 0; d < sizeof(defaults) / sizeof(defaults[0]); d++)
+        for(size_t a = 0; a < sizeof(arguments) / sizeof(arguments[0]); a++) {
+            oracle_esc(f, arguments[a]);
+            fputc('\t', f);
+            oracle_esc(f, defaults[d]);
+            fputc('\t', f);
+            oracle_esc(f, oracle_parse_color_argument(arguments[a], defaults[d]));
+            fputc('\n', f);
+        }
+    if(ferror(f) || fclose(f) != 0) die("cannot write", "badge-color-arg.tsv");
+
+    // buffer_svg()
+    f = table(dir, "badge-svg.tsv", "label, value (the double's bits, or nan), units, label color, value color, "
+                                    "precision, scale, options, the label's fixed width, the value's, the label's "
+                                    "text color, the value's (\\x00: none), the content type's number, the body");
+    static const int scales[] = { 100, 50, 0, -1, 99, 101, 125, 200, 1000, INT_MAX };
+    for(size_t i = 0; i < sizeof(scales) / sizeof(scales[0]); i++) {
+        badge_svg_row(f, "cpu", 12.3456, "%", NULL, NULL, -1, scales[i], 0, -1, -1, NULL, NULL);
+        badge_svg_row(f, "cpu", 12.3456, "%", NULL, NULL, -1, scales[i], 0, 80, 120, NULL, NULL);
+    }
+    static const int widths[][2] = { { -1, -1 }, { 0, 5 }, { 5, 0 }, { 80, 120 }, { 1, 1 }, { -1, 50 }, { 50, -1 },
+                                     { 0, 0 }, { 1000, 1 }, { INT_MAX, INT_MAX } };
+    for(size_t i = 0; i < sizeof(widths) / sizeof(widths[0]); i++) {
+        badge_svg_row(f, "used ram", 1234.5, "MiB", "blue", "orange", 1, 100, 0, widths[i][0], widths[i][1], NULL, NULL);
+        badge_svg_row(f, "used ram", 1234.5, "MiB", "blue", "orange", 1, 150, 0, widths[i][0], widths[i][1], "fff", "000");
+    }
+    static const NETDATA_DOUBLE svg_values[] = { NAN, INFINITY, -INFINITY, 0.0, -0.0, 0.5, -0.5, 1.0, -12.5, 99.95,
+                                                 1000.0, 1e9, 1e30 };
+    static const char *svg_units[] = { "", "%", "things", "seconds", "up/down", "null", "percentage" };
+    for(size_t v = 0; v < sizeof(svg_values) / sizeof(svg_values[0]); v++)
+        for(size_t u = 0; u < sizeof(svg_units) / sizeof(svg_units[0]); u++) {
+            badge_svg_row(f, "label", svg_values[v], svg_units[u], NULL, NULL, -1, 100, 0, -1, -1, NULL, NULL);
+            // RRDR_OPTION_DISPLAY_ABS
+            badge_svg_row(f, "label", svg_values[v], svg_units[u], NULL, "red<0|green", 2, 100,
+                          RRDR_OPTION_DISPLAY_ABS, -1, -1, NULL, NULL);
+        }
+    static const char *svg_colors[] = { NULL, "", "red", "#fff", "4c1", "nocolor", "f", "ffffffff", "red>5|green",
+                                        "grey:null|blue" };
+    for(size_t a = 0; a < sizeof(svg_colors) / sizeof(svg_colors[0]); a++)
+        for(size_t b = 0; b < sizeof(svg_colors) / sizeof(svg_colors[0]); b++)
+            badge_svg_row(f, "colors", 7.0, "x", svg_colors[a], svg_colors[b], 0, 100, 0, -1, -1, svg_colors[b],
+                          svg_colors[a]);
+    static const char *svg_labels[] = { "", " ", "a < b & c > d", "\"quoted\" 'label'", "back\\slash",
+                                        "caf\xc3\xa9 \xe2\x82\xac \xf0\x9f\x98\x80", "chart not found",
+                                        "alarm not found", "\x80\xff" };
+    for(size_t l = 0; l < sizeof(svg_labels) / sizeof(svg_labels[0]); l++) {
+        badge_svg_row(f, svg_labels[l], 1.0, svg_labels[l], NULL, NULL, -1, 100, 0, -1, -1, NULL, NULL);
+        badge_svg_row(f, svg_labels[l], NAN, "", NULL, NULL, -1, 100, 0, -1, -1, NULL, NULL);
+    }
+    badge_svg_row(f, badge_run('L', 199, "&"), 1.0, "u", NULL, NULL, -1, 100, 0, -1, -1, NULL, NULL);
+    badge_svg_row(f, badge_run('L', 5000, ""), 1.0, "u", NULL, NULL, -1, 100, 0, -1, -1, NULL, NULL);
+    char long_units[400];
+    strcpy(long_units, badge_run('u', 300, ""));
+    badge_svg_row(f, "long units", 1.0, long_units, NULL, NULL, -1, 100, 0, -1, -1, NULL, NULL);
+    static const int svg_precisions[] = { -2, -1, 0, 1, 5, 50, 51, INT_MAX, INT_MIN };
+    for(size_t p = 0; p < sizeof(svg_precisions) / sizeof(svg_precisions[0]); p++)
+        badge_svg_row(f, "precision", 1234.56789, "things", NULL, NULL, svg_precisions[p], 100, 0, -1, -1, NULL, NULL);
+    if(ferror(f) || fclose(f) != 0) die("cannot write", "badge-svg.tsv");
+}
+
+
 int main(int argc, char **argv) {
     if(argc == 3 && strcmp(argv[1], "tables") == 0) {
         tables(argv[2]);
@@ -2233,12 +2477,16 @@ int main(int argc, char **argv) {
         dyncfg_tables(argv[2], argv[3]);
         return 0;
     }
+    if(argc == 3 && strcmp(argv[1], "badge") == 0) {
+        badge_tables(argv[2]);
+        return 0;
+    }
     if(argc == 5 && strcmp(argv[1], "scenario") == 0) {
         run_scenario(argv[2], argv[3], argv[4]);
         return 0;
     }
     fprintf(stdout, "usage: %s tables <directory> | decide <directory> <records file> | "
-                    "silencers <directory> <records file> | dyncfg <directory> <records file> | "
+                    "silencers <directory> <records file> | dyncfg <directory> <records file> | badge <directory> | "
                     "scenario <loop.tsv> <scenario file> <records file>\n",
             argv[0]);
     return 1;
