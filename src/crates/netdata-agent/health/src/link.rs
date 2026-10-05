@@ -14,6 +14,7 @@ use netdata_agent_rrd::chart::{Chart, flags};
 use netdata_agent_rrd::host::{Host, pending_flags};
 
 use crate::alerts::HostAlerts;
+use crate::dyncfg::Ctx;
 use crate::matching::{ChartKey, prototype_rules_for_chart};
 use crate::notify::Executing;
 use crate::pass::{Env, Idle, Pass};
@@ -103,6 +104,10 @@ impl Health {
     /// `health_apply_prototypes_to_host()`: every alert of the host goes, the log's entries that are no removals
     /// count as replaced, then every chart gets its alerts again, in the host's chart order.
     pub fn apply_prototypes_to_host(&self, host: &Host, env: &dyn Env, clock: Clock, running: &dyn Fn() -> bool) {
+        // C tests both before it touches anything: the host's health is enabled, and ran once
+        if !host.health_enabled() {
+            return;
+        }
         let Some(alerts) = self.host(host) else {
             return;
         };
@@ -207,6 +212,30 @@ impl Health {
         }
 
         self.evaluate_host(host, &alerts, &mut pass, env, clock, running);
+    }
+
+    /// `health_apply_prototypes_to_all_hosts()`: every host of the index in its order, each as
+    /// [`Health::apply_prototypes_to_host`] takes or passes it. A stopping service ends the walk on the HEALTH
+    /// thread only.
+    pub fn apply_prototypes_to_all_hosts(&self, ctx: &Ctx<'_>) {
+        let running = || !ctx.env.is_health_thread() || ctx.env.service_running();
+        for host in ctx.hosts.all() {
+            self.apply_prototypes_to_host(&host, ctx.env, ctx.clock, &running);
+        }
+    }
+
+    /// `rrdcalc_child_disconnected()`: a child's receiver detaches. The host's alerts go, each with its REMOVED
+    /// entry; then every chart of the host, and last the host, are flagged for the alerts to be linked again by the
+    /// first pass after the child's return (a returning child sends the same charts, which raises no flag by
+    /// itself, and a host's health is initialized once). The flags are raised for a host health never ran for too.
+    pub fn child_disconnected(&self, host: &Host, env: &dyn Env, clock: Clock) {
+        if let Some(alerts) = self.host(host) {
+            alerts.delete_all(env, clock);
+        }
+        for chart in host.charts().all() {
+            chart.flags_set_and_clear(flags::PENDING_HEALTH_INITIALIZATION, 0);
+        }
+        host.raise_pending_flags(pending_flags::HEALTH_INITIALIZATION);
     }
 
     /// `rrdset_delete_callback()`: the alerts on a freed chart go, on the thread that frees it. A chart index knows

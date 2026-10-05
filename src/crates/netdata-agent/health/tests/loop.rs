@@ -982,6 +982,8 @@ mod replay {
         cloud_has: bool,
         /// The last `store` row of each name of the rules' store.
         store_rows: HashMap<Vec<u8>, Fields>,
+        /// `health-dirs`: the two health.d trees a `reload` reads.
+        dirs: netdata_agent_health::ConfigDirs,
         /// The silencers' file is in a directory of the scenario's own; C's rows name it `{file}`.
         silencers_dir: tempfile::TempDir,
         host: Arc<Host>,
@@ -1477,6 +1479,36 @@ mod replay {
                 }
                 "dyncfg-user-disabled" => self.dyncfg_user_disabled.push(args[0].as_bytes().to_vec()),
                 "cloud-has" => self.cloud_has = flag(args[0]),
+                "dyncfg-forget" => {
+                    let before = self.dyncfg_saved.len() + self.dyncfg_user_disabled.len();
+                    self.dyncfg_saved.retain(|(name, _)| name != args[0].as_bytes());
+                    self.dyncfg_user_disabled.retain(|id| id != args[0].as_bytes());
+                    assert!(self.dyncfg_saved.len() + self.dyncfg_user_disabled.len() < before, "{}: {line}", self.name);
+                }
+                "health-dirs" => {
+                    self.dirs.user = args[0].as_bytes().to_vec();
+                    self.dirs.stock = (args[1] != "-").then(|| args[1].as_bytes().to_vec());
+                }
+                "health-enabled" => self.host.set_health_enabled(flag(args[0])),
+                // a child's detach, as the streaming receiver makes it, off the HEALTH thread
+                "disconnect" => {
+                    let (health, world, host) = (self.health(), &self.world, &self.host);
+                    let health_thread = world.health_thread.replace(false);
+                    world.gate.set(false);
+                    let ((), records) = netdata_agent_log::capture(|| {
+                        health.child_disconnected(host, world, &|| world.clock());
+                    });
+                    host.set_health_enabled(false);
+                    world.health_thread.set(health_thread);
+                    self.dump(line, None, records);
+                }
+                // `health_plugin_reload()`, off the HEALTH thread
+                "reload" => {
+                    let dirs = self.dirs.clone();
+                    let ((), records) = self.with_core(|health, core| health.plugin_reload(&dirs, &core.ctx()));
+                    self.store_rows();
+                    self.dump(line, None, records);
+                }
                 // a user's request as the DynCfg core hands it to health
                 "dyncfg" => {
                     let mut words = rest.splitn(4, ' ');
@@ -1860,6 +1892,10 @@ mod replay {
                 dyncfg_user_disabled: Vec::new(),
                 cloud_has: true,
                 store_rows: HashMap::new(),
+                dirs: netdata_agent_health::ConfigDirs {
+                    user: b"/oracle/etc/health.d".to_vec(),
+                    stock: Some(b"/oracle/lib/health.d".to_vec()),
+                },
                 silencers_dir: tempfile::tempdir().expect("a directory"),
                 host,
                 world,
@@ -1930,6 +1966,22 @@ fn silencers_match_c() {
 #[test]
 fn dyncfg_matches_c() {
     assert_eq!(replayed("dyncfg"), 137);
+}
+
+/// A streaming child's detach and return: its alerts go with their entries and are linked again with their ids,
+/// before and after the metadata thread stored the entries, with the gate closed, at the agent's exit, postponed,
+/// with an entry that waits, on a host that never ran or whose health is off.
+#[test]
+fn child_matches_c() {
+    assert_eq!(replayed("child"), 65);
+}
+
+/// The reload of health's configuration: the nodes unregistered and registered with the model core's echoes, every
+/// alert deleted and linked again, over the same files, changed files, a missing directory, a stock tree, saved
+/// DynCfg jobs and a job the user disabled, before a host's first pass, with health off, under the silencers.
+#[test]
+fn reload_matches_c() {
+    assert_eq!(replayed("reload"), 87);
 }
 
 /// The management key of the generator's world (`api_secret` of its stubs).

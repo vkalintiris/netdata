@@ -1,0 +1,13 @@
+# A detach before the host's first pass: only the flags; the first pass after the reconnect links once.
+rules tests/corpus/notify/two.conf
+chart loop.n loop.n_name loop.notify disks things 1
+var loop.n v 70
+disconnect
+clock 1
+pass 1
+health-enabled 1
+gate 1
+clock 2
+pass 2
+clock 3
+pass 3

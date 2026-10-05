@@ -740,7 +740,7 @@ impl Receivers {
         );
         // stream_receiver_signal_to_stop_and_wait()'s shutdown() of the socket, from another thread
         let shutdown_handle = link.socket().and_then(|c| socket2::SockRef::from(c).try_clone().ok());
-        let slot = Arc::new(ReceiverSlot::new(
+        let slot = ReceiverSlot::new(
             now_monotonic_usec(),
             (peer.ip.clone(), peer.port.clone()),
             ReceiverLink {
@@ -753,7 +753,9 @@ impl Receivers {
                     let _ = s.shutdown(Shutdown::Both);
                 }
             }),
-        ));
+        );
+        // rpt->config.health.enabled, yes and auto alike: the detach then tells health (rrdcalc_child_disconnected())
+        let slot = Arc::new(slot.with_health(config.health_enabled != netdata_agent_inicfg::BOOLEAN_NO));
         match host.set_receiver(Arc::clone(&slot)) {
             // rrdhost_set_receiver()'s stream_parents_host_reset(), outside the receiver lock here (D118.3), and its
             // aclk_queue_node_info(), which gives the host its ACLK sync configuration (the connect's and the
@@ -2212,6 +2214,9 @@ mod tests {
             assert!(host.aclk_sync_config(), "{settings}");
             let retention = if settings.contains("health log retention = 1h") { 3600 } else { 5 * 86400 };
             assert_eq!(host.health_log_retention_s(), retention, "{settings}");
+            // the slot knows the receiver's health setting, yes and auto alike: its detach tells health for those
+            let slot = host.receiver().expect("the attached receiver");
+            assert_eq!(slot.health(), !settings.contains("health enabled = no"), "{settings}");
             let postponed: Vec<String> =
                 texts(records).into_iter().filter(|t| t.contains("Postponing health checks")).collect();
             match delay {

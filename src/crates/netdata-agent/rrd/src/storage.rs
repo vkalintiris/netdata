@@ -104,6 +104,8 @@ pub enum HealthEvent<'a> {
     /// `rrdhost_free_unlinked()`: this host is gone and its data collection was cleaned up. It need not be the host
     /// its GUID names in the index: a host that found its GUID taken there is freed the same way.
     HostFreed(&'a Host),
+    /// `rrdcalc_child_disconnected()`: the receiver of this host, whose health was on for it, is detaching.
+    ChildDisconnected(&'a Host),
 }
 
 struct HealthHook(Box<dyn Fn(HealthEvent<'_>) + Send + Sync>);

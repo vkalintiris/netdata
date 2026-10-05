@@ -1,0 +1,22 @@
+# A reload under SILENCE ALL, and under a selector that disables one alert: what the new alerts carry at their
+# next pass.
+health-dirs tests/corpus/reload/v1.d -
+rules tests/corpus/reload/v1.d/a.conf
+chart loop.r loop.r_name loop.reload disks things 1
+var loop.r v 70
+register
+clock 0
+pass 0
+manage ok cmd=SILENCE ALL
+clock 1
+pass 1
+clock 2
+reload
+clock 3
+pass 3
+manage ok cmd=RESET
+manage ok cmd=DISABLE&alarm=r_keep
+clock 4
+reload
+clock 5
+pass 5

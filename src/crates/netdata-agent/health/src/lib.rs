@@ -181,6 +181,14 @@ impl Health {
         }
     }
 
+    /// `health_plugin_reload()`, which SIGUSR2 and `reload-health` ask for, with health on or off: the rules read
+    /// again and registered ([`Health::reload_prototypes`]), then every alert of every host whose health is enabled
+    /// and ran deleted and linked again from the new rules.
+    pub fn plugin_reload(&self, dirs: &ConfigDirs, ctx: &dyncfg::Ctx<'_>) {
+        self.reload_prototypes(dirs, Some(ctx));
+        self.apply_prototypes_to_all_hosts(ctx);
+    }
+
     /// `health_prototype_add()`: the rules of one name, as one file entity or one DynCfg payload gives them. Every
     /// rule is validated first; the error is C's reason for the first one that cannot stand, and nothing is added.
     /// Each rule is then hashed and stored alone; its label texts are compiled; and only afterwards it takes the

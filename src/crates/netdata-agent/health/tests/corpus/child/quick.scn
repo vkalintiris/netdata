@@ -1,0 +1,27 @@
+# A reconnect before the metadata thread stored the detach's entries: the pass returns with its record, and goes on
+# once they are stored.
+database real
+queue 1
+rules tests/corpus/notify/two.conf
+chart loop.n loop.n_name loop.notify disks things 1
+var loop.n v 70
+clock 0
+pass 0
+store
+clock 1
+pass 1
+store
+clock 2
+disconnect
+health-enabled 1
+gate 1
+clock 3
+pass 3
+clock 4
+pass 4
+store
+clock 5
+pass 5
+store
+clock 6
+pass 6

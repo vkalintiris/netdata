@@ -822,7 +822,7 @@ impl Health {
     fn dyncfg_hosts(&self, ctx: &Ctx<'_>) -> Vec<(Arc<Host>, Arc<crate::alerts::HostAlerts>)> {
         let mut hosts = Vec::new();
         for host in ctx.hosts.all() {
-            if !host.info().health_enabled {
+            if !host.health_enabled() {
                 continue;
             }
             if let Some(alerts) = self.host(&host).filter(|alerts| alerts.is_initialized()) {
@@ -1097,5 +1097,149 @@ mod tests {
         }
         assert_eq!(health.dyncfg_callback(&ctx, &mut reply, job, Cmds::ENABLE, None, None), 202);
         assert_eq!(health.remove_alerts_of_prototype(&ctx, b"added"), 3);
+    }
+
+    /// A directory with one rule file of that text, as a reload's user tree.
+    fn rules_dir(text: &str) -> (tempfile::TempDir, crate::ConfigDirs) {
+        let dir = tempfile::tempdir().expect("a directory");
+        std::fs::write(dir.path().join("a.conf"), text).expect("the file");
+        let dirs = crate::ConfigDirs { user: dir.path().as_os_str().as_encoded_bytes().to_vec(), stock: None };
+        (dir, dirs)
+    }
+
+    /// `rrdcalc_child_disconnected()` for a host health never ran for: the flags that ask for its alerts, on the
+    /// host and on every chart, and nothing else: no alert store is made for it.
+    #[test]
+    fn a_child_s_detach_raises_the_flags_without_alerts() {
+        use netdata_agent_rrd::chart::flags;
+        use netdata_agent_rrd::host::pending_flags;
+
+        let health = health_with(&rule_text("template", "from_file", "ctx.a", &[]));
+        let host = host_of("11111111-2222-4333-8444-555555555555", &[]);
+        let charts = [chart(&host, "t.a", None, "ctx.a", &[]), chart(&host, "t.b", None, "ctx.a", &[])];
+        // what the charts' creation raised is taken, as a pass would
+        host.take_health_pending();
+        for chart in &charts {
+            chart.take_health_pending();
+        }
+
+        health.child_disconnected(&host, &Idle, &|| NOW);
+        assert!(health.host(&host).is_none());
+        assert_eq!(host.take_health_pending() & pending_flags::HEALTH_INITIALIZATION, pending_flags::HEALTH_INITIALIZATION);
+        for chart in &charts {
+            assert_ne!(chart.flags() & flags::PENDING_HEALTH_INITIALIZATION, 0, "{}", chart.id());
+        }
+
+        // with alerts: they go, and the flags bring them back at the next pass
+        host.raise_pending_flags(pending_flags::HEALTH_INITIALIZATION);
+        let clock = || NOW;
+        health.host_link(&host, &clock, &|| true);
+        let linked = || named(&health.host(&host).expect("the host's alerts").alerts());
+        assert_eq!(linked(), [pair("from_file", "t.a"), pair("from_file", "t.b")]);
+        health.child_disconnected(&host, &Idle, &clock);
+        assert!(linked().is_empty());
+        health.host_link(&host, &clock, &|| true);
+        assert_eq!(linked(), [pair("from_file", "t.a"), pair("from_file", "t.b")]);
+    }
+
+    /// `health_plugin_reload()`: the rules are read again and registered, and every host of the index whose health
+    /// is enabled and ran once has its alerts deleted and linked from the new rules, in the index's order; a host
+    /// with health off keeps what it has, and one that had no pass links the new rules at its first one.
+    #[test]
+    fn a_reload_reaches_only_the_hosts_whose_health_ran() {
+        let health = health_with(&rule_text("template", "old", "ctx.a", &[]));
+        let ran = host_of("11111111-2222-4333-8444-555555555555", &[]);
+        let off_info = HostInfo { health_enabled: false, ..ran.info() };
+        let off = Arc::new(Host::new("22222222-2222-4333-8444-555555555555", false, off_info));
+        let later = host_of("33333333-2222-4333-8444-555555555555", &[]);
+        let second = host_of("44444444-2222-4333-8444-555555555555", &[]);
+        for host in [&ran, &off, &later, &second] {
+            chart(host, "t.a", None, "ctx.a", &[]);
+        }
+        let clock = || NOW;
+        // the host whose health is off now had it on when its first pass linked the old rule
+        off.set_health_enabled(true);
+        for host in [&ran, &off, &second] {
+            health.host_link(host, &clock, &|| true);
+        }
+        off.set_health_enabled(false);
+
+        let (_dir, dirs) = rules_dir(&rule_text("template", "new", "ctx.a", &[]));
+        let probe = Probe { health: &health, calls: Cell::new(0) };
+        let index = Index(vec![Arc::clone(&ran), Arc::clone(&off), Arc::clone(&later), Arc::clone(&second)]);
+        let ctx = Ctx { nodes: &probe, cloud: &probe, hosts: &index, env: &Idle, clock: &clock };
+        health.plugin_reload(&dirs, &ctx);
+
+        // the old job and the template unregistered, the template and the new job registered
+        assert_eq!(probe.calls.get(), 4);
+        let names: Vec<Vec<u8>> = health.prototypes().iter().map(|(name, _)| name.to_vec()).collect();
+        assert_eq!(names, [b"new".to_vec()]);
+        let linked = |host: &Arc<Host>| health.host(host).map(|alerts| named(&alerts.alerts())).unwrap_or_default();
+        assert_eq!(linked(&ran), [pair("new", "t.a")]);
+        assert_eq!(linked(&second), [pair("new", "t.a")]);
+        assert_eq!(linked(&off), [pair("old", "t.a")]);
+        assert!(linked(&later).is_empty());
+        health.host_link(&later, &clock, &|| true);
+        assert_eq!(linked(&later), [pair("new", "t.a")]);
+    }
+
+    /// A reload on the command's thread and a child's detach on its receiver's thread, each beside HEALTH's linking
+    /// of the same host: none waits for another for ever; after the reloads every chart has each rule's alert
+    /// once, and after a last detach the host has none.
+    #[test]
+    fn a_reload_and_a_detach_beside_a_pass_end() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (done, ended) = mpsc::channel();
+        std::thread::spawn(move || {
+            let health = health_with(&rule_text("template", "from_file", "ctx.a", &[]));
+            let host = host_of("11111111-2222-4333-8444-555555555555", &[]);
+            for id in ["t.a", "t.b", "t.c"] {
+                chart(&host, id, None, "ctx.a", &[]);
+            }
+            let clock = || NOW;
+            health.host_link(&host, &clock, &|| true);
+            let text = [rule_text("template", "one", "ctx.a", &[]), rule_text("template", "two", "ctx.a", &[])].concat();
+            let (_dir, dirs) = rules_dir(&text);
+            let pass = |rounds: usize| {
+                for _ in 0..rounds {
+                    host.raise_pending_flags(netdata_agent_rrd::host::pending_flags::LABEL_RECHECK);
+                    health.host_link(&host, &clock, &|| true);
+                }
+            };
+
+            std::thread::scope(|scope| {
+                scope.spawn(|| pass(200));
+                scope.spawn(|| {
+                    let index = Index(vec![Arc::clone(&host)]);
+                    let ctx = Ctx { nodes: &Quiet, cloud: &Quiet, hosts: &index, env: &Idle, clock: &clock };
+                    for _ in 0..50 {
+                        health.plugin_reload(&dirs, &ctx);
+                    }
+                });
+            });
+            pass(1);
+            let mut after_reloads = named(&health.host(&host).expect("the host's alerts").alerts());
+            after_reloads.sort();
+
+            std::thread::scope(|scope| {
+                scope.spawn(|| pass(200));
+                scope.spawn(|| {
+                    for _ in 0..200 {
+                        health.child_disconnected(&host, &Idle, &clock);
+                    }
+                });
+            });
+            health.child_disconnected(&host, &Idle, &clock);
+            let after_detach = health.host(&host).expect("the host's alerts").alerts().len();
+            let _ = done.send((after_reloads, after_detach));
+        });
+        let (after_reloads, after_detach) = ended.recv_timeout(Duration::from_secs(60)).expect("the threads deadlocked");
+        let mut expected: Vec<_> =
+            ["t.a", "t.b", "t.c"].iter().flat_map(|chart| [pair("one", chart), pair("two", chart)]).collect();
+        expected.sort();
+        assert_eq!(after_reloads, expected);
+        assert_eq!(after_detach, 0);
     }
 }

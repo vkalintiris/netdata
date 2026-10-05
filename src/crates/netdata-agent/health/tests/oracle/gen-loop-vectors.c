@@ -58,7 +58,7 @@
 //   gen-loop-vectors scenario <loop.tsv to append to> <scenario file> <a file for the records>
 //       One process per scenario. Rows are <scenario> <step> <kind> ..., a step being one `pass`, `unlink`,
 //       `apply`, `store`, `restart`, `cleanup`, `alarm-log`, `configs`, `wait`, `load`, `manage`, `dyncfg`,
-//       `register` or `unregister` directive:
+//       `register`, `unregister`, `disconnect` or `reload` directive:
 //         do         the directive
 //         next_run   after a pass: the pass's next_run
 //         host       pending flags (i = initialization, r = label recheck), health_transitions,
@@ -94,7 +94,7 @@
 //         answer     a `dyncfg` step: what C's dyncfg_health_cb() answered: the code, the content type, whether the
 //                    body may be cached (c), may not (n) or neither was said (-), the expiry as seconds after the
 //                    clock (`-`: none), the body
-//         stored     a `dyncfg` or `register` step: how many names the rules' store holds, and the names in the
+//         stored     a `dyncfg`, `register` or `reload` step: how many names the rules' store holds, and the names in the
 //                    store's order, separated by spaces (`-` for none)
 //         store      then per name that is new or differs from its last row: the name, whether it is enabled, how
 //                    many rules its chain has, and the chain as health_prototype_to_json() prints it for a GET
@@ -180,13 +180,27 @@
 //   dyncfg-user-disabled <id>          a file of the core's says the user disabled this node
 //   cloud-has <0|1>                    whether alert_hash_cloud has a rule's hash (default 1: nothing is pushed)
 //   enabled-alarms <pattern>           `[health] enabled alarms` (default `*`)
+//   dyncfg-forget <name|id>            the core's files no longer hold that job's payload (a name), or that node
+//                                      as disabled by the user (an id): what a user's remove or enable leaves
+//   health-dirs <user dir> <stock dir|->   the two health.d trees a `reload` reads (relative to the crate's
+//                                      directory); `-`: `[health] enable stock health configuration` is off
+//   health-enabled <0|1>               the host's health is enabled (a child's `health enabled` of stream.conf, or
+//                                      a host a detach turned it off for)
+//   disconnect                         a streaming child's detach as stream-receiver.c makes it, off the HEALTH
+//                                      thread: the host may no longer run health (the gate), then
+//                                      rrdcalc_child_disconnected(), then its health is not enabled. A reconnect
+//                                      is `health-enabled 1`, `gate 1` and, for a postponement, `delay-up-to`
+//   reload                             health_plugin_reload()'s two calls, off the HEALTH thread:
+//                                      health_reload_prototypes() over the two trees, with the registration and
+//                                      what the model of the core sends back, then
+//                                      health_apply_prototypes_to_all_hosts() over the hosts' index (the one host)
 //   pending host-init|host-recheck|chart-init <chart>|chart-recheck <chart>
 //   clock <second> [microseconds]
 //   pass <now> [hibernate]             one call of the pass
 //   unlink <chart>                     rrdcalc_unlink_and_delete_all_rrdset_alerts()
 //   apply                              health_apply_prototypes_to_host()
 // `unlink`, `apply`, `store`, `restart`, `cleanup`, `alarm-log`, `configs`, `wait`, `load`, `manage`, `dyncfg`,
-// `register` and `unregister` are steps too.
+// `register`, `unregister`, `disconnect` and `reload` are steps too.
 //
 // Field encoding: see health-oracle.h. A double is `nan` or its bits in hex.
 
@@ -1356,6 +1370,59 @@ static void run_scenario(const char *out_path, const char *scenario_path, const 
         }
         else if(strcmp(directive, "cloud-has") == 0)
             oracle.hash_not_sent = atoi(word(&rest, whole)) == 0;
+        else if(strcmp(directive, "dyncfg-forget") == 0) {
+            const char *what = word(&rest, whole);
+            size_t kept = 0;
+            for(size_t i = 0; i < oracle.dyncfg_saved_used; i++) {
+                if(strcmp(oracle.dyncfg_saved[i].name, what) == 0) {
+                    freez(oracle.dyncfg_saved[i].payload);
+                    continue;
+                }
+                oracle.dyncfg_saved[kept++] = oracle.dyncfg_saved[i];
+            }
+            bool forgot = kept != oracle.dyncfg_saved_used;
+            oracle.dyncfg_saved_used = kept;
+            kept = 0;
+            for(size_t i = 0; i < oracle.dyncfg_user_disabled_used; i++) {
+                if(strcmp(oracle.dyncfg_user_disabled[i], what) == 0)
+                    continue;
+                if(kept != i)
+                    memcpy(oracle.dyncfg_user_disabled[kept], oracle.dyncfg_user_disabled[i],
+                           sizeof(oracle.dyncfg_user_disabled[0]));
+                kept++;
+            }
+            forgot = forgot || kept != oracle.dyncfg_user_disabled_used;
+            oracle.dyncfg_user_disabled_used = kept;
+            if(!forgot) die("nothing to forget", whole);
+        }
+        else if(strcmp(directive, "health-dirs") == 0) {
+            oracle_health_user_dir = strdupz(word(&rest, whole));
+            const char *stock = word(&rest, whole);
+            health_globals.config.stock_enabled = strcmp(stock, "-") != 0;
+            if(health_globals.config.stock_enabled)
+                oracle_health_stock_dir = strdupz(stock);
+        }
+        else if(strcmp(directive, "health-enabled") == 0)
+            host.health.enabled = atoi(word(&rest, whole)) != 0;
+        else if(strcmp(directive, "disconnect") == 0) {
+            bool health_thread = is_health_thread;
+            is_health_thread = false;
+            oracle.gate = false;
+            rrdcalc_child_disconnected(&host);
+            host.health.enabled = false;
+            is_health_thread = health_thread;
+            dump(whole);
+        }
+        else if(strcmp(directive, "reload") == 0) {
+            host_index();
+            bool health_thread = is_health_thread;
+            is_health_thread = false;
+            health_reload_prototypes();
+            health_apply_prototypes_to_all_hosts();
+            is_health_thread = health_thread;
+            store_rows();
+            dump(whole);
+        }
         else if(strcmp(directive, "enabled-alarms") == 0) {
             if(!rest || !*rest) die("a missing argument", whole);
             simple_pattern_free(health_globals.config.enabled_alerts);

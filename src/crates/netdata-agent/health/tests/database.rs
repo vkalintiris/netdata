@@ -125,6 +125,7 @@ fn a_host_that_lost_the_index_collision_leaves_the_indexed_host_s_alerts() {
             HealthEvent::HostCleanup(host) => health.host_cleanup(host, &Idle, &|| NOW),
             HealthEvent::HostChartsFlushed(host) => health.host_charts_flushed(host),
             HealthEvent::HostFreed(host) => health.host_freed(host),
+            HealthEvent::ChildDisconnected(host) => health.child_disconnected(host, &Idle, &|| NOW),
         }
     });
 
@@ -165,6 +166,7 @@ fn four_threads_define_free_pass_and_read() {
             HealthEvent::HostCleanup(host) => health.host_cleanup(host, &Idle, &|| NOW),
             HealthEvent::HostChartsFlushed(host) => health.host_charts_flushed(host),
             HealthEvent::HostFreed(host) => health.host_freed(host),
+            HealthEvent::ChildDisconnected(host) => health.child_disconnected(host, &Idle, &|| NOW),
         }
     });
     let guid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";

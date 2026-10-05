@@ -481,6 +481,7 @@ pub fn database_event(health: &Health, env: &LiveEnv, event: HealthEvent<'_>) {
         HealthEvent::HostCleanup(host) => health.host_cleanup(host, env, &now_realtime_s),
         HealthEvent::HostChartsFlushed(host) => health.host_charts_flushed(host),
         HealthEvent::HostFreed(host) => health.host_freed(host),
+        HealthEvent::ChildDisconnected(host) => health.child_disconnected(host, env, &now_realtime_s),
     }
 }
 

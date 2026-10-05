@@ -1,0 +1,16 @@
+# An alert that is REMOVED already (its chart obsolete) leaves no entry at the detach.
+rules tests/corpus/loop/obsolete.conf
+chart loop.o1 loop.o1_name loop.obsolete - things 1
+live loop.o1 0
+var loop.o1 v 10
+clock 0
+pass 0
+obsolete loop.o1 1
+clock 61
+pass 61
+clock 62
+disconnect
+health-enabled 1
+gate 1
+clock 63
+pass 63

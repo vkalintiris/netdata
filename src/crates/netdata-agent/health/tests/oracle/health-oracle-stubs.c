@@ -7,7 +7,8 @@
 // programs build by hand around the real label code (src/database/rrdlabels.c, compiled from the tree too).
 //
 //   - health_globals: the initializer of src/health/health.c:6-30; the programs set the default exec and recipient;
-//   - health_user_config_dir / health_stock_config_dir: only health_reload_prototypes() calls them (not run here);
+//   - health_user_config_dir / health_stock_config_dir: only health_reload_prototypes() calls them (the loop's
+//     program runs it at a `reload` step, over the two trees its scenario names);
 //   - localhost, rrdhost_root_index, rrdcalc_delete_all, rrdcalc_unlink_and_delete*, service_running: the alert
 //     instances and the walks over hosts (health_prototypes.c:651-749), not run here;
 //   - rrdcalc_add_from_prototype: the second dumper. C calls it once per rule that passed every test of a chart, in
@@ -64,12 +65,16 @@ __thread bool is_health_thread = false;
 
 struct dictionary_stats dictionary_stats_category_rrdhealth = { .name = "health" };
 
+// the two health.d trees a reload reads: the loop's program names its own (a scenario's `health-dirs`)
+const char *oracle_health_user_dir = "/oracle/etc/health.d";
+const char *oracle_health_stock_dir = "/oracle/lib/health.d";
+
 const char *health_user_config_dir(void) {
-    return "/oracle/etc/health.d";
+    return oracle_health_user_dir;
 }
 
 const char *health_stock_config_dir(void) {
-    return "/oracle/lib/health.d";
+    return oracle_health_stock_dir;
 }
 
 #ifndef HEALTH_ORACLE_LOOP

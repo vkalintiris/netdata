@@ -1,0 +1,32 @@
+# A child's detach: its alerts go, each with a REMOVED entry queued for the metadata thread; the host's flag and the
+# charts' ask for them again; a pass with the gate closed does nothing. The reconnect: linked again with the old
+# ids and next event ids, UNINITIALIZED, then WARNING, and what the notification scan makes of the new entries.
+database real
+queue 1
+rules tests/corpus/notify/two.conf
+chart loop.n loop.n_name loop.notify disks things 1
+var loop.n v 70
+clock 0
+pass 0
+store
+clock 1
+pass 1
+store
+clock 2
+disconnect
+clock 3
+pass 3
+store
+clock 4
+pass 4
+health-enabled 1
+gate 1
+clock 5
+pass 5
+store
+clock 6
+pass 6
+store
+clock 7
+pass 7
+store

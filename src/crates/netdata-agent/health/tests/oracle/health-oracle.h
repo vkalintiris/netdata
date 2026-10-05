@@ -22,6 +22,10 @@ extern size_t oracle_link_count;
 void oracle_esc(FILE *f, const char *s);
 void oracle_esc_bytes(FILE *f, const void *data, size_t len);
 
+// what health_user_config_dir() and health_stock_config_dir() answer
+extern const char *oracle_health_user_dir;
+extern const char *oracle_health_stock_dir;
+
 // a rule's fields as a `rule` row of rules.tsv has them after its kind, up to the hash: each led by its tab
 void oracle_rule_fields(FILE *f, RRD_ALERT_PROTOTYPE *ap);
 

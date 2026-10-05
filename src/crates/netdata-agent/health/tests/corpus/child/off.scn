@@ -1,0 +1,17 @@
+# A host whose health is not enabled: a DynCfg change and a re-apply of every rule pass it by.
+rules tests/corpus/dyncfg/base.conf
+chart loop.d1 loop.d1_name loop.dyncfg - things 1
+var loop.d1 v 70
+register
+clock 0
+pass 0
+clock 1
+pass 1
+health-enabled 0
+dyncfg health:alert:prototype add d_new @tests/corpus/dyncfg/one.json
+dyncfg health:alert:prototype:d_tpl disable -
+apply
+health-enabled 1
+apply
+clock 2
+pass 2

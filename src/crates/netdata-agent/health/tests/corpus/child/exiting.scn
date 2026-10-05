@@ -1,0 +1,11 @@
+# The detach of the agent's exit: no entry, the flags all the same.
+rules tests/corpus/notify/two.conf
+chart loop.n loop.n_name loop.notify disks things 1
+var loop.n v 70
+clock 0
+pass 0
+clock 1
+pass 1
+exiting
+clock 2
+disconnect

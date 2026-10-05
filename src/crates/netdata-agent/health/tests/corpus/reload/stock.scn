@@ -1,0 +1,10 @@
+# A stock file a user file shadows, and one it does not: which rules a reload reads, and their source types.
+health-dirs tests/corpus/reload/user.d tests/corpus/reload/stock.d
+chart loop.r loop.r_name loop.reload disks things 1
+var loop.r v 70
+reload
+clock 0
+pass 0
+dyncfg health:alert:prototype:r_user get -
+dyncfg health:alert:prototype:r_stock get -
+dyncfg health:alert:prototype:r_shadowed get -

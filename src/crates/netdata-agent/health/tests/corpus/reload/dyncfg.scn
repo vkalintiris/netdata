@@ -1,0 +1,21 @@
+# A saved DynCfg job at a reload: the template's registration brings it back (the Cloud is not asked while
+# registering), and its name is applied to the host twice: by its own add, and by the reload's walk.
+cloud-has 0
+health-dirs tests/corpus/reload/v1.d -
+rules tests/corpus/reload/v1.d/a.conf
+chart loop.r loop.r_name loop.reload disks things 1
+chart loop.d1 loop.d1_name loop.dyncfg - things 1
+var loop.r v 70
+var loop.d1 v 70
+dyncfg-saved r_dyn @tests/corpus/dyncfg/one.json
+register
+clock 0
+pass 0
+clock 1
+pass 1
+clock 2
+reload
+clock 3
+pass 3
+clock 4
+pass 4

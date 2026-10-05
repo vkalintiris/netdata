@@ -238,6 +238,8 @@ pub struct ReceiverSlot {
     /// Its host is detaching it (`rrdhost_clear_receiver()` past its first step): no longer the host's receiver for
     /// the host's state, still in the slot until the detach ends.
     detaching: AtomicBool,
+    /// `rpt->config.health.enabled`: health was on for this receiver's host, so its detach tells health.
+    health: bool,
 }
 
 impl std::fmt::Debug for ReceiverSlot {
@@ -265,7 +267,19 @@ impl ReceiverSlot {
             to_child: Mutex::new(None),
             waker: OnceLock::new(),
             detaching: AtomicBool::new(false),
+            health: false,
         }
+    }
+
+    /// The receiver's health setting (`rpt->config.health.enabled` is not `no`).
+    pub fn with_health(mut self, on: bool) -> Self {
+        self.health = on;
+        self
+    }
+
+    /// Whether health was on for this receiver's host.
+    pub fn health(&self) -> bool {
+        self.health
     }
 
     /// `send_to_child()`: `bytes` for the child added to its buffer as `traffic`, the buffer autoscaled; their length,
@@ -1058,6 +1072,16 @@ impl Host {
         &self.charts
     }
 
+    /// `host->health.enabled`.
+    pub fn health_enabled(&self) -> bool {
+        self.info.read().unwrap_or_else(PoisonError::into_inner).health_enabled
+    }
+
+    /// `host->health.enabled = on`: a detach turns it off, an update of a returning child sets it again.
+    pub fn set_health_enabled(&self, on: bool) {
+        self.info.write().unwrap_or_else(PoisonError::into_inner).health_enabled = on;
+    }
+
     pub fn node_id(&self) -> [u8; 16] {
         *self.node_id.read().unwrap_or_else(PoisonError::into_inner)
     }
@@ -1811,6 +1835,11 @@ impl Host {
             up.receiver_left(reason);
         }
         self.contexts.child_disconnected();
+        // rrdcalc_child_disconnected(), for a receiver whose health was on: the host's alerts go and are asked for
+        // again at its return. Told with no index lock held: a free of the host waits for this receiver
+        if slot.health {
+            self.storage().health_event(HealthEvent::ChildDisconnected(self));
+        }
         if let Some(up) = self.upstream() {
             up.parents_reset(reason);
         }
@@ -3311,6 +3340,45 @@ mod tests {
     /// What health hears: a freed chart; at a host's cleanup the host first, then each of its charts, then that
     /// they are gone; and a freed host after its cleanup.
     #[test]
+    fn health_hears_of_a_detach_only_from_a_receiver_whose_health_was_on() {
+        use crate::storage::HealthEvent;
+        let storage = Arc::new(StorageLayout::default());
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        storage.set_health_hook({
+            let heard = Arc::clone(&heard);
+            move |event| {
+                if let HealthEvent::ChildDisconnected(host) = event {
+                    // the host's health is off already, and it is no longer online, as in C at this point
+                    lock(&heard).push((host.machine_guid().to_owned(), host.health_enabled()));
+                }
+            }
+        });
+        let heard = || std::mem::take(&mut *lock(&heard));
+        let host = Host::with_storage("guid-c", false, info("c"), &storage);
+        let slot = |health: bool| {
+            Arc::new(ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {})).with_health(health))
+        };
+
+        // health on for the receiver: one event at its detach, none for a second detach of the same slot
+        let on = slot(true);
+        host.set_health_enabled(true);
+        assert_eq!(host.set_receiver(Arc::clone(&on)), Attach::Attached);
+        host.clear_receiver(&on, 0);
+        assert_eq!(heard(), [("guid-c".to_owned(), false)]);
+        host.clear_receiver(&on, 0);
+        assert!(heard().is_empty());
+
+        // health off for the receiver (`health enabled = no`), and a slot that is not the attached one: none
+        let off = slot(false);
+        assert_eq!(host.set_receiver(Arc::clone(&off)), Attach::Attached);
+        host.clear_receiver(&slot(true), 0);
+        host.clear_receiver(&off, 0);
+        assert!(heard().is_empty());
+    }
+
+    /// What health hears of the database: a chart freed, a host's cleanup before its charts are freed and once
+    /// they are gone; and a freed host after its cleanup.
+    #[test]
     fn health_hears_of_freed_charts_and_hosts() {
         use crate::storage::HealthEvent;
         let storage = Arc::new(StorageLayout::default());
@@ -3325,6 +3393,7 @@ mod tests {
                     HealthEvent::HostCleanup(host) => format!("cleanup {}", host.machine_guid()),
                     HealthEvent::HostChartsFlushed(host) => format!("flushed {}", host.machine_guid()),
                     HealthEvent::HostFreed(host) => format!("freed {}", host.machine_guid()),
+                    HealthEvent::ChildDisconnected(host) => format!("disconnected {}", host.machine_guid()),
                 });
             }
         });

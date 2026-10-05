@@ -1,0 +1,22 @@
+# The metadata queue refuses the detach's entries: off the HEALTH thread they stay unsaved, and the host is not
+# held back.
+database real
+queue 1
+rules tests/corpus/notify/two.conf
+chart loop.n loop.n_name loop.notify disks things 1
+var loop.n v 70
+clock 0
+pass 0
+store
+clock 1
+pass 1
+store
+queue 0
+clock 2
+disconnect
+health-enabled 1
+gate 1
+clock 3
+pass 3
+clock 4
+pass 4

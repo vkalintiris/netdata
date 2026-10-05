@@ -1,0 +1,17 @@
+# A reload on a host whose health is not enabled: the store and the calls, and the host's alerts stay as they are.
+health-dirs tests/corpus/reload/v1.d -
+rules tests/corpus/reload/v1.d/a.conf
+chart loop.r loop.r_name loop.reload disks things 1
+var loop.r v 70
+register
+clock 0
+pass 0
+clock 1
+pass 1
+health-enabled 0
+health-dirs tests/corpus/reload/v2.d -
+clock 2
+reload
+health-enabled 1
+clock 3
+pass 3
