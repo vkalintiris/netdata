@@ -863,3 +863,155 @@ impl Health {
         self.dyncfg_hosts(ctx).iter().map(|(_, alerts)| alerts.unlink_named(name, ctx.env, ctx.clock)).sum()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use netdata_agent_rrd::host::HostInfo;
+
+    use super::*;
+    use crate::pass::Idle;
+    use crate::testing::{chart, health_with, host_of, named, pair, rule_text};
+
+    const NOW: i64 = 1_700_000_000;
+
+    fn payload(on: &str, enabled: bool) -> Vec<u8> {
+        format!(
+            "{{\"format_version\":1,\"rules\":[{{\"enabled\":{enabled},\"type\":\"template\",\"config\":{{\
+             \"match\":{{\"on\":\"{on}\",\"host_labels\":\"*\",\"instance_labels\":\"*\"}},\
+             \"value\":{{\"database_lookup\":{{\"after\":0,\"before\":0,\"time_group\":\"average\",\
+             \"time_group_condition\":\"=\",\"time_group_value\":0,\"dims_group\":\"sum\",\
+             \"data_source\":\"samples\",\"options\":[],\"dimensions\":\"\"}},\
+             \"calculation\":\"1\",\"update_every\":10}}}}}}]}}"
+        )
+        .into_bytes()
+    }
+
+    /// A core that only looks at the rules' store when health calls it: a lock of the store held across the call
+    /// would block the echo that comes back into the callback on the same thread.
+    struct Probe<'a> {
+        health: &'a Health,
+        calls: Cell<usize>,
+    }
+
+    impl Probe<'_> {
+        fn look(&self) {
+            assert!(self.health.prototypes.try_write().is_ok(), "the store is locked across a call of the core");
+            self.calls.set(self.calls.get() + 1);
+        }
+    }
+
+    impl Nodes for Probe<'_> {
+        fn add(&self, _: &NodeSpec<'_>) -> bool {
+            self.look();
+            true
+        }
+
+        fn del(&self, _: &[u8]) {
+            self.look();
+        }
+
+        fn status(&self, _: &[u8], _: Status) {
+            self.look();
+        }
+    }
+
+    impl Cloud for Probe<'_> {
+        fn has(&self, _: &[u8; 16]) -> bool {
+            self.look();
+            false
+        }
+
+        fn send_configuration(&self, _: &[u8; 16]) {
+            self.look();
+        }
+    }
+
+    struct Index(Vec<Arc<Host>>);
+
+    impl HostIndex for Index {
+        fn all(&self) -> Vec<Arc<Host>> {
+            self.0.clone()
+        }
+
+        fn localhost(&self) -> Arc<Host> {
+            Arc::clone(&self.0[0])
+        }
+    }
+
+    #[test]
+    fn the_store_is_free_whenever_the_core_or_the_cloud_is_called() {
+        let health = health_with(&rule_text("template", "from_file", "ctx.a", &[]));
+        let probe = Probe { health: &health, calls: Cell::new(0) };
+        let index = Index(vec![host_of("11111111-2222-4333-8444-555555555555", &[])]);
+        let clock = || NOW;
+        let ctx = Ctx { nodes: &probe, cloud: &probe, hosts: &index, env: &Idle, clock: &clock };
+        let call = |id: &[u8], cmd: Cmds, name: Option<&[u8]>, payload: Option<&[u8]>| {
+            let mut reply = Reply::new(ContentType::TextPlain);
+            health.dyncfg_callback(&ctx, &mut reply, id, cmd, name, payload)
+        };
+
+        health.dyncfg_register_all(&ctx);
+        // the template and the file's job
+        assert_eq!(probe.calls.get(), 2);
+        let job = b"health:alert:prototype:added";
+        assert_eq!(call(TEMPLATE_ID, Cmds::ADD, Some(b"added"), Some(&payload("ctx.a", true))), 202);
+        assert_eq!(call(job, Cmds::UPDATE, None, Some(&payload("ctx.b", true))), 202);
+        assert_eq!(call(job, Cmds::DISABLE, None, None), 200);
+        assert_eq!(call(job, Cmds::ENABLE, None, None), 202);
+        assert_eq!(call(job, Cmds::REMOVE, None, None), 200);
+        health.dyncfg_unregister_all(&ctx);
+        // add: the Cloud's question and push, the job; update: question and push; a status each; the delete; and
+        // the unregistration's two
+        assert_eq!(probe.calls.get(), 2 + 3 + 2 + 1 + 1 + 1 + 2);
+        assert!(health.prototypes().get(b"added").is_none());
+    }
+
+    /// `health_prototype_apply_to_all_hosts()` and the removal walk the hosts of the index in its order and pass
+    /// by a host whose health is off and one whose health did not run yet; that one links the rule at its first
+    /// pass, from the store.
+    #[test]
+    fn a_change_reaches_only_the_hosts_whose_health_ran() {
+        let health = health_with(&rule_text("template", "from_file", "ctx.other", &[]));
+        let ran = host_of("11111111-2222-4333-8444-555555555555", &[]);
+        let off_info = HostInfo { health_enabled: false, ..ran.info() };
+        let off = Arc::new(Host::new("22222222-2222-4333-8444-555555555555", false, off_info));
+        let later = host_of("33333333-2222-4333-8444-555555555555", &[]);
+        let second = host_of("44444444-2222-4333-8444-555555555555", &[]);
+        for host in [&ran, &off, &later, &second] {
+            chart(host, "t.a", None, "ctx.a", &[]);
+        }
+        let clock = || NOW;
+        // a first pass for three of them; the host with health off has its alerts' store, as a child that left has
+        for host in [&ran, &off, &second] {
+            health.host_link(host, &clock, &|| true);
+        }
+
+        let probe = Probe { health: &health, calls: Cell::new(0) };
+        let index = Index(vec![Arc::clone(&ran), Arc::clone(&off), Arc::clone(&later), Arc::clone(&second)]);
+        let ctx = Ctx { nodes: &probe, cloud: &probe, hosts: &index, env: &Idle, clock: &clock };
+        let mut reply = Reply::new(ContentType::TextPlain);
+        let added = payload("ctx.a", true);
+        assert_eq!(health.dyncfg_callback(&ctx, &mut reply, TEMPLATE_ID, Cmds::ADD, Some(b"added"), Some(&added)), 202);
+
+        let linked = |host: &Arc<Host>| health.host(host).map(|alerts| named(&alerts.alerts())).unwrap_or_default();
+        assert_eq!(linked(&ran), [pair("added", "t.a")]);
+        assert_eq!(linked(&second), [pair("added", "t.a")]);
+        assert!(linked(&off).is_empty());
+        assert!(linked(&later).is_empty());
+
+        // the host that had no pass links the rule at its first one
+        health.host_link(&later, &clock, &|| true);
+        assert_eq!(linked(&later), [pair("added", "t.a")]);
+
+        // a disable takes the alerts off the hosts that ran, all of them by now but the one with health off
+        let job = b"health:alert:prototype:added";
+        assert_eq!(health.dyncfg_callback(&ctx, &mut reply, job, Cmds::DISABLE, None, None), 200);
+        for host in [&ran, &later, &second] {
+            assert!(linked(host).is_empty());
+        }
+        assert_eq!(health.dyncfg_callback(&ctx, &mut reply, job, Cmds::ENABLE, None, None), 202);
+        assert_eq!(health.remove_alerts_of_prototype(&ctx, b"added"), 3);
+    }
+}

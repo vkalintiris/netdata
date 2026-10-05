@@ -11,9 +11,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
+use netdata_agent_dyncfg::Dyncfg;
+use netdata_agent_dyncfg::inline::{InlineCallback, InlineSpec};
+use netdata_agent_dyncfg::model::Status as NodeStatus;
 use netdata_agent_health::alert::Status;
 use netdata_agent_health::alerts::HostAlerts;
 use netdata_agent_health::config::HealthConfig;
+use netdata_agent_health::dyncfg::{Cloud, Ctx, NodeSpec, Nodes};
 use netdata_agent_health::entry::Entry;
 use netdata_agent_health::notify::{Execution, Waiting};
 use netdata_agent_health::pass::{ChartFacts, Env, Pass};
@@ -22,6 +26,7 @@ use netdata_agent_health::{Health, StoreSink};
 use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_metadata::health_log::LoadedRow;
 use netdata_agent_metadata::open::MetaDb;
+use netdata_agent_nrpc::access;
 use netdata_agent_query::execute::Control;
 use netdata_agent_query::grouping::Windows;
 use netdata_agent_query::value::{ValueRequest, ValueResult, chart_value};
@@ -33,6 +38,7 @@ use netdata_agent_rrd::storage::{AlertClass, AlertView, ChartAlert, HealthEvent}
 use netdata_agent_rrd::stream_control;
 use netdata_agent_spawn::client::Waited;
 use netdata_agent_spawn::popen::Popen;
+use netdata_agent_text::print::print_uuid_lower;
 
 use crate::conf::Conf;
 use crate::heartbeat::{Phase, Thread};
@@ -45,7 +51,16 @@ use crate::shutdown;
 ///
 /// Each rule C accepts gets its `alert_hash` row: bound on this thread, stepped by METASYNC's next store job.
 /// Without a database C's statement cannot be prepared, and says so once per rule.
-pub fn plugin_init(conf: &mut Conf, config: HealthConfig, database: bool, queue: MetaQueue) -> Arc<Health> {
+///
+/// The load is `health_reload_prototypes()`: health's DynCfg nodes are registered after it (the template, whose
+/// registration brings the saved jobs back, then a job per alert name), on this thread.
+pub fn plugin_init(
+    conf: &mut Conf,
+    config: HealthConfig,
+    database: bool,
+    queue: MetaQueue,
+    dynamic: &Dynamic<'_>,
+) -> Arc<Health> {
     let store: StoreSink = if database {
         Box::new(move |rule| queue.execute_store_statement(alert_hash_row(rule)))
     } else {
@@ -54,11 +69,119 @@ pub fn plugin_init(conf: &mut Conf, config: HealthConfig, database: bool, queue:
     let health = Health::init(config, store);
     if health.config().enabled {
         let dirs = conf.health_config_dirs(health.config().stock_enabled);
-        health.reload_prototypes(&dirs, None);
+        let link = DyncfgLink::new(&health, dynamic);
+        health.reload_prototypes(&dirs, Some(&link.ctx()));
         // with health off the silencers' file is not read: the state stays empty until a request changes it
         health.silencers().init();
     }
     health
+}
+
+/// What health's DynCfg nodes need of the daemon: the configuration core, the hosts, and the environment a change
+/// of the rules links and unlinks alerts with.
+pub struct Dynamic<'a> {
+    pub dyncfg: &'a Arc<Dyncfg>,
+    pub hosts: &'a Arc<Hosts>,
+    pub env: &'a Arc<LiveEnv>,
+}
+
+/// Health's side of DynCfg in the daemon: its nodes live on the process's core with localhost as their host
+/// (`dyncfg_add()` and its two companions of `dyncfg-inline.c`), their one callback is health's, and the Cloud's
+/// copy of a rule is asked for in the metadata database.
+///
+/// The core's callbacks hold this; this holds the core weakly.
+pub struct DyncfgLink {
+    me: Weak<DyncfgLink>,
+    health: Arc<Health>,
+    dyncfg: Weak<Dyncfg>,
+    hosts: Arc<Hosts>,
+    env: Arc<LiveEnv>,
+}
+
+impl DyncfgLink {
+    fn new(health: &Arc<Health>, dynamic: &Dynamic<'_>) -> Arc<DyncfgLink> {
+        Arc::new_cyclic(|me| DyncfgLink {
+            me: me.clone(),
+            health: Arc::clone(health),
+            dyncfg: Arc::downgrade(dynamic.dyncfg),
+            hosts: Arc::clone(dynamic.hosts),
+            env: Arc::clone(dynamic.env),
+        })
+    }
+
+    fn ctx(&self) -> Ctx<'_> {
+        Ctx { nodes: self, cloud: self, hosts: &*self.hosts, env: &*self.env, clock: &now_realtime_s }
+    }
+}
+
+impl Nodes for DyncfgLink {
+    fn add(&self, node: &NodeSpec<'_>) -> bool {
+        let (Some(dyncfg), Some(link)) = (self.dyncfg.upgrade(), self.me.upgrade()) else {
+            return false;
+        };
+        // `dyncfg_health_cb()` for every node: health reads the id, the command, the name and the payload
+        let cb: InlineCallback = Arc::new(move |reply, id, cmd, name, payload, _source| {
+            link.health.dyncfg_callback(&link.ctx(), reply, id, cmd, name, payload.map(|payload| payload.body.as_slice()))
+        });
+        dyncfg.add_inline(InlineSpec {
+            host: self.hosts.localhost(),
+            id: node.id,
+            path: node.path,
+            status: node.status,
+            kind: node.kind,
+            source_type: node.source_type,
+            source: node.source,
+            cmds: node.cmds,
+            // none given: the core's defaults
+            view_access: access::NONE,
+            edit_access: access::NONE,
+            cb,
+        })
+    }
+
+    fn del(&self, id: &[u8]) {
+        if let Some(dyncfg) = self.dyncfg.upgrade() {
+            dyncfg.del_inline(self.hosts.localhost(), id);
+        }
+    }
+
+    fn status(&self, id: &[u8], status: NodeStatus) {
+        if let Some(dyncfg) = self.dyncfg.upgrade() {
+            dyncfg.status_low_level(id, status);
+        }
+    }
+}
+
+impl Cloud for DyncfgLink {
+    /// Without a database C's statement cannot be prepared: it says so and answers no.
+    fn has(&self, hash: &[u8; 16]) -> bool {
+        self.env
+            .meta("alert_hash_has_transitioned")
+            .is_some_and(|meta| meta.alert_hash_has_transitioned(hash, is_health_thread()))
+    }
+
+    /// `aclk_send_alert_configuration()`: nothing without localhost's ACLK sync configuration; else C's record in
+    /// the access log, with the node id as that configuration has it (no text for a host never claimed). The
+    /// command C then queues for the ACLK thread comes with the Cloud connection.
+    fn send_configuration(&self, hash: &[u8; 16]) {
+        let localhost = self.hosts.localhost();
+        if !localhost.aclk_sync_config() {
+            return;
+        }
+        let text = |uuid: &[u8; 16]| {
+            let mut text = Vec::with_capacity(36);
+            print_uuid_lower(&mut text, uuid);
+            String::from_utf8_lossy(&text).into_owned()
+        };
+        let node_id = Some(localhost.node_id()).filter(|id| *id != [0; 16]).map(|id| text(&id)).unwrap_or_default();
+        nd_log!(
+            Source::Access,
+            Priority::Debug,
+            "ACLK REQ [{node_id} ({})]: Request to send alert config {}.",
+            localhost.hostname(),
+            text(hash)
+        );
+    }
 }
 
 /// `check_if_resumed_from_suspension()`: the wall clock moved more than twice as far as the monotonic one since the
@@ -456,6 +579,247 @@ mod tests {
         conf
     }
 
+    /// What health's DynCfg nodes live on in the daemon: a configuration core whose saved files are under `root`
+    /// (as `conf()` lays the directories), a localhost with its `config` function, the live environment.
+    struct Core {
+        calls: Arc<netdata_agent_nrpc::call::Calls>,
+        dyncfg: Arc<Dyncfg>,
+        hosts: Arc<Hosts>,
+        env: Arc<LiveEnv>,
+    }
+
+    /// A caller as the web server describes one.
+    const SOURCE: &str = "method=api-bearer,role=admin,permissions=0x7ff,user=tester,ip=127.0.0.1";
+
+    impl Core {
+        fn dynamic(&self) -> Dynamic<'_> {
+            Dynamic { dyncfg: &self.dyncfg, hosts: &self.hosts, env: &self.env }
+        }
+
+        fn node(&self, id: &str) -> Option<netdata_agent_dyncfg::nodes::Node> {
+            self.dyncfg.nodes().lock().get(id.as_bytes()).cloned()
+        }
+
+        /// A user's `config ...` call with every permission, as `/api/v1/config` makes it: the code and the body.
+        fn call(&self, cmd: &str, payload: Option<&str>) -> (u16, String) {
+            use netdata_agent_nrpc::call::CallSpec;
+            use netdata_agent_nrpc::reply::{ContentType, Payload, Reply};
+            let localhost = self.hosts.localhost();
+            let hostname = localhost.hostname();
+            let called = self.calls.call(CallSpec {
+                owner: Some((localhost.functions(), &hostname)),
+                cmd: cmd.as_bytes(),
+                source: SOURCE.as_bytes(),
+                user_access: access::ALL,
+                timeout_s: 10,
+                wait: true,
+                allow_restricted: false,
+                call_id: None,
+                payload: payload.map(|p| Payload { body: p.as_bytes().to_vec(), content_type: ContentType::ApplicationJson }),
+                reply: Reply::new(ContentType::ApplicationJson),
+                done: None,
+                progress: None,
+                is_cancelled: None,
+                tag: None,
+            });
+            (called.code, called.reply.map(|r| String::from_utf8_lossy(&r.body).into_owned()).unwrap_or_default())
+        }
+    }
+
+    fn core(root: &Path) -> Core {
+        use netdata_agent_nrpc::call::{Calls, SystemClock};
+        use netdata_agent_rrd::host::HostInfo;
+        use netdata_agent_rrd::mode::DbMode;
+        let calls = Calls::new(Box::new(SystemClock));
+        // the core makes its `config` directory in a varlib that exists
+        std::fs::create_dir_all(root.join("lib")).unwrap();
+        let dyncfg = Dyncfg::new(netdata_agent_dyncfg::Init {
+            varlib: &root.join("lib"),
+            user_config_dir: &root.join("user"),
+            stock_config_dir: &root.join("stock"),
+            load_saved: true,
+            calls: Arc::clone(&calls),
+        });
+        let info = HostInfo {
+            hostname: "dc-host".into(),
+            registry_hostname: "dc-host".into(),
+            os: "linux".into(),
+            timezone: "UTC".into(),
+            abbrev_timezone: "UTC".into(),
+            utc_offset: 0,
+            program_name: "netdata".into(),
+            program_version: "v0".into(),
+            update_every: 1,
+            db_mode: DbMode::Ram,
+            history_entries: 60,
+            health_enabled: true,
+            system_info: Default::default(),
+            replication_enabled: false,
+            replication_period: 0,
+            replication_step: 0,
+            stream_send: None,
+            cache_dir: None,
+        };
+        let hosts = Arc::new(Hosts::new(Host::new("11ee0000-0000-4000-8000-0000000000dc", true, info)));
+        dyncfg.set_hosts(Arc::clone(&hosts));
+        dyncfg.host_init(hosts.localhost());
+        let env = Arc::new(LiveEnv::new(Arc::clone(&hosts), Windows::default(), None, MetaQueue::unread().0));
+        Core { calls, dyncfg, hosts, env }
+    }
+
+    /// A payload of one template rule, as the dashboard sends one.
+    fn payload(on: &str, warn: &str) -> String {
+        format!(
+            "{{\"format_version\":1,\"rules\":[{{\"enabled\":true,\"type\":\"template\",\"config\":{{\
+             \"match\":{{\"on\":\"{on}\",\"host_labels\":\"*\",\"instance_labels\":\"*\"}},\
+             \"value\":{{\"database_lookup\":{{\"after\":0,\"before\":0,\"time_group\":\"average\",\
+             \"time_group_condition\":\"=\",\"time_group_value\":0,\"dims_group\":\"sum\",\
+             \"data_source\":\"samples\",\"options\":[],\"dimensions\":\"\"}},\
+             \"calculation\":\"1\",\"update_every\":10}},\
+             \"conditions\":{{\"warning_condition\":\"{warn}\"}}}}}}]}}"
+        )
+    }
+
+    /// With health on the start registers health's nodes on the core: the template, then a job per alert name in
+    /// the store's order, each told to enable itself at once (C's first echo), so each reads `running`. A user
+    /// reaches a job's rules through the `config` function.
+    #[test]
+    fn health_on_registers_the_template_and_a_job_per_name() {
+        use netdata_agent_dyncfg::model::{Cmds, SourceType, Status as NodeStatus, Type};
+        let root = tempfile::tempdir().unwrap();
+        trees(root.path());
+        let mut conf = conf(root.path(), "");
+        let config = conf.health_load_config_defaults();
+        let core = core(root.path());
+        let health = plugin_init(&mut conf, config, true, MetaQueue::unread().0, &core.dynamic());
+
+        let template = core.node("health:alert:prototype").expect("the template");
+        assert_eq!((template.kind, template.current.status), (Type::Template, NodeStatus::Accepted));
+        assert_eq!(template.cmds, Cmds::parse(b"schema add enable disable userconfig"));
+        assert_eq!(template.path, b"/health/alerts/prototypes");
+        assert!(template.sync);
+        for name in ["user_a", "stock_b"] {
+            let job = core.node(&format!("health:alert:prototype:{name}")).expect("a job");
+            assert_eq!((job.kind, job.current.status), (Type::Job, NodeStatus::Running), "{name}");
+            assert_eq!(job.cmds, Cmds::parse(b"schema get enable disable update userconfig"), "{name}");
+            assert_eq!(job.template.as_deref(), Some(b"health:alert:prototype".as_slice()));
+        }
+        let user = core.node("health:alert:prototype:user_a").unwrap();
+        assert_eq!(user.current.source_type, SourceType::User);
+        assert!(String::from_utf8_lossy(&user.current.source).starts_with("line=1,file="));
+        assert_eq!(core.node("health:alert:prototype:stock_b").unwrap().current.source_type, SourceType::Stock);
+        // a stock file a user file shadows gave no rule, so it has no job
+        assert!(core.node("health:alert:prototype:stock_a").is_none());
+
+        let (code, body) = core.call("config health:alert:prototype:user_a get", None);
+        assert_eq!(code, 200, "{body}");
+        assert!(body.starts_with("{\"format_version\":1,\"name\":\"user_a\",\"rules\":[{\"enabled\":true"), "{body}");
+        assert!(body.contains("\"source_type\":\"user\""), "{body}");
+        drop(health);
+    }
+
+    /// A user's add and a user's update of a file alert are saved by the core, and the next start brings both back
+    /// through the template's registration, before the file's jobs: the added name is in the store again, the
+    /// updated one holds the payload's rule in place of the file's, and a job the user disabled is disabled.
+    #[test]
+    fn a_start_replays_what_the_user_saved() {
+        use netdata_agent_dyncfg::model::{Cmds, SourceType, Status as NodeStatus};
+        let root = tempfile::tempdir().unwrap();
+        trees(root.path());
+        {
+            let mut conf = conf(root.path(), "");
+            let config = conf.health_load_config_defaults();
+            let core = core(root.path());
+            let health = plugin_init(&mut conf, config, true, MetaQueue::unread().0, &core.dynamic());
+            let added = core.call("config health:alert:prototype add d_new", Some(&payload("d.ctx", "$this > 1")));
+            assert_eq!(added, (202, "{\"status\":202,\"message\":\"accepted\"}".into()));
+            let updated =
+                core.call("config health:alert:prototype:user_a update", Some(&payload("u.ctx", "$this > 2")));
+            assert_eq!(updated, (202, "{\"status\":202,\"message\":\"updated\"}".into()));
+            let disabled = core.call("config health:alert:prototype:stock_b disable", None);
+            assert_eq!(disabled, (200, "{\"status\":200,\"message\":\"disabled\"}".into()));
+            assert_eq!(names(&health), ["user_a", "stock_b", "d_new"]);
+            // the added job is the core's own node of the user's call, with `test` among its commands
+            let job = core.node("health:alert:prototype:d_new").unwrap();
+            assert!(job.cmds.contains(Cmds::TEST | Cmds::REMOVE));
+            assert_eq!(job.stored.saves, 1);
+        }
+
+        let mut conf = conf(root.path(), "");
+        let config = conf.health_load_config_defaults();
+        let core = core(root.path());
+        let health = plugin_init(&mut conf, config, true, MetaQueue::unread().0, &core.dynamic());
+        assert_eq!(names(&health), ["user_a", "stock_b", "d_new"]);
+        {
+            let prototypes = health.prototypes();
+            let rule = |name: &[u8]| &prototypes.get(name).unwrap().rules()[0];
+            assert_eq!(rule(b"d_new").config.source_type, SourceType::Dyncfg);
+            assert_eq!(rule(b"d_new").r#match.on.as_deref(), Some(b"d.ctx".as_slice()));
+            // the file's rule is replaced by the saved payload's
+            assert_eq!(rule(b"user_a").config.source_type, SourceType::Dyncfg);
+            assert_eq!(rule(b"user_a").r#match.on.as_deref(), Some(b"u.ctx".as_slice()));
+            assert_eq!(prototypes.get(b"user_a").unwrap().rules().len(), 1);
+            assert!(prototypes.get(b"user_a").unwrap().enabled());
+            // the user's disable came back with the job's first echo
+            assert!(!prototypes.get(b"stock_b").unwrap().enabled());
+            assert_eq!(rule(b"stock_b").config.source_type, SourceType::Stock);
+        }
+        let status = |name: &str| core.node(&format!("health:alert:prototype:{name}")).unwrap().current.status;
+        assert_eq!(status("stock_b"), NodeStatus::Disabled);
+        // a replayed job is registered by health's `add`: accepted, as the running C agent shows it
+        assert_eq!(status("d_new"), NodeStatus::Accepted);
+        assert_eq!(status("user_a"), NodeStatus::Accepted);
+        let job = core.node("health:alert:prototype:user_a").unwrap();
+        assert!(job.cmds.contains(Cmds::REMOVE), "an updated file alert can be removed");
+
+        // and a user's remove takes the name out of the store and the node out of the core
+        let removed = core.call("config health:alert:prototype:d_new remove", None);
+        assert_eq!(removed, (200, "{\"status\":200,\"message\":\"deleted\"}".into()));
+        assert_eq!(names(&health), ["user_a", "stock_b"]);
+        assert!(core.node("health:alert:prototype:d_new").is_none());
+    }
+
+    /// The Cloud's copy of a rule: the table is asked through the metadata database (without one C's statement
+    /// cannot be prepared: its record, and the answer no), and the push writes C's DEBUG record to the access log
+    /// only once localhost has its ACLK sync configuration, with no node id for a host never claimed.
+    #[test]
+    fn the_cloud_s_table_is_asked_and_the_push_is_recorded() {
+        use netdata_agent_metadata::open::SqliteSettings;
+        let root = tempfile::tempdir().unwrap();
+        let core = core(root.path());
+        let health = Health::init(Default::default(), Box::new(|_| {}));
+        let hash = [0x5a; 16];
+
+        let link = DyncfgLink::new(&health, &core.dynamic());
+        let (found, records) = netdata_agent_log::capture(|| link.has(&hash));
+        assert!(!found);
+        let messages: Vec<_> = records.into_iter().filter_map(|record| record.message).collect();
+        assert_eq!(messages, ["Failed to prepare statement, rc=21 in alert_hash_has_transitioned"]);
+
+        let meta = Arc::new(MetaDb::open(root.path(), &SqliteSettings::default()).expect("the metadata database"));
+        let env = Arc::new(LiveEnv::new(Arc::clone(&core.hosts), Windows::default(), Some(&meta), MetaQueue::unread().0));
+        let link = DyncfgLink::new(&health, &Dynamic { dyncfg: &core.dyncfg, hosts: &core.hosts, env: &env });
+        let (found, records) = netdata_agent_log::capture(|| link.has(&hash));
+        assert!(!found && records.is_empty(), "{records:?}");
+        meta.lock().execute("INSERT INTO alert_hash_cloud (hash_id) VALUES (?1)", [&hash[..]]).unwrap();
+        assert!(link.has(&hash));
+        assert!(!link.has(&[0x5b; 16]));
+
+        let ((), records) = netdata_agent_log::capture(|| link.send_configuration(&hash));
+        assert!(records.is_empty(), "no ACLK sync configuration: {records:?}");
+        core.hosts.localhost().set_aclk_sync_config();
+        let ((), records) = netdata_agent_log::capture(|| link.send_configuration(&hash));
+        let records: Vec<_> = records.into_iter().map(|r| (r.source, r.priority, r.message.unwrap_or_default())).collect();
+        assert_eq!(
+            records,
+            [(
+                Source::Access,
+                Priority::Debug,
+                "ACLK REQ [ (dc-host)]: Request to send alert config 5a5a5a5a-5a5a-5a5a-5a5a-5a5a5a5a5a5a.".to_owned()
+            )]
+        );
+    }
+
     /// The record of health's start when there is no silencers file, which no test here lays.
     fn no_silencers(root: &Path) -> String {
         let file = root.join("lib").join("health.silencers.json");
@@ -497,7 +861,9 @@ mod tests {
         let mut conf = conf(root.path(), "");
         let config = conf.health_load_config_defaults();
         let (queue, unread) = MetaQueue::unread();
-        let (health, records) = netdata_agent_log::capture(|| plugin_init(&mut conf, config, true, queue));
+        let core = core(root.path());
+        let (health, records) =
+            netdata_agent_log::capture(|| plugin_init(&mut conf, config, true, queue, &core.dynamic()));
         // with health on the silencers' file is read after the rules: there is none, and the record carries the
         // failed open's errno
         let records: Vec<_> = records.into_iter().map(|record| (record.errno, record.message)).collect();
@@ -521,7 +887,8 @@ mod tests {
         let mut conf = conf(root.path(), "enable stock health configuration = no\n");
         let config = conf.health_load_config_defaults();
         let (queue, unread) = MetaQueue::unread();
-        let health = plugin_init(&mut conf, config, true, queue);
+        let core = core(root.path());
+        let health = plugin_init(&mut conf, config, true, queue, &core.dynamic());
         assert_eq!(names(&health), ["user_a"]);
         assert_eq!(templates(&unread.statements()), ["user_a"]);
         assert_eq!(directory_keys(&mut conf), ["health config"]);
@@ -794,8 +1161,12 @@ mod tests {
         let mut conf = conf(root.path(), "enabled = no\n");
         let config = conf.health_load_config_defaults();
         let (queue, unread) = MetaQueue::unread();
-        let (health, records) = netdata_agent_log::capture(|| plugin_init(&mut conf, config, true, queue));
+        let core = core(root.path());
+        let (health, records) =
+            netdata_agent_log::capture(|| plugin_init(&mut conf, config, true, queue, &core.dynamic()));
         assert!(records.is_empty(), "{records:?}");
+        // with health off no node of health's is registered
+        assert!(core.node("health:alert:prototype").is_none());
         assert!(names(&health).is_empty());
         assert!(unread.statements().is_empty());
         assert!(directory_keys(&mut conf).is_empty());
@@ -809,7 +1180,9 @@ mod tests {
         let mut conf = conf(root.path(), "");
         let config = conf.health_load_config_defaults();
         let (queue, unread) = MetaQueue::unread();
-        let (health, records) = netdata_agent_log::capture(|| plugin_init(&mut conf, config, false, queue));
+        let core = core(root.path());
+        let (health, records) =
+            netdata_agent_log::capture(|| plugin_init(&mut conf, config, false, queue, &core.dynamic()));
         assert_eq!(names(&health), ["user_a", "stock_b"]);
         assert!(unread.statements().is_empty());
         let messages: Vec<String> = records.into_iter().filter_map(|record| record.message).collect();

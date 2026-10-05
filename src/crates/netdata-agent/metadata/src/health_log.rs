@@ -57,6 +57,9 @@ const SQL_INJECT_REMOVED: &str = "INSERT INTO health_log_detail (health_log_id, 
      new_value, 0, @transition_id, @now_usec, summary FROM health_log_detail  WHERE unique_id = @unique_id AND \
      transition_id = @last_transition_id RETURNING health_log_id, old_status";
 
+/// `SQL_SELECT_ALERT_HASH_CLOUD` (`sqlite_aclk_alert.c`).
+const SQL_SELECT_ALERT_HASH_CLOUD: &str = "SELECT 1 FROM alert_hash_cloud WHERE hash_id = @hash_id";
+
 const SQL_SELECT_HEALTH_LAST_EXECUTED_EVENT: &str = "SELECT hld.new_status FROM health_log hl, health_log_detail hld \
      WHERE hl.host_id = @host_id AND hl.alarm_id = @alarm_id AND hld.unique_id != @unique_id AND hld.flags & @flags \
      AND hl.health_log_id = hld.health_log_id ORDER BY hld.unique_id DESC LIMIT 1";
@@ -834,6 +837,20 @@ impl MetaDb {
             true
         });
         prepared.then_some(status)
+    }
+
+    /// `alert_hash_has_transitioned()`: whether the table of the rules the Cloud was sent has this hash. False
+    /// when the statement cannot be prepared (with C's record). `health_thread` as for an entry's insert.
+    pub fn alert_hash_has_transitioned(&self, hash_id: &[u8; 16], health_thread: bool) -> bool {
+        let c = self.lock();
+        let mut found = false;
+        let params: [&dyn ToSql; 1] = [&&hash_id[..]];
+        let (function, end) = ("alert_hash_has_transitioned", End::of_health_statement(health_thread));
+        rows_ended(&c, SQL_SELECT_ALERT_HASH_CLOUD, function, &params, end, |_| {
+            found = true;
+            false
+        });
+        found
     }
 
     /// `sql_health_alarm_log_cleanup()`'s statement: the host's rows older than `retention_s` at `now` that a
