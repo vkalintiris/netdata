@@ -36,7 +36,6 @@ func init() {
 		"dimension anomaly rate suppression window", "dimension anomaly rate suppression threshold",
 		"enable statistics charts", "hosts to skip from training", "charts to skip from training",
 		"stream anomaly detection charts")
-	pending("registry", "registry", "netdata management api key file")
 	pending("internal collectors", "plugins", "proc", "diskspace", "cgroups", "tc", "idlejitter", "timex", "profile")
 	pending("statsd", "plugins", "statsd")
 	pending("statsd", "statsd", "update every (flushInterval)", "udp messages to process at once",

@@ -4,6 +4,7 @@ package parity
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,15 @@ import (
 
 // TestWebACL compares the [web] access lists and response options. The lists keep "localhost" (127.0.0.1, which
 // the launcher's readiness probe uses) and the requests come from 127.0.0.2, which they exclude.
+//
+// The management route (M9 commit 7, D210; `/api/v1/manage/health`, web_api_v1.c:214-221) is asked from 127.0.0.2
+// too. Where the management list takes every address (`features-denied`: the client has that right alone) the route
+// itself answers, and refuses a request without a token (403). Where the management list alone leaves the address
+// out (`management-denied`: its default, `localhost`, beside the other lists' defaults) the web server lets the
+// request in for the client's other rights and the route's own access bit refuses it (451, web_api.c:82-84),
+// whatever token it carries. The oracle must give both answers (aclWant). A client with no right at all
+// (`everything-denied`) is refused before any route is looked up (web_client.c:1528-1537), a route that does not
+// exist too: no row asks the management route there.
 func TestWebACL(t *testing.T) {
 	webDir := oracleWebDir(t)
 	get := func(path string, headers ...string) []byte {
@@ -30,7 +40,8 @@ func TestWebACL(t *testing.T) {
 				"    allow streaming from = localhost\n" +
 				"    allow badges from = localhost\n" +
 				"    x-frame-options response header = SAMEORIGIN\n" +
-				"    enable gzip compression = no\n",
+				"    enable gzip compression = no\n" +
+				"    allow management from = *\n",
 			cases: map[string][]byte{
 				"static":   get("/"),
 				"info":     get("/api/v1/info"),
@@ -44,6 +55,8 @@ func TestWebACL(t *testing.T) {
 					"66666666-7777-8888-9999-000000000000 HTTP/1.1\r\n\r\n"),
 				"options":  []byte("OPTIONS / HTTP/1.1\r\n\r\n"),
 				"gzip-off": get("/nonexistent", "Accept-Encoding: gzip"),
+				// the management list takes this client: the route asks for the key
+				"manage-allowed": get("/api/v1/manage/health?cmd=LIST"),
 			},
 		},
 		"everything-denied": {
@@ -60,12 +73,24 @@ func TestWebACL(t *testing.T) {
 				"netdata.conf": get("/netdata.conf"),
 			},
 		},
+		"management-denied": {
+			extra: "    allow management from = localhost\n",
+			cases: map[string][]byte{
+				// the management list alone leaves this client out: no token is looked at
+				"manage": get("/api/v1/manage/health?cmd=LIST", "X-Auth-Token: 00000000-0000-0000-0000-000000000000"),
+			},
+		},
 		"connections-denied": {
 			extra: "    allow connections from = localhost\n",
 			cases: map[string][]byte{
 				"info": get("/api/v1/info"),
 			},
 		},
+	}
+	// what the oracle must answer the management route's rows with: the answer's start and its end
+	aclWant := map[string][2]string{
+		"features-denied/manage-allowed": {"HTTP/1.1 403 Forbidden\r\n", "\r\n\r\nAuth Error\n"},
+		"management-denied/manage":       {"HTTP/1.1 451 Unavailable For Legal Reasons\r\n", "\r\n\r\nYou need to be authorized to access this resource"},
 	}
 	for name, cfg := range configs {
 		t.Run(name, func(t *testing.T) {
@@ -77,6 +102,9 @@ func TestWebACL(t *testing.T) {
 						// A refused connection is closed at once: nothing, or a reset, comes back.
 						b, _ := rawExchangeFrom("127.0.0.2", side.Daemon.Addr, request, 2*time.Second)
 						got[i] = maskRaw(b)
+					}
+					if want, ok := aclWant[name+"/"+cname]; ok && !(strings.HasPrefix(string(got[0]), want[0]) && strings.HasSuffix(string(got[0]), want[1])) {
+						t.Fatalf("oracle: answered %q, want %q at its start and %q at its end", truncateBytes(got[0]), want[0], want[1])
 					}
 					if !bytes.Equal(got[0], got[1]) {
 						t.Errorf("responses differ\noracle:    %q\ncandidate: %q", truncateBytes(got[0]), truncateBytes(got[1]))

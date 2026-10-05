@@ -3,6 +3,7 @@
 package parity
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -27,7 +28,8 @@ import (
 // agents with health on (`Options.HealthOn`; healthCase.off: off, for what C serves without health), the stock alerts
 // off, one user health.d file (a case may lay out more files and a stock tree of its own: healthCase.files, stockDir),
 // the recording notifier (package notify) as `script to execute on alarm`, a health pass every second, a fixed
-// management key and the fake plugin, whose charts both plugins create at the same second once both agents are ready
+// management key (or the state of its file a case names: healthCase.key) and the fake plugin, whose charts both
+// plugins create at the same second once both agents are ready
 // (one collected chart, and before it the charts a case defines with lines of its own: healthScenario), and whose
 // values the case switches at the middle of a second: both agents store the same series, second for second. Every
 // comparison checks the oracle first: a guard names the health state it must have reached, so two agents without
@@ -46,8 +48,17 @@ const (
 	healthLink = "-> "
 	// healthUnreadable is a healthCase.files value: a file nobody may open (mode 0; the agents do not run as root)
 	healthUnreadable = "(unreadable)"
-	// healthKey is the management key written into both run directories before the start (api_v1_manage.c:7-127)
+	// healthKey is the management key written into both run directories before the start (api_v1_manage.c:7-127),
+	// unless the case names another state of the key's file (healthCase.key)
 	healthKey = "5a1e0000-0000-4000-8000-0000000c0de5"
+	// healthKeyNone is a healthCase.key value: no key file is laid out, so each agent makes a key of its own
+	healthKeyNone = "(none)"
+	// healthKeyDir is a healthCase.key value: a directory stands where the key's file would
+	healthKeyDir = "(directory)"
+	// healthKeyFile is the key's file under a run directory (`<varlib>/netdata.api.key`), and healthSilencersFile the
+	// silencers' (`<varlib>/health.silencers.json`), unless a case names another (healthCase.keyFile, silencers)
+	healthKeyFile       = "lib/netdata.api.key"
+	healthSilencersFile = "lib/health.silencers.json"
 	// the phase barrier's bounds: the oracle reaches its guarded state, then the candidate the oracle's view
 	healthOracleWait    = 15 * time.Second
 	healthCandidateWait = 10 * time.Second
@@ -91,6 +102,17 @@ type healthCase struct {
 	// grid, when set, is the length in seconds of the case's aligned lookup window: the chart is created and each
 	// value switched at the window's healthGridSecond, so the windows hold the same mix of values in every run
 	grid int64
+	// key is the state of the management key's file before the start (api_v1_manage.c:7-123): empty, the fixed key
+	// (healthKey) on both sides; healthKeyNone, no file; healthKeyDir, a directory in its place; healthLink and a
+	// target, a symbolic link; any other text, a file that holds it. keyMode is the file's mode (0: 0600). keyFile,
+	// when set, is the file's path under the run directory, which netdata.conf then names (`[registry] netdata
+	// management api key file`); empty: C's default (healthKeyFile).
+	key     string
+	keyMode os.FileMode
+	keyFile string
+	// silencers, when set, is the silencers file's path under the run directory, which netdata.conf then names
+	// (`[health] silencers file`); empty: C's default (healthSilencersFile)
+	silencers string
 	// ctl are the notifier's rules
 	ctl notify.Control
 	// sc is the fake plugin's scenario; nil: no chart (the plugin waits for the stop)
@@ -128,6 +150,11 @@ type healthPair struct {
 	// run counts the case's runs: 1, then 2 once a hand-back case started its agents again. The fake plugin's start of
 	// that number is the one a release waits on.
 	run int
+	// keys are the management keys the sides' requests carry (healthPair.token): each side's own
+	keys [2]string
+	// saved counts the requests of the management API a case's oracle saved its silencers after, for the guard on
+	// the records they left
+	saved int
 }
 
 // healthOptions are a case's options: the fake plugin's (one tier, ram children, pulse off), health on (off for a case
@@ -141,7 +168,14 @@ func healthOptions(c healthCase) daemon.Options {
 	if !c.stock {
 		o.HealthExtra += "    enable stock health configuration = no\n"
 	}
+	if c.silencers != "" {
+		o.HealthExtra += "    silencers file = {run}/" + c.silencers + "\n"
+	}
 	o.HealthExtra += c.extra
+	if c.keyFile != "" {
+		// a second [registry] section: C adds its keys to the first one's
+		o.ConfExtra += "\n[registry]\n    netdata management api key file = {run}/" + c.keyFile + "\n"
+	}
 	o.StreamExtra = c.stream
 	if c.stockDir {
 		o.StockConfigDir = "{run}/stock"
@@ -178,7 +212,8 @@ func healthScenario(emit, chart, context string, dims []string, phases ...map[st
 }
 
 // healthPrepare lays out a side's run directory before its agent starts: the health.d file (`{run}` in it is the
-// side's run directory), the case's other files, the notifier with its rules and the management key. A rule that
+// side's run directory), the case's other files, the notifier with its rules and the management key's file (the
+// fixed key, or the state the case names: healthMakeKey). A rule that
 // names a notifier of its own (`exec`) is refused unless it stays under the side's notifier directory or names a
 // path nothing can be executed under: the rails on netdata.conf do not see a rule's line.
 func healthPrepare(t *testing.T, runDir string, c healthCase, stub string) {
@@ -217,9 +252,50 @@ func healthPrepare(t *testing.T, runDir string, c healthCase, stub string) {
 	if err := os.MkdirAll(filepath.Join(runDir, "lib"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(runDir, "lib", "netdata.api.key"), []byte(healthKey), 0o600); err != nil {
+	if err := healthMakeKey(filepath.Join(runDir, cmp.Or(c.keyFile, healthKeyFile)), c.key, c.keyMode); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// healthMakeKey lays out the management key's file as a case wants it before the start (healthCase.key): the fixed
+// key, nothing, a directory, a symbolic link (its target relative to the file's directory), or a file that holds the
+// text, with the mode asked for whatever the umask.
+func healthMakeKey(file, state string, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+		return err
+	}
+	switch target, link := strings.CutPrefix(state, healthLink); {
+	case state == healthKeyNone:
+		return nil
+	case state == healthKeyDir:
+		return os.Mkdir(file, 0o755)
+	case link:
+		return os.Symlink(target, file)
+	}
+	if err := os.WriteFile(file, []byte(cmp.Or(state, healthKey)), 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(file, cmp.Or(mode, 0o600))
+}
+
+// key is what side i's key file holds now (the fixed key, the text a case laid out, or the key the agent made at its
+// start); empty when nothing can be read there.
+func (h *healthPair) key(i int) string {
+	b, err := os.ReadFile(filepath.Join(h.p.Each()[i].Daemon.Opts.RunDir, cmp.Or(h.c.keyFile, healthKeyFile)))
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// token is the management key side i's requests carry: the one the case set for the side (healthPair.keys: a key
+// that is not in the file), else what the side's key file held when it was first asked for. With the fixed key both
+// sides carry the same one; without it each side carries its own.
+func (h *healthPair) token(i int) string {
+	if h.keys[i] == "" {
+		h.keys[i] = h.key(i)
+	}
+	return h.keys[i]
 }
 
 // healthMakeFile makes one of a case's files (healthCase.files) with its directories.
@@ -450,6 +526,11 @@ var healthClient = &http.Client{Timeout: 10 * time.Second}
 
 // healthGet is a GET of path with header lines (`Name: value`); a transport error is a status 0 with its text.
 func healthGet(d *daemon.Daemon, path string, headers ...string) Response {
+	return healthGetBy(healthClient, d, path, headers...)
+}
+
+// healthGetBy is healthGet by a client of the caller's (healthPlainClient: one that asks for no compression).
+func healthGetBy(client *http.Client, d *daemon.Daemon, path string, headers ...string) Response {
 	req, err := http.NewRequest(http.MethodGet, d.BaseURL+path, nil)
 	if err != nil {
 		return Response{Body: []byte(err.Error())}
@@ -458,7 +539,7 @@ func healthGet(d *daemon.Daemon, path string, headers ...string) Response {
 		k, v, _ := strings.Cut(hl, ": ")
 		req.Header.Set(k, v)
 	}
-	resp, err := healthClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return Response{Body: []byte(err.Error())}
 	}
@@ -469,6 +550,12 @@ func healthGet(d *daemon.Daemon, path string, headers ...string) Response {
 	}
 	return Response{Status: resp.StatusCode, ContentType: resp.Header.Get("Content-Type"), Body: body}
 }
+
+// healthPlainClient sends no `Accept-Encoding`, as curl does by itself (the client of C's own test of the management
+// API): the agent then answers without compression. It matters for an answer with an empty body: C sends such an
+// answer without a length and closes, which this client reads as an empty body; to a client that accepts gzip (Go's
+// own, a browser) C announces a chunked gzip body and sends no chunk, which the client reads as a broken transfer.
+var healthPlainClient = &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{DisableCompression: true}}
 
 // healthView is a response as the checks compare it: the status, the content type, then the body as rendered.
 func healthView(r Response, body string) string {

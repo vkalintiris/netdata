@@ -135,6 +135,12 @@ func TestNetdataConfRendering(t *testing.T) {
 			},
 			defaultNetdataConf + "\n[host labels]\n    a = b\n\n[plugin:difftest]\n    update every = 1\n",
 		},
+		"conf extra with run": {
+			func(o *Options) {
+				o.ConfExtra = "[registry]\n    netdata management api key file = {run}/lib/other.key\n"
+			},
+			defaultNetdataConf + "\n[registry]\n    netdata management api key file = /r/lib/other.key\n",
+		},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

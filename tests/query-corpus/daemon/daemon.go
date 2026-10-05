@@ -99,7 +99,8 @@ type Options struct {
 	// PluginsStock runs the installed plugins with their own defaults: [plugins] keeps only `enable running new
 	// plugins = yes` and the internal collectors' `no` keys (pluginsStock), so PluginsExtra may name external plugins.
 	PluginsStock bool
-	// ConfExtra is appended to netdata.conf as whole sections, e.g. `[plugin:difftest]` with its keys.
+	// ConfExtra is appended to netdata.conf as whole sections, e.g. `[plugin:difftest]` with its keys, with {run}
+	// replaced by RunDir.
 	ConfExtra string
 	// StreamExtra is appended to stream.conf verbatim (e.g. per-child [<machine guid>] sections of a parent).
 	StreamExtra string
@@ -666,7 +667,7 @@ func renderNetdataConf(o Options, hostname string) string {
 		conf += "\n[host labels]\n" + o.HostLabels
 	}
 	if o.ConfExtra != "" {
-		conf += "\n" + o.ConfExtra
+		conf += "\n" + strings.ReplaceAll(o.ConfExtra, "{run}", o.RunDir)
 	}
 	return conf
 }
