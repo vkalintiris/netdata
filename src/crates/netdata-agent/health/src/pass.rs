@@ -99,7 +99,7 @@ impl Env for Idle {
     }
 
     fn lookup(&self, _: &Arc<Host>, _: &Arc<Chart>, _: &ValueRequest) -> ValueResult {
-        ValueResult { code: 500, value: f64::NAN, window: None, value_is_null: true }
+        ValueResult { code: 500, value: f64::NAN, window: None, value_is_null: true, relative: false }
     }
 
     fn now_usec(&self) -> u64 {

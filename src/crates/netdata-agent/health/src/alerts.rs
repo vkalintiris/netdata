@@ -353,6 +353,15 @@ impl HostAlerts {
     }
 
 
+    /// `rrdcalc_from_rrdset_get()`: the alert of that name under the chart's id, else under the chart's name. Keys
+    /// are always made with a chart's id, so the second look finds only an alert of another chart whose id is this
+    /// chart's name; each key is cut as C's is.
+    pub fn chart_alert(&self, chart: &Chart, name: &[u8]) -> Option<Arc<Alert>> {
+        let store = self.store();
+        let find = |chart: &str| store.by_key.get(&key(chart, name)).and_then(|seq| store.order.get(seq)).cloned();
+        find(chart.id()).or_else(|| find(chart.meta().name.as_deref().unwrap_or(chart.id())))
+    }
+
     /// The host's alerts in the dictionary's order: the order the loop evaluates them in.
     pub fn alerts(&self) -> Vec<Arc<Alert>> {
         self.store().order.values().cloned().collect()

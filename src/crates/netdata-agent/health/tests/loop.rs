@@ -204,6 +204,7 @@ mod replay {
 
     use netdata_agent_health::alert::Status;
     use netdata_agent_health::alerts::HostAlerts;
+    use netdata_agent_health::badge::api_v1_badge;
     use netdata_agent_health::entry::Entry;
     use netdata_agent_health::notify::{Execution, Waiting};
     use netdata_agent_health::pass::{ChartFacts, Env, Pass};
@@ -338,6 +339,8 @@ mod replay {
         last_entry_s: i64,
         /// The lookup's code, value and null flag.
         lookup: (u16, f64, bool),
+        /// A 200's window was absolute: a badge's body may then be cached.
+        lookup_absolute: bool,
         /// When not 0: the chart leaves the host's index at that many more looks at the gate.
         free_at_gate: usize,
         /// The chart leaves the host's index when its lookup is asked for.
@@ -546,6 +549,61 @@ mod replay {
         }
     }
 
+    impl World {
+        /// The stub of `rrdset2value_api_v1_with_owa()`, for health's lookup and for a badge's value: it records its
+        /// arguments (with the query source and the priority it was asked through, as C's numbers) and answers
+        /// what the scenario says, with a window made of the clock and the two ends.
+        fn looked_up(&self, chart: &Arc<Chart>, request: &ValueRequest, source: u8, priority: u8) -> ValueResult {
+            let (code, value, null) = self.script(chart, |script| script.lookup);
+            if self.script(chart, |script| std::mem::take(&mut script.free_at_lookup)) {
+                self.free(chart);
+            }
+            self.calls().push(vec![
+                b"lookup".to_vec(),
+                chart.id().as_bytes().to_vec(),
+                nullable(&request.dimensions),
+                text(request.points),
+                text(request.after),
+                text(request.before),
+                request.time_group.name().as_bytes().to_vec(),
+                nullable(&request.time_group_options),
+                text(request.resampling_time),
+                hex8(request.options as u32),
+                text(request.timeout_ms),
+                text(request.tier),
+                text(source),
+                text(priority),
+                text(code),
+            ]);
+            let failed = |window| ValueResult { code, value: f64::NAN, window, value_is_null: true, relative: false };
+            match code {
+                500 => failed(None),
+                400 => failed(Some((0, 0))),
+                _ => {
+                    let window = (self.clock() + request.after + request.before, self.clock() + request.before);
+                    let relative = !self.script(chart, |script| script.lookup_absolute);
+                    ValueResult { code, value, window: Some(window), value_is_null: null, relative }
+                }
+            }
+        }
+    }
+
+    /// What a badge asks of the daemon: the chart's last entry as the scenario has it, and the scripted lookup,
+    /// asked as C's handler asks (QUERY_SOURCE_API_BADGE, STORAGE_PRIORITY_SYNCHRONOUS_FIRST).
+    impl netdata_agent_health::badge::Source for World {
+        fn last_entry_s(&self, chart: &Chart) -> i64 {
+            self.script(chart, |script| script.last_entry_s)
+        }
+
+        fn value(&self, _: &Arc<Host>, chart: &Arc<Chart>, request: &ValueRequest) -> ValueResult {
+            let priority = match request.priority {
+                QueryPriority::SynchronousFirst => 4,
+                other => panic!("a badge's value at priority {other:?}"),
+            };
+            self.looked_up(chart, request, 2, priority)
+        }
+    }
+
     impl Env for World {
         fn facts(&self, chart: &Chart) -> ChartFacts {
             let collection = chart.collection();
@@ -561,43 +619,14 @@ mod replay {
             self.script(chart, |script| (script.first_entry_s, script.last_entry_s))
         }
 
-        /// The stub of `rrdset2value_api_v1_with_owa()`: it records its arguments and answers what the scenario
-        /// says, with a window made of the clock and the two ends.
+        /// Health's lookup, through the stub of `looked_up`.
         fn lookup(&self, _: &Arc<Host>, chart: &Arc<Chart>, request: &ValueRequest) -> ValueResult {
-            let (code, value, null) = self.script(chart, |script| script.lookup);
-            if self.script(chart, |script| std::mem::take(&mut script.free_at_lookup)) {
-                self.free(chart);
-            }
             // C's numbers of QUERY_SOURCE_HEALTH and of the priority the lookup asks for
             let priority = match request.priority {
                 QueryPriority::Synchronous => 7,
                 other => panic!("a lookup at priority {other:?}"),
             };
-            self.calls().push(vec![
-                b"lookup".to_vec(),
-                chart.id().as_bytes().to_vec(),
-                nullable(&request.dimensions),
-                text(request.points),
-                text(request.after),
-                text(request.before),
-                request.time_group.name().as_bytes().to_vec(),
-                nullable(&request.time_group_options),
-                text(request.resampling_time),
-                hex8(request.options as u32),
-                text(request.timeout_ms),
-                text(request.tier),
-                b"4".to_vec(),
-                text(priority),
-                text(code),
-            ]);
-            match code {
-                500 => ValueResult { code, value: f64::NAN, window: None, value_is_null: true },
-                400 => ValueResult { code, value: f64::NAN, window: Some((0, 0)), value_is_null: true },
-                _ => {
-                    let window = (self.clock() + request.after + request.before, self.clock() + request.before);
-                    ValueResult { code, value, window: Some(window), value_is_null: null }
-                }
-            }
+            self.looked_up(chart, request, 4, priority)
         }
 
         fn now_usec(&self) -> u64 {
@@ -1246,6 +1275,7 @@ mod replay {
                         first_entry_s: T0 - 2 * 86400,
                         last_entry_s: clock,
                         lookup: (200, f64::NAN, true),
+                        lookup_absolute: false,
                         free_at_gate: 0,
                         free_at_lookup: false,
                     });
@@ -1295,7 +1325,15 @@ mod replay {
                 }
                 "lookup" => {
                     let lookup = (args[1].parse().expect("a code"), number(args[2]), flag(args[3]));
-                    self.world.script(&self.chart(args[0]), |script| script.lookup = lookup);
+                    let absolute = match args.get(4) {
+                        None => false,
+                        Some(&"absolute") => true,
+                        Some(other) => panic!("{}: {line}: an unknown word {other}", self.name),
+                    };
+                    self.world.script(&self.chart(args[0]), |script| {
+                        script.lookup = lookup;
+                        script.lookup_absolute = absolute;
+                    });
                 }
                 "gate" => self.world.gate.set(flag(args[0])),
                 "gate-for" => self.world.gate_for.set(args[0].parse().expect("a count")),
@@ -1495,6 +1533,30 @@ mod replay {
                     self.rows.push(("reply", vec![text(reply.code), text(u8::from(reply.json)), reply.body]));
                     let file = std::fs::read(self.silencers_file());
                     self.rows.push(("file", vec![text(u8::from(file.is_ok())), file.unwrap_or_default()]));
+                    self.dump(line, None, records);
+                }
+                // `/api/v1/badge.svg` with the rest of the line as its decoded query
+                "badge" => {
+                    let (health, world, host) = (self.health(), &self.world, &self.host);
+                    let alerts = health.host(host);
+                    let (badge, records) = netdata_agent_log::capture(|| {
+                        api_v1_badge(host, alerts.as_deref(), rest.as_bytes(), 3, world, &|| world.clock())
+                    });
+                    let clock = world.clock();
+                    let after = |at: i64| if at == 0 { b"-".to_vec() } else { text(at - clock) };
+                    let refresh = badge.refresh.map_or_else(Vec::new, |n| format!("Refresh: {n}\r\n").into_bytes());
+                    self.rows.push((
+                        "badge",
+                        vec![
+                            text(badge.code),
+                            if badge.svg { b"svg".to_vec() } else { b"text".to_vec() },
+                            if badge.no_cacheable { b"n".to_vec() } else { b"c".to_vec() },
+                            after(badge.date),
+                            after(badge.expires),
+                            refresh,
+                            badge.body,
+                        ],
+                    ));
                     self.dump(line, None, records);
                 }
                 "enabled-alarms" => self.enabled_alarms = Some(rest.as_bytes().to_vec()),
@@ -2002,6 +2064,15 @@ fn dyncfg_matches_c() {
 #[test]
 fn child_matches_c() {
     assert_eq!(replayed("child"), 65);
+}
+
+/// `/api/v1/badge.svg` through C's own `api_v1_badge()`: a chart value with every parameter, the stale rule, the
+/// refresh headers over a relative and an absolute window, alerts in each status, an unknown chart or alarm, numbers
+/// at their edges: the code, the type, the cache word, date and expiry, the `Refresh` line and the body.
+#[test]
+fn badge_matches_c() {
+    // 87 requests and the alert scenario's two passes
+    assert_eq!(replayed("badge"), 89);
 }
 
 /// The reload of health's configuration: the nodes unregistered and registered with the model core's echoes, every

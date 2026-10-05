@@ -3,9 +3,24 @@
 //! in the badge's font, the XML escape, the color a value takes from a color expression, a color argument, and the
 //! SVG text itself (`buffer_svg()`). The value's own text is [`format_value_and_unit_precision`].
 //!
+//! [`api_v1_badge`] is the request: an alert's badge (its status' color, its published value) or a chart value's
+//! (one query, through [`Source`]). It leaves a [`Badge`] for the web server to send.
+//!
 //! Texts are bytes all the way: a label reaches the SVG as the request gave it, cut by bytes where C cuts.
 
+use std::sync::Arc;
+
+use netdata_agent_query::request::pairs;
+use netdata_agent_query::tables::{TimeGrouping, options, parse_options};
+use netdata_agent_query::value::{Priority, ValueRequest, ValueResult};
+use netdata_agent_rrd::chart::Chart;
+use netdata_agent_rrd::host::Host;
+use netdata_agent_text::parse::{str2i, str2l};
 use netdata_agent_text::units::format_value_and_unit_precision;
+
+use crate::Clock;
+use crate::alert::Status;
+use crate::alerts::HostAlerts;
 
 /// `BADGE_HORIZONTAL_PADDING`.
 const HORIZONTAL_PADDING: f64 = 4.0;
@@ -466,3 +481,253 @@ var width_update_elems = this_svg.getElementsByClassName(\"bdge-ttl-width\");\
 netdata_bdge_each(width_update_elems, \"width\", width_total);\
 this_svg.setAttribute(\"width\", width_total);\
 </script>";
+
+/// What `api_v1_badge()` leaves on the web client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Badge {
+    /// 200, or 400 for a request without a chart.
+    pub code: u16,
+    /// `image/svg+xml`; else the dispatcher's `text/plain`.
+    pub svg: bool,
+    pub body: Vec<u8>,
+    /// The body is not to be cached; else it may be (an alert with a refresh, a value over an absolute window).
+    pub no_cacheable: bool,
+    /// The buffer's date and expiry; 0 for one the handler did not set.
+    pub date: i64,
+    pub expires: i64,
+    /// The `Refresh:` header's seconds.
+    pub refresh: Option<i32>,
+}
+
+/// What the request asks of the daemon for a chart value.
+pub trait Source {
+    /// `rrdset_last_entry_s()`.
+    fn last_entry_s(&self, chart: &Chart) -> i64;
+    /// `rrdset2value_api_v1()` as a badge calls it: its query source and its priority are the badge's.
+    fn value(&self, host: &Arc<Host>, chart: &Arc<Chart>, request: &ValueRequest) -> ValueResult;
+}
+
+/// A badge that only says something: an unknown chart, an unknown alarm. Of the request only the scale counts.
+fn notice(label: &[u8], scale: i32) -> Badge {
+    let svg = Svg {
+        label,
+        value: f64::NAN,
+        units: b"",
+        label_color: None,
+        value_color: None,
+        precision: -1,
+        scale,
+        options: 0,
+        fixed_width_lbl: -1,
+        fixed_width_val: -1,
+        text_color_lbl: None,
+        text_color_val: None,
+    };
+    Badge { code: 200, svg: true, body: buffer_svg(&svg), no_cacheable: true, date: 0, expires: 0, refresh: None }
+}
+
+/// `api_v1_badge()`: the badge of a request's decoded query. `alerts` are the host's, when health has any for it;
+/// `gap_when_lost_iterations_above` is the daemon's number of update-everys after which a chart's last value is
+/// too old to show.
+///
+/// An unknown chart or alarm answers 200 with a badge that says so. A chart value that is too old, or whose query
+/// fails, answers 200 with an empty badge and no `Refresh` header.
+pub fn api_v1_badge(
+    host: &Arc<Host>,
+    alerts: Option<&HostAlerts>,
+    query: &[u8],
+    gap_when_lost_iterations_above: i64,
+    source: &dyn Source,
+    clock: Clock,
+) -> Badge {
+    let mut chart = None;
+    let mut dimensions: Option<Vec<u8>> = None;
+    let (mut after, mut before, mut points) = (None, None, None);
+    let (mut multiply, mut divide, mut precision, mut scale, mut refresh) = (None, None, None, None, None);
+    let (mut label, mut units, mut alarm, mut group_options) = (None, None, None, None);
+    let (mut label_color, mut value_color) = (None, None);
+    let (mut fixed_width_lbl, mut fixed_width_val) = (None, None);
+    let (mut text_color_lbl, mut text_color_val) = (None, None);
+    let mut group = TimeGrouping::Average;
+    // C keeps the options in 32 bits
+    let mut request_options: u32 = 0;
+    for (name, value) in pairs(query) {
+        match name {
+            b"chart" => chart = Some(value),
+            b"dimension" | b"dim" | b"dimensions" | b"dims" => {
+                let dimensions = dimensions.get_or_insert_with(Vec::new);
+                dimensions.push(b'|');
+                dimensions.extend_from_slice(value);
+            }
+            b"after" => after = Some(value),
+            b"before" => before = Some(value),
+            b"points" => points = Some(value),
+            b"group_options" => group_options = Some(value),
+            b"group" => group = TimeGrouping::parse(value),
+            b"options" => request_options |= parse_options(value) as u32,
+            b"label" => label = Some(value),
+            b"units" => units = Some(value),
+            b"label_color" => label_color = Some(value),
+            b"value_color" => value_color = Some(value),
+            b"multiply" => multiply = Some(value),
+            b"divide" => divide = Some(value),
+            b"refresh" => refresh = Some(value),
+            b"precision" => precision = Some(value),
+            b"scale" => scale = Some(value),
+            b"fixed_width_lbl" => fixed_width_lbl = Some(value),
+            b"fixed_width_val" => fixed_width_val = Some(value),
+            b"alarm" => alarm = Some(value),
+            b"text_color_lbl" => text_color_lbl = Some(value),
+            b"text_color_val" => text_color_val = Some(value),
+            _ => {}
+        }
+    }
+    // one width alone is not read
+    let (fixed_width_lbl, fixed_width_val) = match (fixed_width_lbl, fixed_width_val) {
+        (Some(lbl), Some(val)) => (str2i(lbl), str2i(val)),
+        _ => (-1, -1),
+    };
+
+    let Some(chart_id) = chart else {
+        let body = b"No chart id is given at the request.".to_vec();
+        return Badge { code: 400, svg: false, body, no_cacheable: true, date: 0, expires: 0, refresh: None };
+    };
+    let scale = scale.map_or(100, str2i);
+
+    // by id among the charts a listing shows, else by name
+    let found = std::str::from_utf8(chart_id).ok().and_then(|id| {
+        let charts = host.charts();
+        charts.find(id, false).or_else(|| charts.find_by_name(id))
+    });
+    let Some(chart) = found else {
+        return notice(b"chart not found", scale);
+    };
+    chart.touch_last_accessed();
+
+    let alert = match alarm {
+        Some(name) => match alerts.and_then(|alerts| alerts.chart_alert(&chart, name)) {
+            Some(alert) => Some(alert),
+            None => return notice(b"alarm not found", scale),
+        },
+        None => None,
+    };
+
+    let update_every = chart.update_every();
+    let zero_is_one = |n: i64| if n == 0 { 1 } else { n };
+    let multiply = zero_is_one(multiply.map_or(1, str2l));
+    let divide = zero_is_one(divide.map_or(1, str2l));
+    let before = before.map_or(0, str2l);
+    let after = after.map_or(-i64::from(update_every), str2l);
+    let points = points.map_or(1, str2i);
+    let precision = precision.map_or(-1, str2i);
+
+    // what C leaves undefined (a difference past an int, the negation of the smallest int) wraps here
+    let positive = |n: i32| if n < 0 { n.wrapping_neg() } else { n };
+    let refresh = match refresh {
+        None => 0,
+        Some(b"auto") => match &alert {
+            Some(alert) => alert.config.update_every,
+            None if u64::from(request_options) & options::NOT_ALIGNED != 0 => update_every,
+            None => positive(before.wrapping_sub(after) as i32),
+        },
+        Some(text) => positive(str2i(text)),
+    };
+
+    let meta = chart.meta();
+    let alarm_label: Option<Vec<u8>> =
+        alarm.map(|name| name.iter().map(|&b| if b == b'_' { b' ' } else { b }).collect());
+    let label: &[u8] = match (label, &alarm_label, &dimensions) {
+        (Some(label), _, _) => label,
+        (None, Some(alarm), _) => alarm,
+        // the dimensions' text without its first separator
+        (None, None, Some(dimensions)) => &dimensions[1..],
+        (None, None, None) => meta.name.as_deref().unwrap_or(chart.id()).as_bytes(),
+    };
+    let units: &[u8] = match (units, &alert) {
+        (Some(units), _) => units,
+        (None, Some(alert)) => alert.config.units.as_deref().unwrap_or(b""),
+        (None, None) if u64::from(request_options) & options::PERCENTAGE != 0 => b"%",
+        (None, None) => meta.units.as_bytes(),
+    };
+
+    let mut badge =
+        Badge { code: 200, svg: true, body: Vec::new(), no_cacheable: true, date: 0, expires: 0, refresh: None };
+    let (value, value_color) = match &alert {
+        Some(alert) => {
+            if refresh > 0 {
+                badge.refresh = Some(refresh);
+                badge.date = clock();
+                badge.expires = badge.date + i64::from(refresh);
+                badge.no_cacheable = false;
+            }
+            let snapshot = alert.snapshot();
+            let by_status: &[u8] = match snapshot.status {
+                Status::Critical => b"red",
+                Status::Warning => b"orange",
+                Status::Clear => b"brightgreen",
+                Status::Undefined => b"lightgrey",
+                Status::Uninitialized => b"#000",
+                _ => b"grey",
+            };
+            let value = match snapshot.value {
+                value if value.is_finite() => value * multiply as f64 / divide as f64,
+                value => value,
+            };
+            (value, Some(value_color.unwrap_or(by_status)))
+        }
+        None => {
+            // a value collected too long ago is not asked for
+            let oldest = clock() - i64::from(update_every) * gap_when_lost_iterations_above;
+            let fresh = source.last_entry_s(&chart) >= oldest;
+            let result = fresh.then(|| {
+                let request = ValueRequest {
+                    dimensions: dimensions.clone(),
+                    // C hands its int over as a size_t
+                    points: i64::from(points) as u64,
+                    after,
+                    before,
+                    time_group: group,
+                    time_group_options: group_options.map(<[u8]>::to_vec),
+                    resampling_time: 0,
+                    options: u64::from(request_options),
+                    timeout_ms: 0,
+                    tier: 0,
+                    priority: Priority::SynchronousFirst,
+                };
+                source.value(host, &chart, &request)
+            });
+            match result {
+                Some(result) if result.code == 200 => {
+                    // the query marks the buffer by its window's kind
+                    badge.no_cacheable = result.relative;
+                    if refresh > 0 {
+                        badge.refresh = Some(refresh);
+                        badge.expires = clock() + i64::from(refresh);
+                    } else {
+                        badge.no_cacheable = true;
+                    }
+                    let scaled = result.value * multiply as f64 / divide as f64;
+                    (if result.value_is_null { f64::NAN } else { scaled }, value_color)
+                }
+                // no value: an empty badge, and no Refresh header whatever was asked
+                _ => (f64::NAN, value_color),
+            }
+        }
+    };
+
+    badge.body = buffer_svg(&Svg {
+        label,
+        value,
+        units,
+        label_color,
+        value_color,
+        precision,
+        scale,
+        options: request_options,
+        fixed_width_lbl,
+        fixed_width_val,
+        text_color_lbl,
+        text_color_val,
+    });
+    badge
+}

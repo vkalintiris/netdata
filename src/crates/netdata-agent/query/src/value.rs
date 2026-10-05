@@ -43,6 +43,9 @@ pub struct ValueResult {
     /// `value_is_null`: set at 400 and 500; at 200 what the row's reduction says, which leaves it unset for a
     /// result without a column.
     pub value_is_null: bool,
+    /// At 200: the window was relative to the wall clock (`RRDR_RESULT_FLAG_RELATIVE`), which C writes on a
+    /// caller's buffer as "not to be cached" (`rrd2json.c`); an absolute window may be cached. A badge reads it.
+    pub relative: bool,
 }
 
 impl ValueResult {
@@ -52,6 +55,7 @@ impl ValueResult {
             value: f64::NAN,
             window,
             value_is_null: true,
+            relative: false,
         }
     }
 }
@@ -92,6 +96,7 @@ pub fn chart_value(
     let Some(mut window) = calculate(&qt, now_s) else {
         return ValueResult::failed(500, None);
     };
+    let relative = window.relative;
     let r = run_v1(&mut qt, &mut window, control);
     if r.rows == 0 {
         return ValueResult::failed(400, Some((0, 0)));
@@ -103,6 +108,7 @@ pub fn chart_value(
         value,
         window: Some((r.view.after, r.view.before)),
         value_is_null,
+        relative,
     }
 }
 
@@ -143,6 +149,16 @@ mod tests {
             progress: None,
         };
         chart_value(&h, &chart, request, &Profile::default(), &control, T0 + 7)
+    }
+
+    /// A window with an end that is zero or counted back from now is relative; one with two absolute ends is not.
+    /// C writes that on a caller's buffer as "not to be cached" or "may be cached"; a badge reads it.
+    #[test]
+    fn a_value_says_whether_its_window_is_relative() {
+        for (after, before, relative) in [(-6, 0, true), (-6, -1, true), (T0 + 1, 0, true), (T0 + 1, T0 + 6, false)] {
+            let got = value(&request(after, before), None);
+            assert_eq!((got.code, got.relative), (200, relative), "{after} {before}");
+        }
     }
 
     // the host holds 10, -, 20, 30, -, 40 at T0+1..=T0+6

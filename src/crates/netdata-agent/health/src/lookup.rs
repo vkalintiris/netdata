@@ -131,7 +131,8 @@ mod tests {
 
     #[test]
     fn an_answer_sets_the_value_the_window_and_the_two_flags() {
-        let answer = |code, value, window, value_is_null| ValueResult { code, value, window, value_is_null };
+        let answer =
+            |code, value, window, value_is_null| ValueResult { code, value, window, value_is_null, relative: false };
         let both = run_flags::DB_ERROR | run_flags::DB_NAN;
         let cases = [
             // a value
