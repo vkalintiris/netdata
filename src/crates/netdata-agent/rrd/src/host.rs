@@ -3337,8 +3337,10 @@ mod tests {
         assert_eq!(db_status(&host), DbStatus::Queryable);
     }
 
-    /// What health hears: a freed chart; at a host's cleanup the host first, then each of its charts, then that
-    /// they are gone; and a freed host after its cleanup.
+    /// What health hears of a detach (C's `rrdcalc_child_disconnected()`): one event from the receiver whose health
+    /// was on, none from one whose health was off, none from a slot that is not the attached one. At the event the
+    /// host's health is off already and the receiver lock is released: health takes the host's alerts and charts
+    /// there, and a new receiver or a free of the host is not kept waiting for it.
     #[test]
     fn health_hears_of_a_detach_only_from_a_receiver_whose_health_was_on() {
         use crate::storage::HealthEvent;
@@ -3348,8 +3350,8 @@ mod tests {
             let heard = Arc::clone(&heard);
             move |event| {
                 if let HealthEvent::ChildDisconnected(host) = event {
-                    // the host's health is off already, and it is no longer online, as in C at this point
-                    lock(&heard).push((host.machine_guid().to_owned(), host.health_enabled()));
+                    let unlocked = host.receiver.try_lock().is_ok();
+                    lock(&heard).push((host.machine_guid().to_owned(), host.health_enabled(), unlocked));
                 }
             }
         });
@@ -3364,7 +3366,7 @@ mod tests {
         host.set_health_enabled(true);
         assert_eq!(host.set_receiver(Arc::clone(&on)), Attach::Attached);
         host.clear_receiver(&on, 0);
-        assert_eq!(heard(), [("guid-c".to_owned(), false)]);
+        assert_eq!(heard(), [("guid-c".to_owned(), false, true)]);
         host.clear_receiver(&on, 0);
         assert!(heard().is_empty());
 
