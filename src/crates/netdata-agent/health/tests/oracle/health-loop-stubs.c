@@ -215,7 +215,7 @@ int rrdset2value_api_v1_with_owa(
     time_t resampling_time, uint32_t options, time_t *db_after, time_t *db_before, size_t *db_points_read,
     size_t *db_points_per_tier, size_t *result_points_generated, int *value_is_null, NETDATA_DOUBLE *anomaly_rate,
     time_t timeout, size_t tier, QUERY_SOURCE query_source, STORAGE_PRIORITY priority) {
-    (void)owa; (void)wb; (void)db_points_read; (void)db_points_per_tier; (void)result_points_generated;
+    (void)owa; (void)db_points_read; (void)db_points_per_tier; (void)result_points_generated;
     (void)anomaly_rate;
     struct oracle_chart *script = oracle_chart(st);
 
@@ -240,11 +240,55 @@ int rrdset2value_api_v1_with_owa(
         return 400;
     }
 
+    // C writes the window's kind on the caller's buffer (rrd2json.c: RRDR_RESULT_FLAG_RELATIVE or _ABSOLUTE); health
+    // gives none, a badge gives its own
+    if(wb) {
+        if(script->lookup_absolute)
+            buffer_cacheable(wb);
+        else
+            buffer_no_cacheable(wb);
+    }
+
     if(db_after) *db_after = oracle.clock_s + after + before;
     if(db_before) *db_before = oracle.clock_s + before;
     *n = script->lookup_value;
     if(value_is_null) *value_is_null = script->lookup_null;
     return 200;
+}
+
+// C: src/web/api/formatters/rrd2json.c: the wrapper for callers without an arena of their own (the badge)
+int rrdset2value_api_v1(
+    RRDSET *st, BUFFER *wb, NETDATA_DOUBLE *n, const char *dimensions, size_t points, time_t after, time_t before,
+    RRDR_TIME_GROUPING group_method, const char *group_options, time_t resampling_time, uint32_t options,
+    time_t *db_after, time_t *db_before, size_t *db_points_read, size_t *db_points_per_tier,
+    size_t *result_points_generated, int *value_is_null, NETDATA_DOUBLE *anomaly_rate, time_t timeout, size_t tier,
+    QUERY_SOURCE query_source, STORAGE_PRIORITY priority) {
+    return rrdset2value_api_v1_with_owa(
+        NULL, st, wb, n, dimensions, points, after, before, group_method, group_options, resampling_time, options,
+        db_after, db_before, db_points_read, db_points_per_tier, result_points_generated, value_is_null, anomaly_rate,
+        timeout, tier, query_source, priority);
+}
+
+// ------------------------------------------------------------------------------------------------
+// the badge (C's own src/web/api/v1/api_v1_badge/web_buffer_svg.c, api_v1_badge())
+
+// C: src/daemon/config/netdata-conf-db.c: `[db] gap when lost iterations above` plus 2, at the option's default
+int gap_when_lost_iterations_above = 3;
+
+// C: src/database/rrdset-index-name.c: the chart of that name, when it is discoverable, found again by its id
+RRDSET_ACQUIRED *rrdset_find_byname_and_acquire(RRDHOST *host, const char *name) {
+    if(!host->rrdset_root_index)
+        return NULL;
+    char id[1024] = "";
+    RRDSET *st;
+    dfe_start_read(host->rrdset_root_index, st) {
+        if(!oracle_chart(st)->freed && strcmp(rrdset_name(st), name) == 0) {
+            strncpyz(id, string2str(st->id), sizeof(id) - 1);
+            break;
+        }
+    }
+    dfe_done(st);
+    return *id ? rrdset_find_and_acquire(host, id, false) : NULL;
 }
 
 // ------------------------------------------------------------------------------------------------

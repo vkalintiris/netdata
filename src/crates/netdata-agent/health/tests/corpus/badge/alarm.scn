@@ -1,0 +1,39 @@
+# An alert's badge: each status' color, the label with its underscores as spaces, the units of the rule, none, and
+# given ones, the value times and over, a value that is no number, a given color, refresh (`auto` is the rule's
+# every), date and expiry both set; an alarm the chart has not; the alarm asked through the chart's name.
+rules tests/corpus/badge/badge.conf
+chart b.w b.w_name b.alarm fam things 1
+chart b.c b.c_name b.alarm fam things 1
+chart b.k b.k_name b.alarm fam things 1
+chart b.u b.u_name b.alarm fam things 1
+chart b.i b.i_name b.wait fam things 1
+var b.w v 70
+var b.c v 95
+var b.k v 10
+var b.u v nan
+entries b.i 0 0
+clock 0
+pass 0
+clock 1
+pass 1
+badge chart=b.w&alarm=b_alert
+badge chart=b.c&alarm=b_alert
+badge chart=b.k&alarm=b_alert
+badge chart=b.u&alarm=b_alert
+badge chart=b.i&alarm=b_wait
+badge chart=b.w&alarm=b_plain
+badge chart=b.w_name&alarm=b_alert
+badge chart=b.w&alarm=b_alert&label=my label&units=MiB
+badge chart=b.w&alarm=b_alert&multiply=3&divide=2&precision=2
+badge chart=b.u&alarm=b_alert&multiply=3&divide=2
+badge chart=b.w&alarm=b_alert&value_color=blue&label_color=red
+badge chart=b.w&alarm=b_alert&value_color=red>60|green
+badge chart=b.w&alarm=b_alert&refresh=auto
+badge chart=b.w&alarm=b_plain&refresh=auto
+badge chart=b.w&alarm=b_alert&refresh=5
+badge chart=b.w&alarm=b_alert&refresh=0
+badge chart=b.w&alarm=b_alert&refresh=-4
+badge chart=b.w&alarm=nosuch&refresh=5&label=x&scale=200
+badge chart=b.w&alarm=b_alert&dimensions=x&after=-600&points=9&group=max&options=percentage
+badge chart=b.w&alarm=b_alert&options=display-absolute&multiply=-1
+badge chart=b.w&alarm=b_alert&fixed_width_lbl=60&fixed_width_val=60&scale=150

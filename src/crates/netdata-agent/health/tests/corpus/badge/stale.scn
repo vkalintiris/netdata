@@ -1,0 +1,13 @@
+# The stale rule of a chart value: a last entry at now minus three update-everys is served; one second older gives
+# the empty badge with no lookup, and no Refresh header whatever was asked; so does a chart never collected.
+chart b.s b.s_name b.ctx fam things 10
+lookup b.s 200 5 0
+clock 100
+entries b.s 1 70
+badge chart=b.s
+entries b.s 1 69
+badge chart=b.s
+badge chart=b.s&refresh=5
+badge chart=b.s&refresh=auto&label=old
+entries b.s 0 0
+badge chart=b.s

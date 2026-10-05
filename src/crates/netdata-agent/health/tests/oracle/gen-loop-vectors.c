@@ -58,7 +58,7 @@
 //   gen-loop-vectors scenario <loop.tsv to append to> <scenario file> <a file for the records>
 //       One process per scenario. Rows are <scenario> <step> <kind> ..., a step being one `pass`, `unlink`,
 //       `apply`, `store`, `restart`, `cleanup`, `alarm-log`, `configs`, `wait`, `load`, `manage`, `dyncfg`,
-//       `register`, `unregister`, `disconnect` or `reload` directive:
+//       `register`, `unregister`, `disconnect`, `reload` or `badge` directive:
 //         do         the directive
 //         next_run   after a pass: the pass's next_run
 //         host       pending flags (i = initialization, r = label recheck), health_transitions,
@@ -90,6 +90,9 @@
 //         body       an `alarm-log` step: the JSON sql_health_alarm_log2json() writes
 //         list       a `load` step: the silencers' state as health_silencers2json() prints it
 //         reply      a `manage` step: the reply's code, whether its content type is JSON, its body
+//         badge      a `badge` step: what C's api_v1_badge() left on the web client: the code, the content type
+//                    (svg, text), whether the body may be cached (c) or may not (n), the date and the expiry as
+//                    seconds after the clock (`-`: not set), the header lines it added, the body
 //         file       a `manage` step: whether the silencers' file is there, and its bytes
 //         answer     a `dyncfg` step: what C's dyncfg_health_cb() answered: the code, the content type, whether the
 //                    body may be cached (c), may not (n) or neither was said (-), the expiry as seconds after the
@@ -122,7 +125,8 @@
 //   collected <chart> <counter_done> <second|0>
 //   entries <chart> <first second|0> <last second|0>
 //   obsolete <chart> <0|1>
-//   lookup <chart> <code> <value|nan> <null 0|1>
+//   lookup <chart> <code> <value|nan> <null 0|1> [absolute]     the last word: a 200's window was absolute (a
+//                                      caller that gave its buffer, the badge, may then have it cached)
 //   gate <0|1>                         the host may run health (rrdhost_should_run_health())
 //   gate-for <n>                       the host may run health for n more looks at it, then it may not
 //   free-at-gate <chart> <n>           at the n-th look at the gate from here the chart leaves the host's index;
@@ -141,6 +145,8 @@
 //   cleanup                            the hourly cleanup of the host: sql_health_alarm_log_cleanup(), then
 //                                      health_alarm_log_cleanup()
 //   alarm-log <after> [chart]          /api/v1/alarm_log's body (`after` is a unique id, as the request gives it)
+//   badge <query>                      /api/v1/badge.svg with that decoded query (the rest of the line), through
+//                                      C's own api_v1_badge(); a chart value comes from the scripted lookup
 //   configs                            /api/v2/alert_config's body for every rule of alert_hash, in the table's
 //                                      order, then for a hash no rule has: a `config` row each, with the hash,
 //                                      how many rules C's query found, and the body (none when it found none)
@@ -804,6 +810,42 @@ static void manage_fields(FILE *f, const char *token, const char *query) {
 }
 
 // ------------------------------------------------------------------------------------------------
+// the badge: C's own api_v1_badge()
+
+int api_v1_badge(RRDHOST *host, struct web_client *w, char *url);
+
+// A request as the dispatcher hands it over (web_api.c): the decoded query, a data buffer that is text/plain and
+// not to be cached, an empty header buffer.
+static void badge_fields(FILE *f, const char *query) {
+    static struct web_client w;
+    memset(&w, 0, sizeof(w));
+    w.response.data = buffer_create(0, NULL);
+    w.response.header = buffer_create(0, NULL);
+    w.response.data->content_type = CT_TEXT_PLAIN;
+    buffer_no_cacheable(w.response.data);
+    char *url = strdupz(query);
+    int code = api_v1_badge(&host, &w, url);
+    BUFFER *wb = w.response.data;
+    fprintf(f, "\t%d\t%s\t%s\t", code,
+            wb->content_type == CT_IMAGE_SVG_XML ? "svg" : wb->content_type == CT_TEXT_PLAIN ? "text" : "other",
+            (wb->options & WB_CONTENT_CACHEABLE) ? "c" : (wb->options & WB_CONTENT_NO_CACHEABLE) ? "n" : "-");
+    if(wb->date)
+        fprintf(f, "%ld\t", (long)(wb->date - oracle.clock_s));
+    else
+        fputs("-\t", f);
+    if(wb->expires)
+        fprintf(f, "%ld", (long)(wb->expires - oracle.clock_s));
+    else
+        fputc('-', f);
+    field(f, buffer_tostring(w.response.header));
+    fputc('\t', f);
+    oracle_esc_bytes(f, buffer_tostring(wb), buffer_strlen(wb));
+    buffer_free(w.response.data);
+    buffer_free(w.response.header);
+    freez(url);
+}
+
+// ------------------------------------------------------------------------------------------------
 // DynCfg: C's own health_dyncfg.c
 
 // The hosts' index, holding the one host. A scenario's first DynCfg step makes it, so that every other scenario
@@ -1145,6 +1187,8 @@ static void run_scenario(const char *out_path, const char *scenario_path, const 
             char *value = word(&rest, whole);
             script->lookup_value = (strcmp(value, "nan") == 0) ? NAN : str2ndd(value, NULL);
             script->lookup_null = atoi(word(&rest, whole));
+            script->lookup_absolute = rest && strcmp(rest, "absolute") == 0;
+            if(rest && *rest && !script->lookup_absolute) die("an unknown word after a lookup", whole);
         }
         else if(strcmp(directive, "gate") == 0)
             oracle.gate = atoi(word(&rest, whole)) != 0;
@@ -1322,6 +1366,12 @@ static void run_scenario(const char *out_path, const char *scenario_path, const 
             fputc('\n', out);
             row("file");
             file_fields(out);
+            fputc('\n', out);
+            dump(whole);
+        }
+        else if(strcmp(directive, "badge") == 0) {
+            row("badge");
+            badge_fields(out, rest ? rest : "");
             fputc('\n', out);
             dump(whole);
         }

@@ -1,0 +1,37 @@
+# A chart value's badge: the defaults (the chart's name as the label, its units, a window of one update every, one
+# point, the average), the chart asked by its name, the dimensions' four names, units and label given, multiply and
+# divide, the lookup's four answers, the options, the pairs that are not read.
+chart b.cpu b.cpu_name b.ctx fam things 1
+entries b.cpu 1 100
+lookup b.cpu 200 12.3456 0
+clock 100
+badge chart=b.cpu
+badge chart=b.cpu_name
+badge chart=b.cpu&dimensions=user
+badge chart=b.cpu&dim=user&dims=system&dimension=a|b&dimensions=c
+badge chart=b.cpu&options=percentage
+badge chart=b.cpu&label=my label&units=MiB
+badge chart=b.cpu&label=a_b&units=percentage
+badge chart=b.cpu&multiply=1024&divide=10
+badge chart=b.cpu&multiply=0&divide=0
+badge chart=b.cpu&multiply=-2&divide=abc
+badge chart=b.cpu&after=-600&before=-60&points=5&group=max&group_options=x
+badge chart=b.cpu&group=max&group=nosuch
+badge chart=b.cpu&options=abs&options=unaligned&options=display-absolute
+badge chart=b.cpu&precision=3&scale=150&label_color=blue&value_color=red>10|green&text_color_lbl=000&text_color_val=eee
+badge chart=b.cpu&fixed_width_lbl=80&fixed_width_val=120
+badge chart=b.cpu&fixed_width_lbl=80
+badge chart=b.cpu&fixed_width_lbl=0&fixed_width_val=120
+badge chart=b.cpu&=x&label=&chart==b.cpu&Chart=nosuch&tier=1&gtime=5&unknown=1&&
+badge chart=nosuch&chart=b.cpu
+lookup b.cpu 400 0 1
+badge chart=b.cpu&refresh=5
+lookup b.cpu 500 0 1
+badge chart=b.cpu
+lookup b.cpu 200 nan 1
+badge chart=b.cpu
+lookup b.cpu 200 5 1
+badge chart=b.cpu
+lookup b.cpu 200 -7.5 0
+badge chart=b.cpu&options=display-absolute&value_color=red<0|green
+badge chart=b.cpu&value_color=red<0|green

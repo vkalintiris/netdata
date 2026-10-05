@@ -36,6 +36,7 @@ struct oracle_chart {
     int lookup_code;                // rrdset2value_api_v1_with_owa(): 200, 400 or 500
     NETDATA_DOUBLE lookup_value;
     int lookup_null;
+    bool lookup_absolute;           // a 200's window was absolute: the caller's buffer, when given, may be cached
     bool freed;                     // out of the host's chart index; its alerts stay until an `unlink`
     size_t free_at_gate;            // when not 0: freed at that many more looks at the gate
     bool free_at_lookup;            // freed when its lookup is asked for

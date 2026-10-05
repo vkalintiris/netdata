@@ -1,0 +1,19 @@
+# Numbers at their edges: a negative number of points, scale and precision at the ends of an int, a refresh that
+# fills an int, texts where numbers are read.
+chart b.e b.e_name b.ctx fam things 1
+entries b.e 1 100
+lookup b.e 200 1234.5678 0
+clock 100
+badge chart=b.e&points=-1
+badge chart=b.e&points=abc&after=x&before=y
+badge chart=b.e&scale=2147483647
+badge chart=b.e&scale=-5
+badge chart=b.e&scale=99
+badge chart=b.e&precision=2147483647
+badge chart=b.e&precision=-2
+badge chart=b.e&precision=51
+badge chart=b.e&refresh=2147483647
+badge chart=b.e&refresh=-2147483647
+badge chart=b.e&after=1.9&before= 7&multiply= 3
+badge chart=b.e&fixed_width_lbl=2147483647&fixed_width_val=2147483647
+badge chart=b.e&fixed_width_lbl=-1&fixed_width_val=-1

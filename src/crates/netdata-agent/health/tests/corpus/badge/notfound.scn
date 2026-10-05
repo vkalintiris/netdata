@@ -1,0 +1,17 @@
+# No chart in the request: 400 and a text. A chart the host has not: 200 and a badge that says so, of which only
+# the scale is the request's. An obsolete chart is not found either.
+chart b.o b.o_name b.ctx fam things 1
+entries b.o 1 100
+lookup b.o 200 5 0
+clock 100
+badge 
+badge alarm=x&label=y
+badge chart=
+badge chart=nosuch
+badge chart=nosuch&scale=200&label=x&label_color=red&value_color=blue&fixed_width_lbl=50&fixed_width_val=50&refresh=5
+badge chart=nosuch&alarm=b_alert
+obsolete b.o 1
+badge chart=b.o
+badge chart=b.o_name
+obsolete b.o 0
+badge chart=b.o

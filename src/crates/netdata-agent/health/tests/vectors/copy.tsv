@@ -1179,6 +1179,10 @@
 ../../../health/health.d/zfs.conf	copy	zfs_pool_health_state_warn	0	$degraded	${degraded}	$this > 0	(${this} > 0)	\x00	\x00
 ../../../health/health.d/zfs.conf	copy	zfs_pool_health_state_crit	0	$faulted + $unavail	(${faulted} + ${unavail})	\x00	\x00	$this > 0	(${this} > 0)
 ../../../health/health.d/zfs.conf	copy	zfs_vdev_health_state	0	$degraded + $faulted	(${degraded} + ${faulted})	$this > 0	(${this} > 0)	\x00	\x00
+tests/corpus/badge/badge.conf	copy	b_alert	0	$v	${v}	$this > 50	(${this} > 50)	$this > 90	(${this} > 90)
+tests/corpus/badge/badge.conf	copy	b_plain	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/badge/badge.conf	copy	b_wait	0	\x00	\x00	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/badge/badge.conf	copy	b_name	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/delay/delays.conf	copy	delay_000	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/delay/delays.conf	copy	delay_001	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/delay/delays.conf	copy	delay_002	0	1	1	\x00	\x00	\x00	\x00
