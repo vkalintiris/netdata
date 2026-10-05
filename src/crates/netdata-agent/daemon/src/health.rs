@@ -937,6 +937,9 @@ mod tests {
         let updated = core.call("config health:alert:prototype:user_a update", Some(&payload("u.ctx", "$this > 2")));
         assert_eq!(updated.0, 202, "{updated:?}");
         assert_eq!(core.call("config health:alert:prototype:stock_b disable", None).0, 200);
+        // health tells the core the job's new status itself (C's `dyncfg_status()` in its callback)
+        let status = |name: &str| core.node(&format!("health:alert:prototype:{name}")).unwrap().current.status;
+        assert_eq!(status("stock_b"), NodeStatus::Disabled);
         let gone = core.call("config health:alert:prototype add d_gone", Some(&payload("g.ctx", "$this > 3")));
         assert_eq!(gone.0, 202, "{gone:?}");
         assert_eq!(core.call("config health:alert:prototype:d_gone remove", None).0, 200);
@@ -989,6 +992,7 @@ mod tests {
         let enabled = core.call("config health:alert:prototype:stock_b enable", None);
         assert_eq!(enabled, (202, "{\"status\":202,\"message\":\"enabled\"}".into()));
         assert!(health.prototypes().get(b"stock_b").unwrap().enabled());
+        assert_eq!(status("stock_b"), NodeStatus::Accepted);
     }
 
     /// With health off the start loads and registers nothing, and a reload does it all, because C's reload has no
