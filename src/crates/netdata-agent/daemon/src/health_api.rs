@@ -1,21 +1,30 @@
 //! The web API's alert endpoints (`src/web/api/v1/api_v1_alarms.c`, `src/web/api/v2/api_v2_alert_config.c`): the
 //! host's alarms, their values and their count, its alert log, a rule's configuration, what an alert on a chart
-//! could name, and the trace of one name's lookup. None looks at whether health is on: a host without alerts
-//! answers too.
+//! could name, and the trace of one name's lookup; and the badge (`src/web/api/v1/api_v1_badge/web_buffer_svg.c`).
+//! None looks at whether health is on: a host without alerts answers too.
+
+use std::sync::Arc;
+use std::time::Instant;
 
 use netdata_agent_health::api::{
     alarm_count as count_alarms, alarm_count_request, alarm_variables_json, alarms_json, alarms_select,
     alarms_values_json,
 };
+use netdata_agent_health::badge::{Source, api_v1_badge};
 use netdata_agent_health::sql::{ConfigAnswer, LogView, alarm_log_json, alert_config_json};
 use netdata_agent_health::variable::trace_json;
 use netdata_agent_log::netdata_log_error;
+use netdata_agent_query::execute::Control;
+use netdata_agent_query::value::{ValueRequest, ValueResult, chart_value};
+use netdata_agent_rrd::chart::Chart;
 use netdata_agent_rrd::clock::now_realtime_s;
+use netdata_agent_rrd::pulse::QuerySource;
+use netdata_agent_web::content_type::ContentType;
 use netdata_agent_text::parse::strtoul0;
 use netdata_agent_web::status;
 
 use crate::router::{Host, Route};
-use crate::server::Reply;
+use crate::server::{Reply, Shared};
 use crate::v1_charts::{json_reply, named_chart, parameters, single_chart};
 
 /// `api_v1_alarms()`: the host's alarms, all of them or the raised ones.
@@ -119,5 +128,46 @@ pub fn variable(route: &Route<'_>, host: &Host, query: &[u8]) -> Reply {
             json_reply(trace_json(host, alerts.as_deref(), &chart, variable, &now_realtime_s))
         }
         Err(not_found) => not_found,
+    }
+}
+
+/// What a badge asks of the running agent for a chart value: the chart's last entry, and one query that counts as
+/// a badge's (`QUERY_SOURCE_API_BADGE`), which C does not let the web client interrupt.
+struct BadgeSource<'a>(&'a Shared);
+
+impl Source for BadgeSource<'_> {
+    fn last_entry_s(&self, chart: &Chart) -> i64 {
+        chart.retention().1
+    }
+
+    fn value(&self, host: &Host, chart: &Arc<Chart>, request: &ValueRequest) -> ValueResult {
+        let storage = self.0.hosts.storage();
+        let control = Control {
+            received: Instant::now(),
+            interrupted: &|_| false,
+            windows: self.0.grouping_windows,
+            pulse: Some((&storage.pulse().queries, QuerySource::ApiBadge)),
+            progress: None,
+        };
+        chart_value(host, chart, request, &crate::data::profile_of(storage), &control, now_realtime_s())
+    }
+}
+
+/// `api_v1_badge()`, for `/api/v1/badge.svg` and `/api/v3/badge.svg`: the badge of an alert or of a chart's value,
+/// as [`api_v1_badge`] leaves it: the SVG (or the text of a request without a chart), whether it may be cached, its
+/// date and expiry, and the `Refresh` header a request asked for.
+pub fn badge(route: &Route<'_>, host: &Host, query: &[u8]) -> Reply {
+    let shared = route.shared;
+    let alerts = shared.health.host(host);
+    let gap = shared.gap_when_lost_iterations_above;
+    let badge = api_v1_badge(host, alerts.as_deref(), query, gap, &BadgeSource(shared), &now_realtime_s);
+    Reply {
+        code: badge.code,
+        content_type: if badge.svg { ContentType::ImageSvgXml } else { ContentType::TextPlain },
+        body: badge.body,
+        no_cacheable: badge.no_cacheable,
+        date: badge.date,
+        expires: badge.expires,
+        headers: badge.refresh.map_or_else(Vec::new, |seconds| format!("Refresh: {seconds}\r\n").into_bytes()),
     }
 }

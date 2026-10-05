@@ -4,7 +4,7 @@
 //!
 //! Not ported yet: `/mcp` and `/sse`, and the API commands other than `info`, `chart`, `charts`, `context`,
 //! `contexts`, `data`, `dbengine_stats`, `function`, `functions`, `manage`, `me`, `progress`, `stream_info`,
-//! `stream_path` and health's (`alarms`, `alarm_log` and the others of its block of the table).
+//! `stream_path` and health's (`alarms`, `alarm_log` and the others of its block of the table, and `badge.svg`).
 //! `/netdata.conf` shows only the keys of the subsystems ported so far.
 
 use std::sync::Arc;
@@ -187,6 +187,13 @@ const API_V1: &[Command] = &[
         allow_subpaths: false,
         callback: health_api::variable,
     },
+    Command {
+        name: "badge.svg",
+        acl: acl::bits::BADGES,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: health_api::badge,
+    },
     // dyncfg APIs
     Command {
         name: "config",
@@ -282,6 +289,13 @@ const API_V3: &[Command] = &[
         access: access::ANONYMOUS_DATA,
         allow_subpaths: false,
         callback: health_api::variable,
+    },
+    Command {
+        name: "badge.svg",
+        acl: acl::bits::BADGES,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: health_api::badge,
     },
     Command {
         name: "data",
@@ -605,6 +619,7 @@ mod tests {
             meta: None,
             user_config_dir: "/etc/netdata".into(),
             grouping_windows: Default::default(),
+            gap_when_lost_iterations_above: 3,
             release_channel: "nightly",
             netdata_conf: Default::default(),
             custom_dashboard_info: Default::default(),
@@ -739,6 +754,55 @@ mod tests {
         for path in [&b"/api/v2/progress"[..], b"/api/v3/progress"] {
             assert_eq!(route(&s, path).code, status::NOT_FOUND);
         }
+    }
+
+    /// A request as a client with the given features sends it, with its query.
+    fn asked(shared: &Shared, path: &[u8], query: &[u8], features: u32) -> Reply {
+        let mut req = Request::default();
+        req.path = path.to_vec();
+        req.query = query.to_vec();
+        req.url_as_received = [path, b"?", query].concat();
+        process_request(
+            &req,
+            path,
+            acl::bits::TRANSPORTS | features,
+            shared,
+            Instant::now(),
+            &crate::access_log::RequestContext::default(),
+            &|_| false,
+        )
+    }
+
+    /// `badge.svg` is a command of v1 and v3 (C's two tables hold the same row), not of v2, and takes no subpath.
+    /// A client needs the `badges` feature for it, and that feature alone is enough. A chart the host has not is
+    /// C's 200 with a badge that says so; no chart at all is the 400 with its text.
+    #[test]
+    fn badges_are_routed_in_v1_and_v3() {
+        let s = shared();
+        for path in [&b"/api/v1/badge.svg"[..], b"/api/v3/badge.svg", b"/host/box/api/v1/badge.svg"] {
+            let r = asked(&s, path, b"chart=no.such", acl::bits::ALL_LISTENER_FEATURES);
+            let shown = String::from_utf8_lossy(path).into_owned();
+            assert_eq!((r.code, r.content_type), (status::OK, ContentType::ImageSvgXml), "{shown}");
+            assert!(r.body.starts_with(b"<svg ") && r.body.ends_with(b"</svg>"), "{shown}");
+            let needle = b">chart not found</text>";
+            assert!(r.body.windows(needle.len()).any(|w| w == needle), "{shown}");
+            assert!(r.no_cacheable && r.headers.is_empty() && (r.date, r.expires) == (0, 0), "{shown}");
+
+            let r = asked(&s, path, b"", acl::bits::ALL_LISTENER_FEATURES);
+            let want = (status::BAD_REQUEST, ContentType::TextPlain, &b"No chart id is given at the request."[..]);
+            assert_eq!((r.code, r.content_type, r.body.as_slice()), want, "{shown}");
+        }
+        assert_eq!(asked(&s, b"/api/v2/badge.svg", b"chart=x", acl::bits::ALL_LISTENER_FEATURES).code, status::NOT_FOUND);
+        let subpath = asked(&s, b"/api/v1/badge.svg/x", b"chart=x", acl::bits::ALL_LISTENER_FEATURES);
+        assert_eq!(subpath.code, status::BAD_REQUEST);
+        assert_eq!(subpath.body, b"API command 'badge.svg' does not support subpaths.");
+
+        // the `badges` feature alone reaches the badge, and nothing but it does
+        assert_eq!(asked(&s, b"/api/v1/badge.svg", b"chart=no.such", acl::bits::BADGES).code, status::OK);
+        let others = acl::bits::ALL_LISTENER_FEATURES & !acl::bits::BADGES;
+        let refused = asked(&s, b"/api/v1/badge.svg", b"chart=no.such", others);
+        assert_eq!(refused.code, 451);
+        assert_eq!(asked(&s, b"/api/v1/charts", b"", acl::bits::BADGES).code, 451);
     }
 
     /// Once the exit started every request answers C's 503, static files and the netdata.conf page included.

@@ -950,6 +950,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         meta: meta.as_ref().map(Arc::downgrade),
         user_config_dir: conf.dirs.user_config.clone(),
         grouping_windows,
+        gap_when_lost_iterations_above: db.gap_when_lost_iterations_above,
         release_channel,
         // Every startup read is done: from here on netdata.conf is read and dumped under its lock.
         netdata_conf: std::sync::Mutex::new(std::mem::take(&mut conf.netdata)),
