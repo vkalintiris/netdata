@@ -1,0 +1,11 @@
+# The registration of a start: the template, then every name of the store in the store's order with its status, its
+# first rule's source and its commands, and the answer to the first echo of each.
+rules tests/corpus/dyncfg/base.conf
+chart loop.d1 loop.d1_name loop.dyncfg - things 1
+chart loop.o1 loop.o1_name loop.other - things 1
+var loop.d1 v 70
+var loop.o1 v 70
+register
+clock 0
+pass 0
+unregister

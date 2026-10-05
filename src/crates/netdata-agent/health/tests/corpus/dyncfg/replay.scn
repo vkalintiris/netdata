@@ -1,0 +1,25 @@
+# Saved jobs at the registration of a start: a new name, one over a file alert of its name, one with no enabled
+# rule, one the parser refuses, one the parser refuses over a file alert (the file's job then gets the update the
+# core sends it), and two nodes the user disabled. Nothing is pushed to the Cloud while registering.
+cloud-has 0
+rules tests/corpus/dyncfg/base.conf
+chart loop.d1 loop.d1_name loop.dyncfg - things 1
+chart loop.o1 loop.o1_name loop.other - things 1
+var loop.d1 v 70
+var loop.o1 v 70
+dyncfg-saved d_saved @tests/corpus/dyncfg/one.json
+dyncfg-saved d_chain @tests/corpus/dyncfg/one-b.json
+dyncfg-saved d_soff @tests/corpus/dyncfg/off.json
+dyncfg-saved d_refused @tests/corpus/dyncfg/bad.json
+dyncfg-saved d_tpl @tests/corpus/dyncfg/bad.json
+dyncfg-saved d_gone @tests/corpus/dyncfg/two.json
+dyncfg-user-disabled health:alert:prototype:d_alarm
+dyncfg-user-disabled health:alert:prototype:d_gone
+register
+clock 0
+pass 0
+clock 1
+pass 1
+dyncfg health:alert:prototype:d_gone enable -
+clock 2
+pass 2

@@ -9,6 +9,8 @@
 //!   ([`api`]);
 //! - the evaluation loop: a host's pass ([`pass`], `health_event_loop.c`) with the database lookup ([`lookup`]),
 //!   the alert log in memory ([`entry`], `health_log.c`) and its records in the health log.
+//! - DynCfg's health nodes ([`dyncfg`], `health_dyncfg.c`): an alert's payload, the template and the jobs, and
+//!   what a change does to the hosts' alerts.
 //!
 //! The pass reaches the daemon through [`pass::Env`]: the chart index, the database lookup, the alert log's tables,
 //! the metadata thread's queue and the spawn of a notification's command ([`notify`], `health_notifications.c`).
@@ -23,6 +25,7 @@ pub mod alert;
 pub mod alerts;
 pub mod api;
 pub mod config;
+pub mod dyncfg;
 pub mod entry;
 pub mod expr;
 pub mod hash;
@@ -47,8 +50,10 @@ pub mod tables;
 pub mod variable;
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard};
 
+use netdata_agent_dyncfg::model::SourceType;
 use netdata_agent_inicfg::paths::recursive_config_double_dir_load;
 use netdata_agent_log::netdata_log_error_errno;
 
@@ -87,6 +92,9 @@ pub struct Health {
     executing: Mutex<VecDeque<Executing>>,
     /// `silencers`: which alerts are disabled or silenced, for every host.
     silencers: Silencers,
+    /// `health_globals.prototypes.registering`: on while the rules are registered with DynCfg at a start or a
+    /// reload, when a DynCfg rule that comes back is not pushed to the Cloud.
+    registering: AtomicBool,
 }
 
 impl Health {
@@ -94,7 +102,15 @@ impl Health {
     pub fn init(config: HealthConfig, store: StoreSink) -> Arc<Health> {
         let prototypes = RwLock::new(Prototypes::default());
         let silencers = Silencers::new(config.silencers_filename.clone());
-        Arc::new(Health { config, prototypes, store, hosts: Mutex::default(), executing: Mutex::default(), silencers })
+        Arc::new(Health {
+            config,
+            prototypes,
+            store,
+            hosts: Mutex::default(),
+            executing: Mutex::default(),
+            silencers,
+            registering: AtomicBool::new(false),
+        })
     }
 
     pub fn config(&self) -> &HealthConfig {
@@ -149,21 +165,36 @@ impl Health {
         self.prototypes.write().unwrap_or_else(|poisoned| poisoned.into_inner()).flush();
     }
 
-    /// `health_reload_prototypes()`: the store emptied, then every `*.conf` file of the user tree read, and every
-    /// stock file no user file shadows. C removes the prototypes' DynCfg nodes before and registers them after;
-    /// those come with DynCfg's health nodes.
-    pub fn reload_prototypes(&self, dirs: &ConfigDirs) {
+    /// `health_reload_prototypes()`: the rules' DynCfg nodes removed, the store emptied, every `*.conf` file of the
+    /// user tree read, and every stock file no user file shadows; then the template and the rules' jobs registered,
+    /// which brings the saved DynCfg jobs back. `ctx` is `None` where no DynCfg is (a test of the reader).
+    pub fn reload_prototypes(&self, dirs: &ConfigDirs, ctx: Option<&dyncfg::Ctx<'_>>) {
+        if let Some(ctx) = ctx {
+            self.dyncfg_unregister_all(ctx);
+        }
         self.flush();
         recursive_config_double_dir_load(&dirs.user, dirs.stock.as_deref(), b"", &mut |filename, stock| {
             readfile::health_readfile(self, filename, stock);
         });
+        if let Some(ctx) = ctx {
+            self.dyncfg_register_all(ctx);
+        }
     }
 
     /// `health_prototype_add()`: the rules of one name, as one file entity or one DynCfg payload gives them. Every
     /// rule is validated first; the error is C's reason for the first one that cannot stand, and nothing is added.
     /// Each rule is then hashed and stored alone; its label texts are compiled; and only afterwards it takes the
     /// default exec and recipient.
-    pub fn add(&self, mut rules: Vec<Rule>) -> Result<(), &'static str> {
+    pub fn add(&self, rules: Vec<Rule>) -> Result<(), &'static str> {
+        self.add_rules(rules, None)
+    }
+
+    /// [`Health::add`] of a DynCfg payload's rules: one whose hash the Cloud has no copy of is sent to it.
+    pub(crate) fn add_from_dyncfg(&self, rules: Vec<Rule>, cloud: &dyn dyncfg::Cloud) -> Result<(), &'static str> {
+        self.add_rules(rules, Some(cloud))
+    }
+
+    fn add_rules(&self, mut rules: Vec<Rule>, cloud: Option<&dyn dyncfg::Cloud>) -> Result<(), &'static str> {
         let name = rules.first().and_then(|rule| rule.config.name.clone());
         for (index, rule) in rules.iter().enumerate() {
             if let Some(reason) = rule.validate() {
@@ -186,6 +217,14 @@ impl Health {
             let json = json::prototype_to_json(rule.config.name.as_deref().unwrap_or(b""), &[rule], true);
             rule.config.hash_id = hash::hash_id(&json);
             (self.store)(rule);
+            // health_prototype_hash_id()'s end: the Cloud is asked only for a DynCfg rule outside a registration
+            if rule.config.source_type == SourceType::Dyncfg
+                && !self.registering.load(Ordering::Relaxed)
+                && let Some(cloud) = cloud
+                && !cloud.has(&rule.config.hash_id)
+            {
+                cloud.send_configuration(&rule.config.hash_id);
+            }
 
             // health_prototype_activate_match_patterns()
             rule.r#match.host_labels_pattern = rule.r#match.host_labels.as_deref().and_then(matching::label_patterns);

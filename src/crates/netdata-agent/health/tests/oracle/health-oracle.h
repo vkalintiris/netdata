@@ -22,4 +22,7 @@ extern size_t oracle_link_count;
 void oracle_esc(FILE *f, const char *s);
 void oracle_esc_bytes(FILE *f, const void *data, size_t len);
 
+// a rule's fields as a `rule` row of rules.tsv has them after its kind, up to the hash: each led by its tab
+void oracle_rule_fields(FILE *f, RRD_ALERT_PROTOTYPE *ap);
+
 #endif

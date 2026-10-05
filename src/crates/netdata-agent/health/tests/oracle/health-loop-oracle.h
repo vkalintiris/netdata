@@ -45,6 +45,7 @@ struct oracle_chart {
 #define ORACLE_QUEUE_MAX 256
 #define ORACLE_SQL_ALARMS_MAX 8
 #define ORACLE_EXEC_RULES_MAX 16
+#define ORACLE_DYNCFG_MAX 16
 
 // what a notification's command does once it is spawned
 enum oracle_exec_kind {
@@ -78,6 +79,14 @@ struct oracle_sql_alarm {
     uint32_t next_event_id;
 };
 
+// what a file of the configuration core's (`<varlib>/config/<id>.dyncfg`) holds of one job of health's template: a
+// scenario's `dyncfg-saved`
+struct oracle_dyncfg_saved {
+    char name[128];
+    char *payload;
+    size_t len;
+};
+
 struct oracle_script {
     time_t clock_s;                 // the wall clock every reader of CLOCK_REALTIME in the process gets
     usec_t clock_usec;              // the microseconds inside that second
@@ -106,6 +115,12 @@ struct oracle_script {
     size_t commands_running;        // spawned and neither exited nor killed yet
     size_t asked, spawned, saved;   // how often the table was asked for the last executed event, a command was
                                     // spawned (or failed to), an entry was saved: the decision table reads them
+    bool hash_not_sent;             // alert_hash_has_transitioned(): the Cloud was not sent this rule yet (default: it
+                                    // was, so health pushes nothing)
+    struct oracle_dyncfg_saved dyncfg_saved[ORACLE_DYNCFG_MAX];     // the saved jobs, in the core's node order
+    size_t dyncfg_saved_used;
+    char dyncfg_user_disabled[ORACLE_DYNCFG_MAX][160];              // the ids a saved file says the user disabled
+    size_t dyncfg_user_disabled_used;
     struct oracle_chart charts[ORACLE_CHARTS_MAX];
     size_t charts_used;
 };

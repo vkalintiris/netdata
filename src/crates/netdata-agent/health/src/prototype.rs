@@ -211,6 +211,17 @@ impl Prototypes {
         self.by_name.clear();
     }
 
+    /// The name's enabled flag, as a job's `enable` and `disable` write it (`_internal.enabled`; C writes it with
+    /// no lock held). Whether the name is there.
+    pub(crate) fn set_enabled(&mut self, name: &[u8], enabled: bool) -> bool {
+        self.by_name.get_mut(name).map(|prototype| prototype.enabled = enabled).is_some()
+    }
+
+    /// `dictionary_del()`: the name and its chain go; the other names keep their order.
+    pub(crate) fn remove(&mut self, name: &[u8]) -> bool {
+        self.by_name.shift_remove(name).is_some()
+    }
+
     /// `dictionary_set_advanced()` with the store's insert and conflict callbacks: a new name is inserted; rules
     /// of a known name are appended to its chain, unless that chain came from DynCfg (they are dropped) or they
     /// come from DynCfg themselves (they replace it). The dictionary takes no empty name. (C also marks the name as
@@ -299,6 +310,24 @@ mod tests {
         store.set(b"a", vec![rule(SourceType::User, b"file")], true);
         // dropped, and its enabled flag is not taken
         assert_eq!(chain(&store, b"a"), (vec!["d".to_owned()], false));
+    }
+
+    #[test]
+    fn a_name_is_disabled_enabled_and_removed_in_place() {
+        let mut store = Prototypes::default();
+        for name in [b"a", b"b", b"c"] {
+            store.set(name, vec![rule(SourceType::User, name)], true);
+        }
+        assert!(store.set_enabled(b"b", false));
+        assert!(!chain(&store, b"b").1 && chain(&store, b"a").1);
+        assert!(store.set_enabled(b"b", true));
+        assert!(chain(&store, b"b").1);
+        assert!(!store.set_enabled(b"none", false));
+
+        assert!(store.remove(b"a"));
+        assert!(!store.remove(b"a"));
+        let names: Vec<&[u8]> = store.iter().map(|(name, _)| name).collect();
+        assert_eq!(names, [b"b", b"c"]);
     }
 
     #[test]

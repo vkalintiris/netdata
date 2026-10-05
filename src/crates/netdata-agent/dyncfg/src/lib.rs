@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 pub mod files;
+pub mod inline;
 pub mod model;
 pub mod nodes;
 
@@ -26,6 +27,7 @@ use netdata_agent_rrd::host::{Host, Hosts};
 use netdata_agent_text::parse::uuid_parse_flexi;
 use netdata_agent_text::print::print_uuid_lower;
 
+use crate::inline::Inline;
 use crate::intercept::Intercept;
 use crate::model::{Cmds, SourceType, Status, Type, is_valid_id};
 use crate::nodes::{Current, Node, Nodes};
@@ -77,6 +79,8 @@ pub struct Dyncfg {
     /// The handler of every `config <id>` method: one, so a re-registration stays the same handler (C's function
     /// pointer).
     intercept: Arc<Intercept>,
+    /// The agent's own nodes: their callbacks and the one handler of them all.
+    inline: Inline,
 }
 
 static PROCESS: OnceLock<Arc<Dyncfg>> = OnceLock::new();
@@ -92,6 +96,7 @@ impl Dyncfg {
             user_config_dir: init.user_config_dir.to_path_buf(),
             stock_config_dir: init.stock_config_dir.to_path_buf(),
             intercept: Arc::new(Intercept(me.clone())),
+            inline: Inline::new(),
         })
     }
 

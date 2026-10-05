@@ -259,6 +259,11 @@ fn names_to_json_array(w: &mut JsonWriter, key: &[u8], names: impl Iterator<Item
     w.array_close();
 }
 
+/// `rrdr_options_parse_one()`: the bit of one name, 0 for a text that is none.
+pub fn options_parse_one(o: &[u8]) -> u64 {
+    OPTIONS.iter().find(|(name, _)| name.as_bytes() == o).map_or(0, |&(_, bit)| bit)
+}
+
 /// `rrdr_options_parse()`.
 pub fn parse_options(o: &[u8]) -> u64 {
     parse_names(&OPTIONS, o)

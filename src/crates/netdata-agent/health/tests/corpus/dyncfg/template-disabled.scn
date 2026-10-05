@@ -1,0 +1,12 @@
+# The user disabled the template: the core answers every job's registration with a disable, and nothing is linked.
+dyncfg-user-disabled health:alert:prototype
+rules tests/corpus/dyncfg/base.conf
+chart loop.d1 loop.d1_name loop.dyncfg - things 1
+var loop.d1 v 70
+dyncfg-saved d_saved @tests/corpus/dyncfg/one.json
+register
+clock 0
+pass 0
+dyncfg health:alert:prototype add d_new @tests/corpus/dyncfg/one.json
+clock 1
+pass 1

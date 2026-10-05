@@ -1,0 +1,15 @@
+# The Cloud's copy of a rule: a user's add whose hash the Cloud does not have is pushed, for the first rule of the
+# payload only; an update too; with the hash there, nothing; and never while registering.
+database real
+rules tests/corpus/dyncfg/base.conf
+chart loop.d1 loop.d1_name loop.dyncfg - things 1
+cloud-has 0
+register
+dyncfg health:alert:prototype add d_two @tests/corpus/dyncfg/two.json
+dyncfg health:alert:prototype:d_tpl update - @tests/corpus/dyncfg/one-b.json
+dyncfg health:alert:prototype add d_off @tests/corpus/dyncfg/off.json
+dyncfg health:alert:prototype add d_invalid @tests/corpus/dyncfg/invalid.json
+cloud-has 1
+dyncfg health:alert:prototype add d_one @tests/corpus/dyncfg/one.json
+dyncfg health:alert:prototype:d_two update - @tests/corpus/dyncfg/three.json
+configs

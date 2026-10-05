@@ -1,0 +1,29 @@
+# A job disabled and enabled: each answer, the status the core is told, the entries of the alerts that go and come;
+# twice each ("already"); a name with no enabled rule cannot be enabled.
+rules tests/corpus/dyncfg/base.conf
+chart loop.d1 loop.d1_name loop.dyncfg - things 1
+chart loop.o1 loop.o1_name loop.other - things 1
+var loop.d1 v 70
+var loop.o1 v 70
+register
+clock 0
+pass 0
+clock 1
+dyncfg health:alert:prototype:d_chain disable -
+dyncfg health:alert:prototype:d_chain disable -
+clock 2
+pass 2
+clock 3
+dyncfg health:alert:prototype:d_chain enable -
+dyncfg health:alert:prototype:d_chain enable -
+clock 4
+pass 4
+dyncfg health:alert:prototype add d_off @tests/corpus/dyncfg/off.json
+dyncfg health:alert:prototype:d_off enable -
+dyncfg health:alert:prototype:d_off disable -
+dyncfg health:alert:prototype:d_alarm disable -
+clock 5
+pass 5
+dyncfg health:alert:prototype:d_alarm enable -
+clock 6
+pass 6

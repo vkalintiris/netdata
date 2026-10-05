@@ -1,0 +1,13 @@
+# A host whose health did not run yet: an add, an update and a disable link and unlink nothing; its first pass
+# links what the store then holds.
+rules tests/corpus/dyncfg/base.conf
+chart loop.d1 loop.d1_name loop.dyncfg - things 1
+var loop.d1 v 70
+register
+dyncfg health:alert:prototype add d_new @tests/corpus/dyncfg/one.json
+dyncfg health:alert:prototype:d_tpl update - @tests/corpus/dyncfg/one-b.json
+dyncfg health:alert:prototype:d_chain disable -
+clock 0
+pass 0
+clock 1
+pass 1

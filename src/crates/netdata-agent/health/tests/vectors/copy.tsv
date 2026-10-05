@@ -1251,6 +1251,10 @@ tests/corpus/delay/delays.conf	copy	delay_068	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/delay/delays.conf	copy	delay_069	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/delay/delays.conf	copy	delay_twice_max_kept	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/delay/delays.conf	copy	delay_twice_multiplier	0	1	1	\x00	\x00	\x00	\x00
+tests/corpus/dyncfg/base.conf	copy	d_tpl	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/dyncfg/base.conf	copy	d_alarm	0	$v	${v}	\x00	\x00	$this > 80	(${this} > 80)
+tests/corpus/dyncfg/base.conf	copy	d_chain	0	$v	${v}	$this > 10	(${this} > 10)	\x00	\x00
+tests/corpus/dyncfg/base.conf	copy	d_chain	1	$v * 2	(${v} * 2)	$this > 20	(${this} > 20)	\x00	\x00
 tests/corpus/expr/bad-good.conf	copy	bad_then_good	0	1	1	$this > 1	(${this} > 1)	\x00	\x00
 tests/corpus/expr/bad-good.conf	copy	good_then_bad	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/expr/bad-good.conf	copy	bad_calc_good_warn	0	\x00	\x00	$this > 1	(${this} > 1)	\x00	\x00

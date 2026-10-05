@@ -54,7 +54,7 @@ pub fn plugin_init(conf: &mut Conf, config: HealthConfig, database: bool, queue:
     let health = Health::init(config, store);
     if health.config().enabled {
         let dirs = conf.health_config_dirs(health.config().stock_enabled);
-        health.reload_prototypes(&dirs);
+        health.reload_prototypes(&dirs, None);
         // with health off the silencers' file is not read: the state stays empty until a request changes it
         health.silencers().init();
     }

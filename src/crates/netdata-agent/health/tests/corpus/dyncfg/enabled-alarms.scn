@@ -1,0 +1,12 @@
+# A name `[health] enabled alarms` excludes: the add is accepted and the job registered, and nothing is linked.
+enabled-alarms !d_new *
+rules tests/corpus/dyncfg/base.conf
+chart loop.d1 loop.d1_name loop.dyncfg - things 1
+var loop.d1 v 70
+register
+clock 0
+pass 0
+dyncfg health:alert:prototype add d_new @tests/corpus/dyncfg/one.json
+dyncfg health:alert:prototype add d_other @tests/corpus/dyncfg/one.json
+clock 1
+pass 1

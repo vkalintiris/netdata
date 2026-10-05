@@ -38,9 +38,27 @@
 //                            <what health_silencers_update_disabled_silenced() returns> <run flags after> <the
 //                            records' messages>
 //
+//   gen-loop-vectors dyncfg <directory> <a file for the records>
+//       C's own health_dyncfg.c over the case lists of tests/corpus/dyncfg/ (a case is a line that is no comment,
+//       counted from 0; an empty line is the empty payload). Every case runs in a child process: `<n>`, then
+//       `signal <n>`, is a case that killed C.
+//       payload.tsv     payloads.txt through health_prototype_payload_parse() with the name `p_name`, in both
+//                       modes: <n> <required|optional> parse <rules, 0 when it is refused> <the error text> <the
+//                       chain's JSON as it is hashed, `-` when refused> <the records' messages>, then per rule
+//                       <n> <mode> rule <its place> and the rule's fields as rules.tsv has them, up to the hash
+//       userconfig.tsv  userconfig.txt through dyncfg_health_cb(): <n> <template|job: the node asked> <localhost's
+//                       default command is set 0|1> <the answer: code, content type, cache, expiry, body, as an
+//                       `answer` row has them> <the records' messages>. The job is `d_tpl` of base.conf, the name
+//                       given to the template `u_name`
+//       actions.tsv     actions.txt through dyncfg_health_cb(), each on the same store (base.conf, then the jobs
+//                       `d_dyn` of one.json and `d_off` of off.json added) with a host whose health never ran:
+//                       <n> <the answer> <the records' messages> <the calls, as `call` rows have them, joined by
+//                       ` | `> <the store after it: name:enabled:rules per name>
+//
 //   gen-loop-vectors scenario <loop.tsv to append to> <scenario file> <a file for the records>
 //       One process per scenario. Rows are <scenario> <step> <kind> ..., a step being one `pass`, `unlink`,
-//       `apply`, `store`, `restart`, `cleanup`, `alarm-log`, `configs`, `wait`, `load` or `manage` directive:
+//       `apply`, `store`, `restart`, `cleanup`, `alarm-log`, `configs`, `wait`, `load`, `manage`, `dyncfg`,
+//       `register` or `unregister` directive:
 //         do         the directive
 //         next_run   after a pass: the pass's next_run
 //         host       pending flags (i = initialization, r = label recheck), health_transitions,
@@ -73,6 +91,13 @@
 //         list       a `load` step: the silencers' state as health_silencers2json() prints it
 //         reply      a `manage` step: the reply's code, whether its content type is JSON, its body
 //         file       a `manage` step: whether the silencers' file is there, and its bytes
+//         answer     a `dyncfg` step: what C's dyncfg_health_cb() answered: the code, the content type, whether the
+//                    body may be cached (c), may not (n) or neither was said (-), the expiry as seconds after the
+//                    clock (`-`: none), the body
+//         stored     a `dyncfg` or `register` step: how many names the rules' store holds, and the names in the
+//                    store's order, separated by spaces (`-` for none)
+//         store      then per name that is new or differs from its last row: the name, whether it is enabled, how
+//                    many rules its chain has, and the chain as health_prototype_to_json() prints it for a GET
 // The silencers' file is a path beside the records; every row names it `{file}`.
 //
 // A scenario file holds a directive per line (`#` starts a comment). Seconds are offsets from T0 = 2000000000.
@@ -141,13 +166,27 @@
 //   load                               health_silencers_init(): the file's read at health's start
 //   manage <ok|bad|-> [query]          a request to /api/v1/manage/health with the management key, another text
 //                                      or no token: web_client_api_request_v1_mgmt_health() over the decoded query
+//   dyncfg <id> <action> <name|-> <payload|->     C's dyncfg_health_cb(), as the configuration core calls it for a
+//                                      user's request; the payload is the rest of the line, `@<path>` for a
+//                                      file's bytes, or `=<id>` for what a GET of that node answers. It runs off
+//                                      the HEALTH thread, as in the daemon; the hosts' index (the one host) is made
+//                                      at a scenario's first such step
+//   register                           health_dyncfg_register_all_prototypes() as health_reload_prototypes() calls
+//                                      it, `registering` on: the calls to the core and what the model of the core
+//                                      in health-loop-stubs.c sends back; off the HEALTH thread
+//   unregister                         health_dyncfg_unregister_all_prototypes()
+//   dyncfg-saved <name> <payload>      a file of the core's holds this job of health's template, with this payload
+//                                      (as for `dyncfg`): the model replays it at the template's registration
+//   dyncfg-user-disabled <id>          a file of the core's says the user disabled this node
+//   cloud-has <0|1>                    whether alert_hash_cloud has a rule's hash (default 1: nothing is pushed)
+//   enabled-alarms <pattern>           `[health] enabled alarms` (default `*`)
 //   pending host-init|host-recheck|chart-init <chart>|chart-recheck <chart>
 //   clock <second> [microseconds]
 //   pass <now> [hibernate]             one call of the pass
 //   unlink <chart>                     rrdcalc_unlink_and_delete_all_rrdset_alerts()
 //   apply                              health_apply_prototypes_to_host()
-// `unlink`, `apply`, `store`, `restart`, `cleanup`, `alarm-log`, `configs`, `wait`, `load` and `manage` are steps
-// too.
+// `unlink`, `apply`, `store`, `restart`, `cleanup`, `alarm-log`, `configs`, `wait`, `load`, `manage`, `dyncfg`,
+// `register` and `unregister` are steps too.
 //
 // Field encoding: see health-oracle.h. A double is `nan` or its bits in hex.
 
@@ -748,6 +787,144 @@ static void manage_fields(FILE *f, const char *token, const char *query) {
     freez(url);
 }
 
+// ------------------------------------------------------------------------------------------------
+// DynCfg: C's own health_dyncfg.c
+
+// The hosts' index, holding the one host. A scenario's first DynCfg step makes it, so that every other scenario
+// runs without one, as it always did.
+static void host_index(void) {
+    if(rrdhost_root_index)
+        return;
+    rrdhost_root_index = dictionary_create_advanced(
+        DICT_OPTION_VALUE_LINK_DONT_CLONE | DICT_OPTION_DONT_OVERWRITE_VALUE, NULL, 0);
+    dictionary_set(rrdhost_root_index, host.machine_guid, &host, sizeof(RRDHOST));
+}
+
+// a payload: `-` (or nothing) is none, `@<path>` a file's bytes, `=<id>` a GET's answer, anything else the text
+// itself
+static BUFFER *payload_of(const char *text) {
+    if(!text || strcmp(text, "-") == 0)
+        return NULL;
+    BUFFER *wb = buffer_create(0, NULL);
+    if(*text == '=') {
+        usec_t stop_monotonic_ut = 0;
+        bool cancelled = false;
+        if(dyncfg_health_cb("oracle", text + 1, DYNCFG_CMD_GET, NULL, NULL, &stop_monotonic_ut, &cancelled, wb,
+                            HTTP_ACCESS_ALL, "oracle", NULL) != 200)
+            die("no GET of", text + 1);
+        return wb;
+    }
+    if(*text != '@') {
+        buffer_strcat(wb, text);
+        return wb;
+    }
+    FILE *from = fopen(text + 1, "r");
+    if(!from) die("cannot read the payload", text + 1);
+    char chunk[65536];
+    size_t got;
+    while((got = fread(chunk, 1, sizeof(chunk), from)) > 0)
+        buffer_memcat(wb, chunk, got);
+    fclose(from);
+    return wb;
+}
+
+// `none` is the command no word names
+static bool action_of(const char *word, DYNCFG_CMDS *cmd) {
+    *cmd = dyncfg_cmds2id(word);
+    return *cmd != DYNCFG_CMD_NONE || strcmp(word, "none") == 0;
+}
+
+// One call of C's callback, off the HEALTH thread: the code, the content type, whether the body may be cached (c),
+// may not (n) or neither was said (-), the expiry as seconds after the clock (`-`: none), the body.
+static void dyncfg_fields(FILE *f, const char *id, DYNCFG_CMDS cmd, const char *name, BUFFER *payload) {
+    BUFFER *result = buffer_create(0, NULL);
+    usec_t stop_monotonic_ut = 0;
+    bool cancelled = false;
+    bool health_thread = is_health_thread;
+    is_health_thread = false;
+    int code = dyncfg_health_cb("oracle", id, cmd, name, payload, &stop_monotonic_ut, &cancelled, result,
+                                HTTP_ACCESS_ALL, "oracle", NULL);
+    is_health_thread = health_thread;
+    fprintf(f, "\t%d", code);
+    field(f, content_type_id2string(result->content_type));
+    fprintf(f, "\t%s\t", (result->options & WB_CONTENT_CACHEABLE) ? "c"
+                         : (result->options & WB_CONTENT_NO_CACHEABLE) ? "n" : "-");
+    if(result->expires)
+        fprintf(f, "%ld", (long)(result->expires - oracle.clock_s));
+    else
+        fputc('-', f);
+    fputc('\t', f);
+    oracle_esc_bytes(f, buffer_tostring(result), buffer_strlen(result));
+    buffer_free(result);
+}
+
+// the last `store` row written of each name: a name gets a row again only when it changed
+static struct store_row {
+    char *name;
+    char *text;
+} *store_rows_seen;
+static size_t store_rows_used, store_rows_size;
+
+static bool store_row_changed(const char *name, char *text) {
+    for(size_t i = 0; i < store_rows_used; i++)
+        if(strcmp(store_rows_seen[i].name, name) == 0) {
+            if(strcmp(store_rows_seen[i].text, text) == 0) {
+                free(text);
+                return false;
+            }
+            free(store_rows_seen[i].text);
+            store_rows_seen[i].text = text;
+            return true;
+        }
+    if(store_rows_used == store_rows_size) {
+        store_rows_size = store_rows_size ? store_rows_size * 2 : 16;
+        store_rows_seen = reallocz(store_rows_seen, store_rows_size * sizeof(*store_rows_seen));
+    }
+    store_rows_seen[store_rows_used++] = (struct store_row){ .name = strdupz(name), .text = text };
+    return true;
+}
+
+// the rules' store: how many names and which, then each name that changed with its enabled flag, its chain's
+// length and the chain as a GET prints it
+static void store_rows(void) {
+    RRD_ALERT_PROTOTYPE *ap;
+    size_t names = 0;
+    dfe_start_read(health_globals.prototypes.dict, ap) {
+        names++;
+    }
+    dfe_done(ap);
+    row("stored");
+    fprintf(out, "\t%zu\t%s", names, names ? "" : "-");
+    dfe_start_read(health_globals.prototypes.dict, ap) {
+        fprintf(out, "%s%s", ap_dfe.counter ? " " : "", ap_dfe.name);
+    }
+    dfe_done(ap);
+    fputc('\n', out);
+
+    BUFFER *wb = buffer_create(0, NULL);
+    dfe_start_read(health_globals.prototypes.dict, ap) {
+        size_t rules = 0;
+        for(RRD_ALERT_PROTOTYPE *t = ap; t; t = t->_internal.next)
+            rules++;
+        health_prototype_to_json(wb, ap, false);
+        char *text = NULL;
+        size_t size = 0;
+        FILE *f = open_memstream(&text, &size);
+        fprintf(f, "\t%d\t%zu", ap->_internal.enabled ? 1 : 0, rules);
+        field(f, buffer_tostring(wb));
+        fclose(f);
+        if(store_row_changed(ap_dfe.name, text)) {
+            row("store");
+            field(out, ap_dfe.name);
+            for(size_t i = 0; i < store_rows_used; i++)
+                if(strcmp(store_rows_seen[i].name, ap_dfe.name) == 0)
+                    fprintf(out, "%s\n", store_rows_seen[i].text);
+        }
+    }
+    dfe_done(ap);
+    buffer_free(wb);
+}
+
 // What every scenario starts from: C's records captured, the health globals, and one host without a chart.
 static void world_init(const char *records_path) {
     // C's records go to stderr: into a file this program reads back after each step
@@ -764,6 +941,8 @@ static void world_init(const char *records_path) {
     nd_log_set_priority_level("debug");
     string_init();
     time_grouping_init();
+    // the names of the lookup options, as the daemon's start fills their hashes (web_client_api_v1_init())
+    rrdr_options_init();
     rrdlabels_aral_init(false);
     health_init_prototypes();
     health_alarm_entry_aral_init();
@@ -1129,6 +1308,58 @@ static void run_scenario(const char *out_path, const char *scenario_path, const 
             file_fields(out);
             fputc('\n', out);
             dump(whole);
+        }
+        else if(strcmp(directive, "dyncfg") == 0) {
+            char *id = word(&rest, whole);
+            DYNCFG_CMDS cmd;
+            if(!action_of(word(&rest, whole), &cmd)) die("an unknown action", whole);
+            char *name = word(&rest, whole);
+            BUFFER *payload = payload_of(rest);
+            host_index();
+            row("answer");
+            dyncfg_fields(out, id, cmd, strcmp(name, "-") == 0 ? NULL : name, payload);
+            fputc('\n', out);
+            buffer_free(payload);
+            store_rows();
+            dump(whole);
+        }
+        else if(strcmp(directive, "register") == 0) {
+            host_index();
+            bool health_thread = is_health_thread;
+            is_health_thread = false;
+            __atomic_store_n(&health_globals.prototypes.registering, true, __ATOMIC_RELAXED);
+            health_dyncfg_register_all_prototypes();
+            __atomic_store_n(&health_globals.prototypes.registering, false, __ATOMIC_RELAXED);
+            is_health_thread = health_thread;
+            store_rows();
+            dump(whole);
+        }
+        else if(strcmp(directive, "unregister") == 0) {
+            health_dyncfg_unregister_all_prototypes();
+            dump(whole);
+        }
+        else if(strcmp(directive, "dyncfg-saved") == 0) {
+            if(oracle.dyncfg_saved_used == ORACLE_DYNCFG_MAX) die("too many saved jobs", whole);
+            struct oracle_dyncfg_saved *saved = &oracle.dyncfg_saved[oracle.dyncfg_saved_used++];
+            snprintf(saved->name, sizeof(saved->name), "%s", word(&rest, whole));
+            BUFFER *payload = payload_of(rest);
+            if(!payload) die("a saved job without a payload", whole);
+            saved->len = buffer_strlen(payload);
+            saved->payload = mallocz(saved->len + 1);
+            memcpy(saved->payload, buffer_tostring(payload), saved->len + 1);
+            buffer_free(payload);
+        }
+        else if(strcmp(directive, "dyncfg-user-disabled") == 0) {
+            if(oracle.dyncfg_user_disabled_used == ORACLE_DYNCFG_MAX) die("too many disabled nodes", whole);
+            snprintf(oracle.dyncfg_user_disabled[oracle.dyncfg_user_disabled_used++],
+                     sizeof(oracle.dyncfg_user_disabled[0]), "%s", word(&rest, whole));
+        }
+        else if(strcmp(directive, "cloud-has") == 0)
+            oracle.hash_not_sent = atoi(word(&rest, whole)) == 0;
+        else if(strcmp(directive, "enabled-alarms") == 0) {
+            if(!rest || !*rest) die("a missing argument", whole);
+            simple_pattern_free(health_globals.config.enabled_alerts);
+            health_globals.config.enabled_alerts = simple_pattern_create(rest, NULL, SIMPLE_PATTERN_EXACT, true);
         }
         else
             die("unknown directive", whole);
@@ -1709,6 +1940,215 @@ static void silencers_tables(const char *dir, const char *records_path) {
     if(ferror(f) || fclose(f) != 0) die("cannot write", "silencers-match.tsv");
 }
 
+// ------------------------------------------------------------------------------------------------
+// the DynCfg tables
+
+// one case of a list: its place and its bytes
+struct list_case {
+    size_t n;
+    char *bytes;
+    size_t len;
+    // an action's other fields
+    char *id, *name;
+    DYNCFG_CMDS cmd;
+    bool has_payload;
+};
+
+// a field of the vectors' encoding, back into its bytes
+static char *unescaped(const char *text, size_t *len) {
+    char *bytes = mallocz(strlen(text) + 1);
+    size_t n = 0;
+    for(const char *s = text; *s;) {
+        if(s[0] == '\\' && s[1] == '\\') {
+            bytes[n++] = '\\';
+            s += 2;
+        }
+        else if(s[0] == '\\' && s[1] == 'x' && isxdigit((unsigned char)s[2]) && isxdigit((unsigned char)s[3])) {
+            char hex[3] = { s[2], s[3], '\0' };
+            bytes[n++] = (char)strtoul(hex, NULL, 16);
+            s += 4;
+        }
+        else
+            bytes[n++] = *s++;
+    }
+    bytes[n] = '\0';
+    if(len) *len = n;
+    return bytes;
+}
+
+// Every case of a list, each in its own process: a line that is no comment, counted from 0.
+static void each_case(FILE *f, const char *path, bool actions, void (*rows)(FILE *f, const void *arg)) {
+    FILE *input = fopen(path, "r");
+    if(!input) die("cannot read", path);
+    char *line = NULL;
+    size_t size = 0, n = 0;
+    ssize_t len;
+    while((len = getline(&line, &size, input)) > 0) {
+        if(line[len - 1] == '\n')
+            line[len - 1] = '\0';
+        if(*line == '#')
+            continue;
+        struct list_case c = { .n = n++ };
+        if(actions) {
+            char *rest = line;
+            char *id = strsep(&rest, "\t");
+            char *action = rest ? strsep(&rest, "\t") : NULL;
+            char *name = rest ? strsep(&rest, "\t") : NULL;
+            if(!action || !name || !rest) die("an action without its four fields in", path);
+            c.id = unescaped(id, NULL);
+            if(!action_of(action, &c.cmd)) die("an unknown action in", path);
+            c.name = strcmp(name, "-") == 0 ? NULL : unescaped(name, NULL);
+            c.has_payload = strcmp(rest, "-") != 0;
+            c.bytes = unescaped(c.has_payload ? rest : "", &c.len);
+        }
+        else
+            c.bytes = unescaped(line, &c.len);
+        char label[32];
+        snprintf(label, sizeof(label), "%zu", c.n);
+        in_child(f, label, rows, &c);
+        freez(c.bytes);
+        freez(c.id);
+        freez(c.name);
+    }
+    free(line);
+    fclose(input);
+}
+
+static void payload_rows(FILE *f, const void *arg) {
+    const struct list_case *c = arg;
+    static const struct {
+        const char *name;
+        unsigned flags;
+    } modes[] = { { "required", JSONC_REQUIRED }, { "optional", JSONC_OPTIONAL } };
+    for(size_t m = 0; m < 2; m++) {
+        BUFFER *error = buffer_create(0, NULL);
+        errno = 0;
+        RRD_ALERT_PROTOTYPE *ap = health_prototype_payload_parse(c->bytes, c->len, error, "p_name", modes[m].flags);
+        size_t rules = 0;
+        for(RRD_ALERT_PROTOTYPE *t = ap; t; t = t->_internal.next)
+            rules++;
+        fprintf(f, "%zu\t%s\tparse\t%zu", c->n, modes[m].name, rules);
+        field(f, buffer_tostring(error));
+        if(ap) {
+            BUFFER *wb = buffer_create(0, NULL);
+            health_prototype_to_json(wb, ap, true);
+            field(f, buffer_tostring(wb));
+            buffer_free(wb);
+        }
+        else
+            fputs("\t-", f);
+        fputc('\t', f);
+        messages(f);
+        fputc('\n', f);
+        size_t place = 0;
+        for(RRD_ALERT_PROTOTYPE *t = ap; t; t = t->_internal.next) {
+            fprintf(f, "%zu\t%s\trule\t%zu", c->n, modes[m].name, place++);
+            oracle_rule_fields(f, t);
+            fputc('\n', f);
+        }
+        buffer_free(error);
+    }
+}
+
+static void userconfig_rows(FILE *f, const void *arg) {
+    const struct list_case *c = arg;
+    for(int job = 0; job < 2; job++)
+        for(int exec = 0; exec < 2; exec++) {
+            // what a host's first pass takes from the configuration, or nothing yet
+            host.health.default_exec = exec ? string_dup(health_globals.config.default_exec) : NULL;
+            BUFFER *payload = buffer_create(0, NULL);
+            buffer_memcat(payload, c->bytes, c->len);
+            errno = 0;
+            fprintf(f, "%zu\t%s\t%d", c->n, job ? "job" : "template", exec);
+            dyncfg_fields(f, job ? "health:alert:prototype:d_tpl" : "health:alert:prototype", DYNCFG_CMD_USERCONFIG,
+                          "u_name", payload);
+            fputc('\t', f);
+            messages(f);
+            fputc('\n', f);
+            buffer_free(payload);
+        }
+}
+
+static void action_rows(FILE *f, const void *arg) {
+    const struct list_case *c = arg;
+    BUFFER *payload = NULL;
+    if(c->has_payload) {
+        payload = buffer_create(0, NULL);
+        buffer_memcat(payload, c->bytes, c->len);
+    }
+    fflush(oracle_calls);
+    size_t calls_before = calls_size;
+    errno = 0;
+    fprintf(f, "%zu", c->n);
+    dyncfg_fields(f, c->id, c->cmd, c->name, payload);
+    fputc('\t', f);
+    messages(f);
+
+    // the calls: a call's fields separated by tabs, the calls by ` | `
+    fflush(oracle_calls);
+    fputc('\t', f);
+    if(calls_size == calls_before)
+        fputc('-', f);
+    for(size_t i = calls_before; i < calls_size; i++) {
+        if(calls_text[i] != '\n')
+            fputc(calls_text[i], f);
+        else if(i + 1 < calls_size)
+            fputs(" | ", f);
+    }
+
+    fputc('\t', f);
+    RRD_ALERT_PROTOTYPE *ap;
+    dfe_start_read(health_globals.prototypes.dict, ap) {
+        size_t rules = 0;
+        for(RRD_ALERT_PROTOTYPE *t = ap; t; t = t->_internal.next)
+            rules++;
+        fprintf(f, "%s%s:%d:%zu", ap_dfe.counter ? " " : "", ap_dfe.name, ap->_internal.enabled ? 1 : 0, rules);
+    }
+    dfe_done(ap);
+    fputc('\n', f);
+}
+
+static void dyncfg_tables(const char *dir, const char *records_path) {
+    world_init(records_path);
+    host_index();
+    if(health_readfile("tests/corpus/dyncfg/base.conf", NULL, false) != 1) die("cannot read", "base.conf");
+
+    FILE *f = table(dir, "payload.tsv", "the case, the mode, then `parse`, the rules (0: refused), the error text, the "
+                                        "chain's hashed JSON, the records' messages; or `rule`, its place and a "
+                                        "rule's fields as rules.tsv has them up to the hash; or the case and "
+                                        "`signal <n>`");
+    each_case(f, "tests/corpus/dyncfg/payloads.txt", false, payload_rows);
+    if(ferror(f) || fclose(f) != 0) die("cannot write", "payload.tsv");
+
+    f = table(dir, "userconfig.tsv", "the case, the node asked (template or job), localhost's default command is "
+                                     "set, the code, the content type, the cache word, the expiry, the body, the "
+                                     "records' messages; or the case and `signal <n>`");
+    each_case(f, "tests/corpus/dyncfg/userconfig.txt", false, userconfig_rows);
+    if(ferror(f) || fclose(f) != 0) die("cannot write", "userconfig.tsv");
+
+    // the actions' store: two jobs added to the file's three names
+    static const struct {
+        const char *name, *path;
+    } added[] = { { "d_dyn", "@tests/corpus/dyncfg/one.json" }, { "d_off", "@tests/corpus/dyncfg/off.json" } };
+    for(size_t i = 0; i < 2; i++) {
+        BUFFER *payload = payload_of(added[i].path);
+        BUFFER *result = buffer_create(0, NULL);
+        usec_t stop_monotonic_ut = 0;
+        bool cancelled = false;
+        int code = dyncfg_health_cb("oracle", "health:alert:prototype", DYNCFG_CMD_ADD, added[i].name, payload,
+                                    &stop_monotonic_ut, &cancelled, result, HTTP_ACCESS_ALL, "oracle", NULL);
+        if(code != 202 && code != 298) die("cannot add", added[i].name);
+        buffer_free(payload);
+        buffer_free(result);
+    }
+    records_read = lseek(records_fd, 0, SEEK_END);
+
+    f = table(dir, "actions.tsv", "the case, the code, the content type, the cache word, the expiry, the body, the "
+                                  "records' messages, the calls, the store after it; or the case and `signal <n>`");
+    each_case(f, "tests/corpus/dyncfg/actions.txt", true, action_rows);
+    if(ferror(f) || fclose(f) != 0) die("cannot write", "actions.tsv");
+}
+
 int main(int argc, char **argv) {
     if(argc == 3 && strcmp(argv[1], "tables") == 0) {
         tables(argv[2]);
@@ -1722,12 +2162,17 @@ int main(int argc, char **argv) {
         silencers_tables(argv[2], argv[3]);
         return 0;
     }
+    if(argc == 4 && strcmp(argv[1], "dyncfg") == 0) {
+        dyncfg_tables(argv[2], argv[3]);
+        return 0;
+    }
     if(argc == 5 && strcmp(argv[1], "scenario") == 0) {
         run_scenario(argv[2], argv[3], argv[4]);
         return 0;
     }
     fprintf(stdout, "usage: %s tables <directory> | decide <directory> <records file> | "
-                    "silencers <directory> <records file> | scenario <loop.tsv> <scenario file> <records file>\n",
+                    "silencers <directory> <records file> | dyncfg <directory> <records file> | "
+                    "scenario <loop.tsv> <scenario file> <records file>\n",
             argv[0]);
     return 1;
 }

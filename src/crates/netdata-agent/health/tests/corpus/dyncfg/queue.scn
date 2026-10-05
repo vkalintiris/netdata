@@ -1,0 +1,32 @@
+# The entries of a re-apply are saved off the HEALTH thread: the queue takes them and the host waits for the store
+# job; a queue that refuses them leaves them unsaved, and the host waits all the same.
+database real
+rules tests/corpus/dyncfg/base.conf
+chart loop.d1 loop.d1_name loop.dyncfg - things 1
+var loop.d1 v 70
+queue 1
+register
+clock 0
+pass 0
+store
+clock 1
+dyncfg health:alert:prototype:d_tpl update - @tests/corpus/dyncfg/one-b.json
+clock 2
+pass 2
+store
+clock 3
+pass 3
+store
+queue 0
+clock 4
+dyncfg health:alert:prototype:d_tpl update - @tests/corpus/dyncfg/one.json
+clock 5
+pass 5
+store
+clock 6
+pass 6
+queue 1
+dyncfg health:alert:prototype:d_tpl disable -
+store
+clock 7
+pass 7

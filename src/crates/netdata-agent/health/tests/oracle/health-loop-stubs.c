@@ -255,6 +255,152 @@ int rrdset2value_api_v1_with_owa(
 char *api_secret = "oracle-key";
 
 // ------------------------------------------------------------------------------------------------
+// DynCfg, and the Cloud's copy of a rule
+//
+// C's own src/health/health_dyncfg.c is linked in; the core it registers its nodes with (src/daemon/dyncfg) is not.
+// Each call health makes to the core is a `call` row with what health handed over.
+//
+// A MODEL, not C's code: what the core sends back to health's callback right after a registration, written here from
+// src/daemon/dyncfg/dyncfg.c (dyncfg_add_low_level(), dyncfg_send_updates()) for the nodes health has:
+//   - the template: `add <name>` with the saved payload for every job a saved file has (a scenario's `dyncfg-saved`),
+//     in their order;
+//   - a job: `disable` when a saved file says the user disabled it (`dyncfg-user-disabled`), when it is registered
+//     disabled, or when the user disabled the template; else `enable`. Then, for a job that is not registered as a
+//     DynCfg one and has a saved payload: `update` with that payload.
+// Each is a `call` row `echo <id> <command> <name> <payload>` before the callback runs and `echoed <id> <command>
+// <code> <body>` after it; what the callback itself calls lies between the two. The rows judge health given these
+// calls; that the core makes these calls, in this order, is for the checks against the running agent.
+
+#define DYNCFG_TEMPLATE_ID "health:alert:prototype"
+
+static void call_field(const char *s) {
+    fputc('\t', oracle_calls);
+    oracle_esc(oracle_calls, s);
+}
+
+static void call_field_bytes(const void *bytes, size_t len) {
+    fputc('\t', oracle_calls);
+    oracle_esc_bytes(oracle_calls, bytes, len);
+}
+
+static bool dyncfg_user_disabled(const char *id) {
+    for(size_t i = 0; i < oracle.dyncfg_user_disabled_used; i++)
+        if(strcmp(oracle.dyncfg_user_disabled[i], id) == 0)
+            return true;
+    return false;
+}
+
+static void dyncfg_echo(const struct dyncfg_add_inline_spec *spec, const char *id, DYNCFG_CMDS cmd, const char *name,
+                        const struct oracle_dyncfg_saved *saved) {
+    // the id is health's own text, freed when its registration returns
+    char *id_copy = strdupz(id);
+    fputs("echo", oracle_calls);
+    call_field(id_copy);
+    call_field(dyncfg_id2cmd_one(cmd));
+    call_field(name ? name : "-");
+    if(saved)
+        call_field_bytes(saved->payload, saved->len);
+    else
+        call_field("-");
+    fputc('\n', oracle_calls);
+
+    BUFFER *payload = NULL;
+    if(saved) {
+        payload = buffer_create(0, NULL);
+        buffer_memcat(payload, saved->payload, saved->len);
+    }
+    BUFFER *result = buffer_create(0, NULL);
+    usec_t stop_monotonic_ut = 0;
+    bool cancelled = false;
+    int code = spec->cb("oracle-echo", id_copy, cmd, name, payload, &stop_monotonic_ut, &cancelled, result,
+                        HTTP_ACCESS_ALL, "oracle", spec->data);
+
+    fputs("echoed", oracle_calls);
+    call_field(id_copy);
+    call_field(dyncfg_id2cmd_one(cmd));
+    fprintf(oracle_calls, "\t%d", code);
+    call_field_bytes(buffer_tostring(result), buffer_strlen(result));
+    fputc('\n', oracle_calls);
+    buffer_free(result);
+    buffer_free(payload);
+    freez(id_copy);
+}
+
+// C: src/daemon/dyncfg/dyncfg-inline.c. `dyncfg_add <id> <path> <type> <status> <source type> <source> <commands>`
+bool dyncfg_add(const struct dyncfg_add_inline_spec *spec) {
+    if(!oracle_calls)
+        return true;
+
+    BUFFER *cmds = buffer_create(0, NULL);
+    dyncfg_cmds2buffer(spec->cmds, cmds);
+    fputs("dyncfg_add", oracle_calls);
+    call_field(spec->id);
+    call_field(spec->path);
+    call_field(dyncfg_id2type(spec->type));
+    call_field(dyncfg_id2status(spec->status));
+    call_field(dyncfg_id2source_type(spec->source_type));
+    call_field(spec->source);
+    call_field(buffer_tostring(cmds));
+    fputc('\n', oracle_calls);
+    buffer_free(cmds);
+
+    // the model of the core, from here on
+    if(spec->type == DYNCFG_TYPE_TEMPLATE) {
+        for(size_t i = 0; i < oracle.dyncfg_saved_used; i++)
+            dyncfg_echo(spec, spec->id, DYNCFG_CMD_ADD, oracle.dyncfg_saved[i].name, &oracle.dyncfg_saved[i]);
+        return true;
+    }
+
+    char *id = strdupz(spec->id);
+    DYNCFG_SOURCE_TYPE source_type = spec->source_type;
+    bool disable = dyncfg_user_disabled(id) || spec->status == DYNCFG_STATUS_DISABLED ||
+                   dyncfg_user_disabled(DYNCFG_TEMPLATE_ID);
+    dyncfg_echo(spec, id, disable ? DYNCFG_CMD_DISABLE : DYNCFG_CMD_ENABLE, NULL, NULL);
+    if(source_type != DYNCFG_SOURCE_TYPE_DYNCFG && strncmp(id, DYNCFG_TEMPLATE_ID ":", sizeof(DYNCFG_TEMPLATE_ID)) == 0)
+        for(size_t i = 0; i < oracle.dyncfg_saved_used; i++)
+            if(strcmp(oracle.dyncfg_saved[i].name, id + sizeof(DYNCFG_TEMPLATE_ID)) == 0)
+                dyncfg_echo(spec, id, DYNCFG_CMD_UPDATE, NULL, &oracle.dyncfg_saved[i]);
+    freez(id);
+    return true;
+}
+
+// `dyncfg_del <id>`
+void dyncfg_del(RRDHOST *host, const char *id) {
+    (void)host;
+    if(oracle_calls) {
+        fputs("dyncfg_del", oracle_calls);
+        call_field(id);
+        fputc('\n', oracle_calls);
+    }
+}
+
+// `dyncfg_status <id> <status>`
+void dyncfg_status(RRDHOST *host, const char *id, DYNCFG_STATUS status) {
+    (void)host;
+    if(oracle_calls) {
+        fputs("dyncfg_status", oracle_calls);
+        call_field(id);
+        call_field(dyncfg_id2status(status));
+        fputc('\n', oracle_calls);
+    }
+}
+
+// C: src/database/sqlite/sqlite_aclk_alert.c: a rule's configuration queued for the Cloud.
+// `aclk_send_alert_configuration <hash>`
+void aclk_send_alert_configuration(char *config_hash) {
+    oracle_call("aclk_send_alert_configuration\t%s", config_hash);
+}
+
+// C: sqlite_aclk_alert.c: whether `alert_hash_cloud` has the rule's hash, as the scenario says.
+// `alert_hash_has_transitioned <hash> <answer 0|1>`
+bool alert_hash_has_transitioned(nd_uuid_t *hash_id) {
+    char hash[UUID_STR_LEN];
+    uuid_unparse_lower(*hash_id, hash);
+    oracle_call("alert_hash_has_transitioned\t%s\t%d", hash, oracle.hash_not_sent ? 0 : 1);
+    return !oracle.hash_not_sent;
+}
+
+// ------------------------------------------------------------------------------------------------
 // SQLite, the metadata queue, ACLK, pulse
 
 // C: src/database/sqlite/sqlite_health.c, sql_health_alarm_log_load(). Without a database it returns at once. With

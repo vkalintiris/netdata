@@ -1,0 +1,20 @@
+# A GET's own JSON sent back as an update of a file alert: the rule's hash before and after, the source type, and
+# what the alert's relink does to its status.
+rules tests/corpus/dyncfg/base.conf
+chart loop.d1 loop.d1_name loop.dyncfg - things 1
+var loop.d1 v 70
+register
+clock 0
+pass 0
+clock 1
+pass 1
+dyncfg health:alert:prototype:d_tpl get -
+clock 2
+dyncfg health:alert:prototype:d_tpl update - =health:alert:prototype:d_tpl
+dyncfg health:alert:prototype:d_tpl get -
+clock 3
+pass 3
+clock 4
+dyncfg health:alert:prototype:d_tpl update - =health:alert:prototype:d_tpl
+clock 5
+pass 5

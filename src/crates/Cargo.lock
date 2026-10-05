@@ -3115,10 +3115,12 @@ dependencies = [
  "netdata-agent-inicfg",
  "netdata-agent-log",
  "netdata-agent-metadata",
+ "netdata-agent-nrpc",
  "netdata-agent-query",
  "netdata-agent-rrd",
  "netdata-agent-text",
  "rusqlite",
+ "serde_json",
  "tempfile",
  "twox-hash",
 ]

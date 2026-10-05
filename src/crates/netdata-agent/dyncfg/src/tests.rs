@@ -668,3 +668,140 @@ fn a_plugins_delete_keeps_only_saved_nodes() {
         assert!(!fx.localhost().functions().available(b"config go.d:y"));
     });
 }
+
+// ---- the inline API (`dyncfg-inline.c`): nodes of the agent itself
+
+use crate::inline::{InlineCallback, InlineSpec};
+
+impl Fx {
+    /// `dyncfg_add()` of a node of the agent, its accesses left to C's defaults.
+    fn add_inline(&self, id: &str, kind: Type, cmds: &str, source_type: SourceType, cb: InlineCallback) -> bool {
+        self.dyncfg.add_inline(InlineSpec {
+            host: self.localhost(),
+            id: id.as_bytes(),
+            path: b"/health/alerts/prototypes",
+            status: Status::Accepted,
+            kind,
+            source_type,
+            source: b"internal",
+            cmds: Cmds::parse(cmds.as_bytes()),
+            view_access: 0,
+            edit_access: 0,
+            cb,
+        })
+    }
+}
+
+/// An inline node is a synchronous node of the core whose one handler finds its callback by id: a user's command
+/// reaches the callback, a second registration keeps the handler (so the core sees the same node), and a job's
+/// first echo runs the callback inside its registration.
+#[test]
+fn an_inline_node_answers_through_its_callback() {
+    let ((fx, seen), _) = within(|| {
+        let fx = fx();
+        let seen: Arc<Mutex<Vec<String>>> = Arc::default();
+        let log = Arc::clone(&seen);
+        let cb: InlineCallback = Arc::new(move |reply, id, cmd, name, payload, _source| {
+            log.lock().unwrap().push(format!(
+                "{} {} {:?} {:?}",
+                String::from_utf8_lossy(id),
+                cmd.name_one().unwrap_or("?"),
+                name.map(String::from_utf8_lossy),
+                payload.map(|p| String::from_utf8_lossy(&p.body).into_owned())
+            ));
+            reply.body = b"inline".to_vec();
+            200
+        });
+        assert!(fx.add_inline("agent:single", Type::Single, "get schema update enable disable", SourceType::Internal, Arc::clone(&cb)));
+        let first = fx.node("agent:single").unwrap();
+        assert!(first.sync);
+        assert!(fx.dyncfg.inline.has(b"agent:single"));
+
+        assert_eq!(fx.call("config agent:single get", None, access::ALL), (200, "inline".into()));
+        assert!(fx.add_inline("agent:single", Type::Single, "get schema update enable disable", SourceType::Internal, cb));
+        let second = fx.node("agent:single").unwrap();
+        assert!(first.handler.unwrap().same(&second.handler.unwrap()), "one handler for every inline node");
+        (fx, seen)
+    });
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [
+            // the registration's echo, the user's call, the second registration's echo
+            "agent:single enable None None",
+            "agent:single get None None",
+            "agent:single enable None None",
+        ]
+    );
+    assert!(fx.plugin.seen().is_empty());
+}
+
+/// A registration the core refuses (a job without its template) leaves no callback behind; `dyncfg_del()` takes
+/// the callback and the node.
+#[test]
+fn a_refused_inline_node_and_a_deleted_one_leave_no_callback() {
+    let (fx, _) = within(|| {
+        let fx = fx();
+        let cb: InlineCallback = Arc::new(|_, _, _, _, _, _| 200);
+        assert!(!fx.add_inline("no:template:job", Type::Job, "get enable disable", SourceType::Internal, Arc::clone(&cb)));
+        assert!(!fx.dyncfg.inline.has(b"no:template:job"));
+        assert!(fx.node("no:template:job").is_none());
+
+        assert!(fx.add_inline("agent:t", Type::Template, "schema add enable disable", SourceType::Internal, cb));
+        assert!(fx.dyncfg.inline.has(b"agent:t"));
+        fx.dyncfg.del_inline(fx.localhost(), b"agent:t");
+        assert!(!fx.dyncfg.inline.has(b"agent:t"));
+        assert!(fx.node("agent:t").is_none());
+        fx
+    });
+    drop(fx);
+}
+
+/// A template's callback that registers the job it is asked to add: the registration re-enters DynCfg from inside
+/// the core's call (the job's node, its method, its first echo into the same callback), as health's `add` does.
+#[test]
+fn an_inline_callback_may_register_a_node_while_it_is_called() {
+    let ((fx, seen), _) = within(|| {
+        let fx = fx();
+        let seen: Arc<Mutex<Vec<String>>> = Arc::default();
+        let (log, dyncfg, hosts) = (Arc::clone(&seen), Arc::downgrade(&fx.dyncfg), Arc::clone(&fx.hosts));
+        let me: Arc<Mutex<Option<InlineCallback>>> = Arc::default();
+        let again = Arc::clone(&me);
+        let cb: InlineCallback = Arc::new(move |reply, id, cmd, name, _payload, _source| {
+            log.lock().unwrap().push(format!(
+                "{} {} {:?}",
+                String::from_utf8_lossy(id),
+                cmd.name_one().unwrap_or("?"),
+                name.map(String::from_utf8_lossy)
+            ));
+            if cmd == Cmds::ADD {
+                let job = [id, b":", name.unwrap_or(b"")].concat();
+                let cb = again.lock().unwrap().clone().expect("the callback itself");
+                let added = dyncfg.upgrade().expect("the core").add_inline(InlineSpec {
+                    host: hosts.localhost(),
+                    id: &job,
+                    path: b"/health/alerts/prototypes",
+                    status: Status::Accepted,
+                    kind: Type::Job,
+                    source_type: SourceType::Dyncfg,
+                    source: b"",
+                    cmds: Cmds::parse(b"get schema update remove enable disable userconfig"),
+                    view_access: 0,
+                    edit_access: 0,
+                    cb,
+                });
+                assert!(added);
+            }
+            crate::model::default_response(reply, if cmd == Cmds::ADD { 202 } else { 200 }, "done")
+        });
+        *me.lock().unwrap() = Some(Arc::clone(&cb));
+        assert!(fx.add_inline("agent:t", Type::Template, "schema add enable disable userconfig", SourceType::Internal, cb));
+        let answer = fx.call("config agent:t add j1", Some("{\"a\":1}"), access::ALL);
+        assert_eq!(answer, (202, "{\"status\":202,\"message\":\"done\"}".into()));
+        (fx, seen)
+    });
+    assert_eq!(*seen.lock().unwrap(), ["agent:t add Some(\"j1\")", "agent:t:j1 enable None"]);
+    let job = fx.node("agent:t:j1").unwrap();
+    assert_eq!((job.kind, job.template.as_deref()), (Type::Job, Some(b"agent:t".as_slice())));
+    assert_eq!(job.stored.saves, 1);
+    assert!(fx.file("agent:t:j1").exists());
+}

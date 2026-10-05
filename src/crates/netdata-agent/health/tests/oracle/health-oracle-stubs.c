@@ -110,6 +110,8 @@ void rrdcalc_unlink_and_delete_all_rrdset_alerts(RRDSET *st) {
 }
 #endif
 
+// the loop's program records these and scripts the table's answer (health-loop-stubs.c)
+#ifndef HEALTH_ORACLE_LOOP
 bool dyncfg_add(const struct dyncfg_add_inline_spec *spec) {
     (void)spec;
     return true;
@@ -134,6 +136,7 @@ bool alert_hash_has_transitioned(nd_uuid_t *hash_id) {
     (void)hash_id;
     return true;
 }
+#endif
 
 #ifndef HEALTH_ORACLE_LOOP
 void rrd_alert_match_cleanup(struct rrd_alert_match *am) {
@@ -224,19 +227,12 @@ static void field_expression(FILE *f, EVAL_EXPRESSION *e) {
 void oracle_loop_store_config(RRD_ALERT_PROTOTYPE *ap);
 #endif
 
-void sql_alert_store_config(RRD_ALERT_PROTOTYPE *ap) {
-#ifdef HEALTH_ORACLE_LOOP
-    oracle_loop_store_config(ap);
-#endif
-    FILE *f = oracle_rules;
-    if(!f)
-        return;
-
+// A rule as C holds it, from its name to its repeat settings: the fields of a `rule` row of rules.tsv after the
+// kind, without the hash and the JSON.
+void oracle_rule_fields(FILE *f, RRD_ALERT_PROTOTYPE *ap) {
     struct rrd_alert_match *am = &ap->match;
     struct rrd_alert_config *ac = &ap->config;
 
-    oracle_esc(f, oracle_item);
-    fputs("\trule", f);
     field_string(f, ac->name);
     fprintf(f, "\t%d\t%d", am->is_template ? 1 : 0, am->enabled ? 1 : 0);
     field_string(f, am->is_template ? am->on.context : am->on.chart);
@@ -270,6 +266,20 @@ void sql_alert_store_config(RRD_ALERT_PROTOTYPE *ap) {
     fprintf(f, "\t%d\t%d\t%d\t%08x\t%d\t%u\t%u",
             ac->delay_up_duration, ac->delay_down_duration, ac->delay_max_duration, (unsigned)multiplier_bits,
             ac->has_custom_repeat_config ? 1 : 0, ac->warn_repeat_every, ac->crit_repeat_every);
+}
+
+void sql_alert_store_config(RRD_ALERT_PROTOTYPE *ap) {
+#ifdef HEALTH_ORACLE_LOOP
+    oracle_loop_store_config(ap);
+#endif
+    FILE *f = oracle_rules;
+    if(!f)
+        return;
+
+    oracle_esc(f, oracle_item);
+    fputs("\trule", f);
+    oracle_rule_fields(f, ap);
+    struct rrd_alert_config *ac = &ap->config;
 
     // the bytes that are hashed, from the production writer, and the hash C just stored in the rule
     CLEAN_BUFFER *wb = buffer_create(100, NULL);

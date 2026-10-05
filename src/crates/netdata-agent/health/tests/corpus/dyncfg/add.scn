@@ -1,0 +1,25 @@
+# A user's add: the store, the rule's row and hash, the job's registration with `remove`, the link's entry, 202.
+# A payload with no enabled rule: 298. One the validation refuses and one the parser refuses: 400 and the record.
+database real
+queue 1
+rules tests/corpus/dyncfg/base.conf
+chart loop.d1 loop.d1_name loop.dyncfg - things 1
+var loop.d1 v 70
+register
+clock 0
+pass 0
+store
+clock 1
+dyncfg health:alert:prototype add d_new @tests/corpus/dyncfg/one.json
+store
+clock 2
+pass 2
+store
+dyncfg health:alert:prototype add d_off @tests/corpus/dyncfg/off.json
+dyncfg health:alert:prototype add d_invalid @tests/corpus/dyncfg/invalid.json
+dyncfg health:alert:prototype add d_bad @tests/corpus/dyncfg/bad.json
+dyncfg health:alert:prototype add d_text not json at all
+dyncfg health:alert:prototype:d_new get -
+dyncfg health:alert:prototype:d_off get -
+dyncfg health:alert:prototype:d_invalid get -
+configs

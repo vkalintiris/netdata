@@ -562,6 +562,23 @@ impl HostAlerts {
         self.log_records(&entries);
     }
 
+    /// The alerts of one name go, in the dictionary's order, as a DynCfg change of that name removes them
+    /// (`health_prototype_apply_to_all_hosts()`, `dyncfg_health_remove_all_rrdcalc_of_prototype()`). How many.
+    pub(crate) fn unlink_named(&self, name: &[u8], env: &dyn Env, clock: Clock) -> usize {
+        let (mut entries, mut saves) = (Vec::new(), Saves::new());
+        let removed = {
+            let mut store = self.store();
+            let named: Vec<_> = store.order.values().filter(|alert| alert.name() == name).cloned().collect();
+            for alert in &named {
+                Self::unlink(&mut store, alert, env, clock, &mut entries, &mut saves);
+            }
+            named.len()
+        };
+        self.run_saves(env, &saves);
+        self.log_records(&entries);
+        removed
+    }
+
     /// `rrdcalc_delete_all()`: every alert of the host goes, in the dictionary's order.
     pub(crate) fn delete_all(&self, env: &dyn Env, clock: Clock) {
         let (mut entries, mut saves) = (Vec::new(), Saves::new());

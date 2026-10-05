@@ -11,7 +11,7 @@ use std::borrow::Cow;
 use netdata_agent_log::netdata_log_error_errno;
 use netdata_agent_nrpc::reply::Reply;
 use netdata_agent_text::c::c_str;
-use netdata_agent_text::parse::{strtoll10, strtoull10, uuid_parse_flexi};
+use netdata_agent_text::parse::{strtod_range, strtoll10, strtoull10, uuid_parse_flexi};
 use netdata_agent_text::print::{print_int64, print_netdata_double};
 use serde_json::{Map, Number, Value};
 
@@ -504,30 +504,30 @@ pub fn uuid(
     }
 }
 
-/// `JSONC_PARSE_ARRAY_OF_TXT2BITMAP_OR_ERROR_AND_RETURN`: the bits of the names in an array. An unknown name is
-/// only reported; an item that is not a string fails.
-pub fn bitmap(
+/// `JSONC_PARSE_ARRAY_OF_TXT2BITMAP_OR_ERROR_AND_RETURN`: the bits of the names in an array, in the destination's
+/// integer type. An unknown name is only reported; an item that is not a string fails.
+pub fn bitmap<B: Copy + Default + PartialEq + std::ops::BitOrAssign>(
     obj: &Map<String, Value>,
     path: &str,
     member: &str,
-    parse_one: fn(&[u8]) -> u32,
+    parse_one: fn(&[u8]) -> B,
     presence: Presence,
     error: &mut String,
-) -> Option<u32> {
-    let mut bits = 0;
+) -> Option<B> {
+    let mut bits = B::default();
     bitmap_into(obj, path, member, parse_one, presence, error, &mut bits).map(|()| bits)
 }
 
 /// [`bitmap`] into `bits`, as C fills its destination: zeroed once the member is an array, then each item's bit
 /// added, so a failing item keeps the bits before it; untouched when an optional member is missing or no array.
-pub fn bitmap_into(
+pub fn bitmap_into<B: Copy + Default + PartialEq + std::ops::BitOrAssign>(
     obj: &Map<String, Value>,
     path: &str,
     member: &str,
-    parse_one: fn(&[u8]) -> u32,
+    parse_one: fn(&[u8]) -> B,
     presence: Presence,
     error: &mut String,
-    bits: &mut u32,
+    bits: &mut B,
 ) -> Option<()> {
     let required = presence == Presence::Required;
     let Some(value) = obj.get(member) else {
@@ -544,14 +544,14 @@ pub fn bitmap_into(
             Some(())
         };
     };
-    *bits = 0;
+    *bits = B::default();
     for (i, item) in items.iter().enumerate() {
         let Value::String(name) = item else {
             return fail(error, format!("invalid type for '{path}.{member}' at index {i}"));
         };
         let name = c_str(name.as_bytes());
         let bit = parse_one(name);
-        if bit == 0 {
+        if bit == B::default() {
             error.push_str(&format!(
                 "unknown option '{}' in '{path}.{member}' at index {i}",
                 String::from_utf8_lossy(name)
@@ -607,6 +607,117 @@ pub fn boolean(
             error,
         ),
     }
+}
+
+/// `JSONC_PARSE_DOUBLE_OR_ERROR_AND_RETURN`: a number, a boolean as 1 or 0, null as NaN, a text `strtod()` reads
+/// whole and in range; another text fails even when optional. `None` inside for a member that is skipped: C leaves
+/// its destination as it was.
+pub fn double(
+    obj: &Map<String, Value>,
+    path: &str,
+    member: &str,
+    presence: Presence,
+    error: &mut String,
+) -> Option<Option<f64>> {
+    let Some(value) = obj.get(member) else {
+        return match presence {
+            Presence::Required => fail(error, format!("missing '{path}.{member}'")),
+            Presence::Optional => Some(None),
+        };
+    };
+    match value {
+        Value::Null => Some(Some(f64::NAN)),
+        Value::Bool(b) => Some(Some(f64::from(u8::from(*b)))),
+        Value::Number(n) => Some(Some(match num(n) {
+            Num::Double(d) => d,
+            n => int_as_i64(&n).unwrap_or_default() as f64,
+        })),
+        Value::String(s) => {
+            let s = c_str(s.as_bytes());
+            match strtod_range(s) {
+                (v, used, false) if used > 0 && used == s.len() => Some(Some(v)),
+                _ => fail(
+                    error,
+                    format!(
+                        "cannot convert string '{}' to double for '{path}.{member}'",
+                        String::from_utf8_lossy(s)
+                    ),
+                ),
+            }
+        }
+        Value::Object(_) | Value::Array(_) => match presence {
+            Presence::Required => fail(error, format!("cannot convert to double for '{path}.{member}'")),
+            Presence::Optional => Some(None),
+        },
+    }
+}
+
+/// The member's value when json-c types it as an integer (`json_type_int`), as `json_object_get_int64()` reads it:
+/// for the callers that convert an integer and a double differently.
+pub fn int_member(obj: &Map<String, Value>, member: &str) -> Option<i64> {
+    match obj.get(member) {
+        Some(Value::Number(n)) => int_as_i64(&num(n)),
+        _ => None,
+    }
+}
+
+/// `JSONC_PARSE_TXT2PATTERN_OR_ERROR_AND_RETURN`: the text of a pattern; `None` inside for `*`, for the empty text
+/// (`string_strdupz()` of `""` is NULL) and for a member that is skipped (every destination starts unset).
+pub fn pattern(
+    obj: &Map<String, Value>,
+    path: &str,
+    member: &str,
+    presence: Presence,
+    error: &mut String,
+) -> Option<Option<String>> {
+    match obj.get(member) {
+        Some(Value::String(s)) => {
+            let text = c_str(s.as_bytes());
+            Some((text != b"*" && !text.is_empty()).then(|| String::from_utf8_lossy(text).into_owned()))
+        }
+        Some(_) if presence == Presence::Required => {
+            fail(error, format!("invalid type for '{path}.{member}' string"))
+        }
+        None if presence == Presence::Required => fail(error, format!("missing '{path}.{member}' string")),
+        _ => Some(None),
+    }
+}
+
+/// `JSONC_PARSE_TXT2CHAR_OR_ERROR_AND_RETURN` into a buffer of `size` bytes: the text cut to `size - 1` bytes
+/// (`strncpyz()`), numbers and booleans as json-c prints them, the empty text for null and for a member that is
+/// skipped.
+pub fn chars(
+    obj: &Map<String, Value>,
+    path: &str,
+    member: &str,
+    size: usize,
+    presence: Presence,
+    error: &mut String,
+) -> Option<Vec<u8>> {
+    let Some(value) = obj.get(member) else {
+        return match presence {
+            Presence::Required => fail(error, format!("missing '{path}.{member}'")),
+            Presence::Optional => Some(Vec::new()),
+        };
+    };
+    let mut text = match value {
+        Value::Null => Vec::new(),
+        Value::String(s) => c_str(s.as_bytes()).to_vec(),
+        Value::Bool(b) => b.to_string().into_bytes(),
+        Value::Number(n) => {
+            let mut out = Vec::new();
+            match num(n) {
+                Num::Double(d) => print_netdata_double(&mut out, d),
+                n => print_int64(&mut out, int_as_i64(&n).unwrap_or_default()),
+            }
+            out
+        }
+        Value::Object(_) | Value::Array(_) => {
+            return wrong_type(format!("cannot convert to string for '{path}.{member}'"), presence, error);
+        }
+    };
+    text.truncate(size.saturating_sub(1));
+    Some(text)
 }
 
 /// `JSONC_PARSE_TXT2RFC3339_USEC_OR_ERROR_AND_RETURN`: the microseconds of an RFC 3339 text, 0 for anything else
@@ -889,6 +1000,89 @@ mod tests {
         assert_eq!(cut(236), format!("JSON parser failed: {}...", text(232)));
         assert_eq!(cut(236).len(), 255);
         assert_eq!(format_error(b""), b"JSON parser failed: unknown error");
+    }
+
+    /// The three readers health's DynCfg payload needs: a double, a pattern text and a text for a fixed buffer.
+    #[test]
+    fn doubles_patterns_and_fixed_texts_as_c() {
+        let o = obj(
+            r#"{"d": 1.5, "i": 3, "big": 18446744073709551615, "t": true, "null": null, "s": "2.5e1", "sp": " 1",
+                "tail": "1 ", "bad": "x", "empty": "", "huge": "1e400", "tiny": "1e-400", "inf": "inf", "arr": [],
+                "star": "*", "p": "a=b", "n": 5, "long": "0123456789", "neg": -7, "f": 0.5}"#,
+        );
+        let mut e = String::new();
+        let double_of = |member: &str, presence, e: &mut String| double(&o, "p", member, presence, e);
+        assert_eq!(double_of("d", Required, &mut e), Some(Some(1.5)));
+        assert_eq!(double_of("i", Required, &mut e), Some(Some(3.0)));
+        // an integer past the signed range is read through json_object_get_int64()
+        assert_eq!(double_of("big", Required, &mut e), Some(Some(i64::MAX as f64)));
+        assert_eq!(double_of("t", Required, &mut e), Some(Some(1.0)));
+        assert!(double_of("null", Required, &mut e).flatten().is_some_and(f64::is_nan));
+        assert_eq!(double_of("s", Required, &mut e), Some(Some(25.0)));
+        // strtod() skips leading spaces, and the whole text must be read
+        assert_eq!(double_of("sp", Required, &mut e), Some(Some(1.0)));
+        assert_eq!(double_of("inf", Optional, &mut e), Some(Some(f64::INFINITY)));
+        assert_eq!(double_of("missing", Optional, &mut e), Some(None));
+        assert_eq!(double_of("arr", Optional, &mut e), Some(None));
+        assert_eq!(e, "");
+        for (member, text) in [
+            ("tail", "cannot convert string '1 ' to double for 'p.tail'"),
+            ("bad", "cannot convert string 'x' to double for 'p.bad'"),
+            ("empty", "cannot convert string '' to double for 'p.empty'"),
+            ("huge", "cannot convert string '1e400' to double for 'p.huge'"),
+            ("tiny", "cannot convert string '1e-400' to double for 'p.tiny'"),
+        ] {
+            // a text that is no number fails in both modes
+            for presence in [Required, Optional] {
+                let mut e = String::new();
+                assert_eq!(double(&o, "p", member, presence, &mut e), None, "{member}");
+                assert_eq!(e, text);
+            }
+        }
+        let mut e = String::new();
+        assert_eq!(double(&o, "p", "missing", Required, &mut e), None);
+        assert_eq!(double(&o, "p", "arr", Required, &mut e), None);
+        assert_eq!(e, "missing 'p.missing'cannot convert to double for 'p.arr'");
+
+        assert_eq!(int_member(&o, "i"), Some(3));
+        assert_eq!(int_member(&o, "neg"), Some(-7));
+        assert_eq!(int_member(&o, "big"), Some(i64::MAX));
+        assert_eq!(int_member(&o, "d"), None);
+        assert_eq!(int_member(&o, "s"), None);
+        assert_eq!(int_member(&o, "missing"), None);
+
+        let mut e = String::new();
+        assert_eq!(pattern(&o, "p", "p", Required, &mut e), Some(Some("a=b".to_owned())));
+        assert_eq!(pattern(&o, "p", "star", Required, &mut e), Some(None));
+        assert_eq!(pattern(&o, "p", "empty", Required, &mut e), Some(None));
+        assert_eq!(pattern(&o, "p", "n", Optional, &mut e), Some(None));
+        assert_eq!(pattern(&o, "p", "missing", Optional, &mut e), Some(None));
+        assert_eq!(e, "");
+        assert_eq!(pattern(&o, "p", "n", Required, &mut e), None);
+        assert_eq!(pattern(&o, "p", "missing", Required, &mut e), None);
+        assert_eq!(e, "invalid type for 'p.n' string" .to_owned() + "missing 'p.missing' string");
+
+        let mut e = String::new();
+        // cut as strncpyz() cuts: one byte less than the buffer
+        assert_eq!(chars(&o, "p", "long", 8, Required, &mut e), Some(b"0123456".to_vec()));
+        assert_eq!(chars(&o, "p", "long", 32, Required, &mut e), Some(b"0123456789".to_vec()));
+        assert_eq!(chars(&o, "p", "n", 32, Required, &mut e), Some(b"5".to_vec()));
+        assert_eq!(chars(&o, "p", "f", 32, Required, &mut e), Some(b"0.5".to_vec()));
+        assert_eq!(chars(&o, "p", "t", 32, Required, &mut e), Some(b"true".to_vec()));
+        assert_eq!(chars(&o, "p", "null", 32, Required, &mut e), Some(Vec::new()));
+        assert_eq!(chars(&o, "p", "arr", 32, Optional, &mut e), Some(Vec::new()));
+        assert_eq!(chars(&o, "p", "missing", 32, Optional, &mut e), Some(Vec::new()));
+        assert_eq!(e, "");
+        assert_eq!(chars(&o, "p", "arr", 32, Required, &mut e), None);
+        assert_eq!(chars(&o, "p", "missing", 32, Required, &mut e), None);
+        assert_eq!(e, "cannot convert to string for 'p.arr'missing 'p.missing'");
+
+        // the bits of a wider destination
+        let wide = |name: &[u8]| if name == b"a" { 1u64 << 40 } else { 0 };
+        let names = obj(r#"{"o": ["a", "zz"]}"#);
+        let mut e = String::new();
+        assert_eq!(bitmap(&names, "p", "o", wide, Required, &mut e), Some(1u64 << 40));
+        assert_eq!(e, "unknown option 'zz' in 'p.o' at index 1");
     }
 
     #[test]

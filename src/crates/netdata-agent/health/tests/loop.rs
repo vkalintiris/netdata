@@ -195,7 +195,13 @@ mod replay {
     use netdata_agent_text::parse::strtoul0;
     use rusqlite::types::ValueRef;
 
-    use crate::common::{oracle_config, rows, unescape_logfmt};
+    use netdata_agent_dyncfg::model::Cmds;
+    use netdata_agent_health::config::HealthConfig;
+    use netdata_agent_health::json::prototype_to_json;
+    use netdata_agent_health::prototype::Rule;
+    use netdata_agent_nrpc::reply::{ContentType, Reply};
+
+    use crate::common::{Core, OneHost, answer_fields, oracle_config, rows, unescape_logfmt};
 
     const T0: i64 = 2_000_000_000;
 
@@ -964,8 +970,18 @@ mod replay {
         /// step's rows are compared.
         body: Option<Vec<u8>>,
         configs: Vec<Fields>,
-        /// The rows a `load` or a `manage` step made (`list`, `reply`, `file`), until the step's rows are compared.
+        /// The rows a `load`, a `manage` or a DynCfg step made (`list`, `reply`, `file`, `answer`, `stored`,
+        /// `store`), until the step's rows are compared.
         rows: Vec<(&'static str, Fields)>,
+        /// `enabled-alarms`: the configuration's pattern of alert names.
+        enabled_alarms: Option<Vec<u8>>,
+        /// What the model of the DynCfg core knows of saved files: the jobs with their payloads, and the ids the
+        /// user disabled; and whether the Cloud has a rule's hash.
+        dyncfg_saved: Vec<(Vec<u8>, Vec<u8>)>,
+        dyncfg_user_disabled: Vec<Vec<u8>>,
+        cloud_has: bool,
+        /// The last `store` row of each name of the rules' store.
+        store_rows: HashMap<Vec<u8>, Fields>,
         /// The silencers' file is in a directory of the scenario's own; C's rows name it `{file}`.
         silencers_dir: tempfile::TempDir,
         host: Arc<Host>,
@@ -991,6 +1007,9 @@ mod replay {
                 config.use_summary_for_notifications = self.use_summary.unwrap_or(config.use_summary_for_notifications);
                 if let Some(default_exec) = self.default_exec.take() {
                     config.default_exec = default_exec;
+                }
+                if let Some(pattern) = self.enabled_alarms.take() {
+                    config.enabled_alerts = HealthConfig::enabled_alerts_pattern(&pattern);
                 }
                 config.silencers_filename = self.silencers_file().into_os_string().into_encoded_bytes();
                 let meta = self.world.real.borrow().as_ref().map(|real| Arc::clone(&real.meta));
@@ -1020,6 +1039,71 @@ mod replay {
             self.silencers_dir.path().join("health.silencers.json")
         }
 
+        /// A DynCfg step, off the HEALTH thread as in the daemon: `f` gets health and the scenario's model of the
+        /// DynCfg core, whose calls go where the world's go.
+        fn with_core<T>(&mut self, f: impl FnOnce(&Health, &Core<'_>) -> T) -> (T, Vec<Captured>) {
+            let health = self.health();
+            let (world, hosts) = (&self.world, OneHost(Arc::clone(&self.host)));
+            let health_thread = world.health_thread.replace(false);
+            let core = Core {
+                health: &health,
+                hosts: &hosts,
+                env: world,
+                clock: &|| world.clock(),
+                saved: &self.dyncfg_saved,
+                user_disabled: &self.dyncfg_user_disabled,
+                cloud_has: self.cloud_has,
+                record: &|call| world.calls().push(call),
+            };
+            let result = netdata_agent_log::capture(|| f(&health, &core));
+            world.health_thread.set(health_thread);
+            result
+        }
+
+        /// A payload of a scenario: none (`-`), a file's bytes (`@<path>`), what a GET of a node answers (`=<id>`),
+        /// or the text itself.
+        fn payload(&mut self, text: &str) -> Option<Vec<u8>> {
+            if text.is_empty() || text == "-" {
+                return None;
+            }
+            if let Some(path) = text.strip_prefix('@') {
+                return Some(std::fs::read(path).unwrap_or_else(|e| panic!("{}: {path}: {e}", self.name)));
+            }
+            if let Some(id) = text.strip_prefix('=') {
+                let ((code, body), _) = self.with_core(|health, core| {
+                    let mut reply = Reply::new(ContentType::TextPlain);
+                    let code = health.dyncfg_callback(&core.ctx(), &mut reply, id.as_bytes(), Cmds::GET, None, None);
+                    (code, reply.body)
+                });
+                assert_eq!(code, 200, "{}: no GET of {id}", self.name);
+                return Some(body);
+            }
+            Some(text.as_bytes().to_vec())
+        }
+
+        /// The rules' store after a DynCfg step: how many names and which, then a row for each name that is new or
+        /// changed: whether it is enabled, how many rules its chain has, and the chain as a GET prints it.
+        fn store_rows(&mut self) {
+            let health = self.health();
+            let prototypes = health.prototypes();
+            let names: Vec<&[u8]> = prototypes.iter().map(|(name, _)| name).collect();
+            let listed = if names.is_empty() { b"-".to_vec() } else { names.join(&b' ') };
+            self.rows.push(("stored", vec![text(names.len()), listed]));
+            for (name, prototype) in prototypes.iter() {
+                let rules: Vec<&Rule> = prototype.rules().iter().collect();
+                let fields = vec![
+                    name.to_vec(),
+                    text(u8::from(prototype.enabled())),
+                    text(rules.len()),
+                    prototype_to_json(name, &rules, false),
+                ];
+                if self.store_rows.get(name) != Some(&fields) {
+                    self.store_rows.insert(name.to_vec(), fields.clone());
+                    self.rows.push(("store", fields));
+                }
+            }
+        }
+
         /// A chart of the scenario, also one that left the host's index.
         fn chart(&self, id: &str) -> Arc<Chart> {
             let charts = self.world.charts.borrow();
@@ -1035,7 +1119,7 @@ mod replay {
             // the generator reads these at once; here they make the plugin, at the first step
             let early = matches!(
                 directive,
-                "rules" | "database" | "retention" | "log-max" | "timeout" | "use-summary" | "default-exec"
+                "rules" | "database" | "retention" | "log-max" | "timeout" | "use-summary" | "default-exec" | "enabled-alarms"
             );
             assert!(self.health.is_none() || !early, "{}: {line}", self.name);
             match directive {
@@ -1385,6 +1469,48 @@ mod replay {
                     self.rows.push(("file", vec![text(u8::from(file.is_ok())), file.unwrap_or_default()]));
                     self.dump(line, None, records);
                 }
+                "enabled-alarms" => self.enabled_alarms = Some(rest.as_bytes().to_vec()),
+                "dyncfg-saved" => {
+                    let (name, payload) = rest.split_once(' ').expect("a name and a payload");
+                    let payload = self.payload(payload).expect("a saved job's payload");
+                    self.dyncfg_saved.push((name.as_bytes().to_vec(), payload));
+                }
+                "dyncfg-user-disabled" => self.dyncfg_user_disabled.push(args[0].as_bytes().to_vec()),
+                "cloud-has" => self.cloud_has = flag(args[0]),
+                // a user's request as the DynCfg core hands it to health
+                "dyncfg" => {
+                    let mut words = rest.splitn(4, ' ');
+                    let mut word = || words.next().unwrap_or_else(|| panic!("{}: {line}", self.name));
+                    let (id, action, name) = (word(), word(), word());
+                    let payload = words.next().unwrap_or("-");
+                    let cmd = match action {
+                        "none" => Cmds::NONE,
+                        action => Cmds::parse(action.as_bytes()),
+                    };
+                    assert!(cmd != Cmds::NONE || action == "none", "{}: {line}", self.name);
+                    let name = (name != "-").then_some(name.as_bytes());
+                    let payload = self.payload(payload);
+                    let now = self.world.clock();
+                    let ((code, reply), records) = self.with_core(|health, core| {
+                        let mut reply = Reply::new(ContentType::TextPlain);
+                        let code =
+                            health.dyncfg_callback(&core.ctx(), &mut reply, id.as_bytes(), cmd, name, payload.as_deref());
+                        (code, reply)
+                    });
+                    self.rows.push(("answer", answer_fields(code, &reply, now)));
+                    self.store_rows();
+                    self.dump(line, None, records);
+                }
+                // the registration of a start or a reload
+                "register" => {
+                    let ((), records) = self.with_core(|health, core| health.dyncfg_register_all(&core.ctx()));
+                    self.store_rows();
+                    self.dump(line, None, records);
+                }
+                "unregister" => {
+                    let ((), records) = self.with_core(|health, core| health.dyncfg_unregister_all(&core.ctx()));
+                    self.dump(line, None, records);
+                }
                 other => panic!("{}: directive {other}", self.name),
             }
         }
@@ -1537,6 +1663,8 @@ mod replay {
                     b"queue" | b"save" | b"lookup" | b"sql_get_alarm_id" | b"load" => true,
                     b"commit_alert_transitions" | b"process_alert_pending_queue" => true,
                     b"last_executed" | b"spawn" | b"monotonic" | b"timedwait" | b"kill" => true,
+                    b"dyncfg_add" | b"dyncfg_del" | b"dyncfg_status" | b"echo" | b"echoed" => true,
+                    b"alert_hash_has_transitioned" | b"aclk_send_alert_configuration" => true,
                     // an entry freed with a save still queued is kept aside inside the host's alerts: it shows in
                     // the store job's saves
                     b"queue_deletion" => false,
@@ -1727,6 +1855,11 @@ mod replay {
                 body: None,
                 configs: Vec::new(),
                 rows: Vec::new(),
+                enabled_alarms: None,
+                dyncfg_saved: Vec::new(),
+                dyncfg_user_disabled: Vec::new(),
+                cloud_has: true,
+                store_rows: HashMap::new(),
                 silencers_dir: tempfile::tempdir().expect("a directory"),
                 host,
                 world,
@@ -1788,6 +1921,15 @@ fn notify_matches_c() {
 #[test]
 fn silencers_match_c() {
     assert_eq!(replayed("silencers"), 99);
+}
+
+/// Health's DynCfg nodes over hosts that run: the registration of a start with saved jobs and nodes the user
+/// disabled, a user's add, update, disable, enable and remove with what each does to the alerts and their log, the
+/// Cloud's copy of a rule, the queue of saves off the HEALTH thread, a host whose health did not run, a name the
+/// configuration excludes. The DynCfg core is the generator's model of it (`tests/common`).
+#[test]
+fn dyncfg_matches_c() {
+    assert_eq!(replayed("dyncfg"), 137);
 }
 
 /// The management key of the generator's world (`api_secret` of its stubs).

@@ -513,7 +513,7 @@ impl Digits<'_> {
     }
 
     /// The number compared with `mantissa / 2^shift` (`mantissa` not zero).
-    fn cmp_dyadic(&self, mantissa: u32, shift: u32) -> Ordering {
+    fn cmp_dyadic(&self, mantissa: u64, shift: u32) -> Ordering {
         // mantissa / 2^shift is mantissa * 5^shift / 10^shift: its digits, the least significant first
         let mut product: Vec<u8> = mantissa.to_string().bytes().rev().map(|d| d - b'0').collect();
         for _ in 0..shift {
@@ -545,11 +545,27 @@ impl Digits<'_> {
         }
         match value.partial_cmp(&f32::MIN_POSITIVE) {
             // a subnormal value's bits count units of 2^-149
-            Some(Ordering::Less) => self.cmp_dyadic(value.to_bits(), 149) != Ordering::Equal,
+            Some(Ordering::Less) => self.cmp_dyadic(u64::from(value.to_bits()), 149) != Ordering::Equal,
             // rounded up to the smallest normal value, 2^-126, the number is not exact; it is tiny when
             // below it, or (x86) below 2^-126 - 2^-151, where rounding to 24 bits reaches 2^-126 too
             Some(Ordering::Equal) => {
                 let (mantissa, shift) = if TININESS_AFTER_ROUNDING { ((1 << 25) - 1, 151) } else { (1, 126) };
+                self.cmp_dyadic(mantissa, shift) == Ordering::Less
+            }
+            _ => false,
+        }
+    }
+
+    /// [`Digits::float_range_error`] for `strtod()`: a double's subnormal bits count units of 2^-1074, and its
+    /// smallest normal value is 2^-1022.
+    fn double_range_error(&self, value: f64) -> bool {
+        if value.is_infinite() || value == 0.0 {
+            return true;
+        }
+        match value.partial_cmp(&f64::MIN_POSITIVE) {
+            Some(Ordering::Less) => self.cmp_dyadic(value.to_bits(), 1074) != Ordering::Equal,
+            Some(Ordering::Equal) => {
+                let (mantissa, shift) = if TININESS_AFTER_ROUNDING { ((1 << 54) - 1, 1076) } else { (1, 1022) };
                 self.cmp_dyadic(mantissa, shift) == Ordering::Less
             }
             _ => false,
@@ -656,24 +672,37 @@ fn scan_float(s: &[u8]) -> (bool, Scanned<'_>, usize) {
 /// (case-insensitive), and returns the correctly rounded value with the
 /// length of the longest valid prefix (0 when nothing was converted).
 pub fn strtod(s: &[u8]) -> (f64, usize) {
+    let (value, len, _) = strtod_range(s);
+    (value, len)
+}
+
+/// [`strtod`], and whether glibc leaves `ERANGE` in `errno` for the number: it overflows, or its result is tiny
+/// (below the smallest normal value) and not exact. For the callers that test `errno` after the call; the C
+/// `errno` of this thread is not touched.
+pub fn strtod_range(s: &[u8]) -> (f64, usize, bool) {
     let (negative, scanned, len) = scan_float(c::c_str(s));
-    let value = match scanned {
-        Scanned::Nothing | Scanned::Zero => 0.0,
-        Scanned::Infinity => f64::INFINITY,
+    let (value, range_error) = match scanned {
+        Scanned::Nothing | Scanned::Zero => (0.0, false),
+        Scanned::Infinity => (f64::INFINITY, false),
         Scanned::Nan(payload) => {
-            f64::from_bits(f64::NAN.to_bits() | (payload.unwrap_or(0) & ((1 << 51) - 1)))
+            (f64::from_bits(f64::NAN.to_bits() | (payload.unwrap_or(0) & ((1 << 51) - 1))), false)
         }
         Scanned::Hex(mantissa, exp2) => {
             let (mantissa, exp, sticky) = hex_mantissa(mantissa, exp2);
-            f64::from_bits(hex_to_bits(mantissa, exp, sticky, DOUBLE).0)
+            let (bits, range_error) = hex_to_bits(mantissa, exp, sticky, DOUBLE);
+            (f64::from_bits(bits), range_error)
         }
         Scanned::Decimal(mantissa, exp10) => match decimal_mantissa(mantissa, exp10, &mut Vec::new()) {
-            Decimal::Zero | Decimal::Underflow => 0.0,
-            Decimal::Infinity => f64::INFINITY,
-            Decimal::Number(number) => number.text().parse().unwrap_or(0.0),
+            Decimal::Zero => (0.0, false),
+            Decimal::Underflow => (0.0, true),
+            Decimal::Infinity => (f64::INFINITY, true),
+            Decimal::Number(number) => {
+                let value: f64 = number.text().parse().unwrap_or(0.0);
+                (value, number.double_range_error(value))
+            }
         },
     };
-    (if negative { -value } else { value }, len)
+    (if negative { -value } else { value }, len, range_error)
 }
 
 /// glibc `strtof()` in the "C" locale: [`strtod`]'s grammar, rounded to
@@ -1022,6 +1051,41 @@ mod uuid_and_strtoull_tests {
             c::take_errno();
             strtof(input.as_bytes());
             assert_eq!(c::take_errno(), if range_error { c::ERANGE } else { 0 }, "{input}");
+        }
+    }
+
+    /// glibc's rule for a double, the one `strtof_range_errors_match_glibc` shows for a float: an overflow, or a
+    /// tiny result that is not exact. C's verdict on the first six is in the health crate's payload table, where a
+    /// double written as a text is refused when `strtod()` leaves `ERANGE`.
+    #[test]
+    fn strtod_range_errors_follow_glibc() {
+        let cases: [(&str, bool); 18] = [
+            ("1e400", true),
+            ("-1e400", true),
+            ("1e-400", true),
+            ("4e-320", true),
+            ("1e38", false),
+            ("3.5e38", false),
+            ("1.7976931348623157e308", false),
+            ("1.8e308", true),
+            ("1e-307", false),
+            ("0x1p-1074", false),
+            ("0x1p-1075", true),
+            ("0x1.8p-1074", true),
+            ("0x1p-1022", false),
+            ("0x1p1024", true),
+            ("inf", false),
+            ("nan", false),
+            ("0", false),
+            ("2.5", false),
+        ];
+        for (input, range_error) in cases {
+            c::take_errno();
+            let (value, used, erange) = strtod_range(input.as_bytes());
+            assert_eq!(erange, range_error, "{input}");
+            assert_eq!((value.to_bits(), used), { let (v, n) = strtod(input.as_bytes()); (v.to_bits(), n) }, "{input}");
+            // the thread's errno is the caller's to set
+            assert_eq!(c::take_errno(), 0, "{input}");
         }
     }
 

@@ -30,6 +30,14 @@ impl GroupCondition {
         }
     }
 
+    /// `alerts_group_condition2id()`: the condition a text names; an empty one is the first of C's table, and so
+    /// is one that names none, which is recorded, in C's words, which name a data source.
+    pub fn parse(name: &[u8]) -> Self {
+        use GroupCondition::{Equal, Greater, GreaterEqual, Less, LessEqual, NotEqual};
+        let named = [Equal, NotEqual, Greater, GreaterEqual, Less, LessEqual].into_iter();
+        parse_name(name, named, GroupCondition::name, "Alert data source")
+    }
+
     /// `alerts_group_conditions_id2txt()` of a number a table holds (C reads it into its one-byte enum): one that
     /// is no condition is recorded, in C's words, which name a data source, and reads as the first of C's table.
     pub fn name_of_id(id: u8) -> &'static str {
@@ -68,6 +76,13 @@ impl DimsGrouping {
         }
     }
 
+    /// `alerts_dims_grouping2id()`: as [`GroupCondition::parse`], with its own record.
+    pub fn parse(name: &[u8]) -> Self {
+        use DimsGrouping::{Average, Max, Min, Min2Max, Sum};
+        let named = [Sum, Min, Max, Average, Min2Max].into_iter();
+        parse_name(name, named, DimsGrouping::name, "Alert lookup dimensions grouping")
+    }
+
     /// `alerts_dims_grouping_id2group()` of a number a table holds: one that is no grouping is recorded and reads
     /// as the first of C's table.
     pub fn name_of_id(id: u8) -> &'static str {
@@ -102,6 +117,12 @@ impl DataSource {
         }
     }
 
+    /// `alerts_data_sources2id()`: as [`GroupCondition::parse`].
+    pub fn parse(name: &[u8]) -> Self {
+        use DataSource::{Anomalies, Percentages, Samples};
+        parse_name(name, [Samples, Percentages, Anomalies].into_iter(), DataSource::name, "Alert data source")
+    }
+
     /// `alerts_data_source_id2source()` of a number a table holds: one that is no data source is recorded and
     /// reads as the first of C's table.
     pub fn name_of_id(id: u8) -> &'static str {
@@ -116,10 +137,29 @@ impl DataSource {
     }
 }
 
+/// What the three `*2id()` functions share: the value of `values` (C's table, its first one first) that `name`
+/// names; the first for an empty text, and for a text that names none, with the WARNING `<what> '<name>' is not
+/// valid`.
+fn parse_name<T: Copy>(name: &[u8], mut values: impl Iterator<Item = T>, text: fn(T) -> &'static str, what: &str) -> T {
+    let first = values.next().expect("a table with a first value");
+    if name.is_empty() {
+        return first;
+    }
+    std::iter::once(first).chain(values).find(|value| text(*value).as_bytes() == name).unwrap_or_else(|| {
+        nd_log!(Source::Daemon, Priority::Warning, "{what} '{}' is not valid", String::from_utf8_lossy(name));
+        first
+    })
+}
+
 /// `ALERT_ACTION_OPTION_NO_CLEAR_NOTIFICATION`, the one bit of `ALERT_ACTION_OPTIONS`.
 pub const ACTION_OPTION_NO_CLEAR_NOTIFICATION: u8 = 1 << 0;
 /// Its name in `alert_action_options[]`.
 pub const ACTION_OPTION_NO_CLEAR_NOTIFICATION_NAME: &str = "no-clear-notification";
+
+/// `alert_action_options_parse_one()`: the bit of one name, 0 for a text that is none.
+pub fn action_options_parse_one(name: &[u8]) -> u8 {
+    if name == ACTION_OPTION_NO_CLEAR_NOTIFICATION_NAME.as_bytes() { ACTION_OPTION_NO_CLEAR_NOTIFICATION } else { 0 }
+}
 
 /// `RRDR_OPTIONS_DATA_SOURCES`: the lookup options `data_source` carries.
 pub const OPTIONS_DATA_SOURCES: u64 = options::PERCENTAGE | options::ANOMALY_BIT;

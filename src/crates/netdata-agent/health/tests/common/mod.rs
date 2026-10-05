@@ -5,7 +5,7 @@
 #[path = "../../../text/tests/common/mod.rs"]
 mod reader;
 
-pub use reader::{Row, check, rows};
+pub use reader::{Row, check, rows, unescape};
 
 /// A string field: C's NULL is written as a lone NUL byte.
 pub fn nullable(row: &Row, i: usize) -> Option<&[u8]> {
@@ -219,4 +219,154 @@ pub fn oracle_config() -> HealthConfig {
         default_recipient: b"root".to_vec(),
         ..HealthConfig::default()
     }
+}
+
+// ------------------------------------------------------------------------------------------------
+// shared by the DynCfg tests: the generator's model of the configuration core
+
+use std::sync::Arc;
+
+use netdata_agent_dyncfg::model::{Cmds, SourceType, Status, Type};
+use netdata_agent_health::dyncfg::{Cloud, Ctx, HostIndex, NodeSpec, Nodes, TEMPLATE_ID};
+use netdata_agent_health::pass::Env;
+use netdata_agent_health::{Clock, Health};
+use netdata_agent_nrpc::reply::{ContentType, Reply};
+use netdata_agent_rrd::host::Host;
+
+/// The cases of a list of `tests/corpus/dyncfg/`: every line that is no comment, decoded; an empty line is the
+/// empty text.
+pub fn dyncfg_cases(name: &str) -> Vec<Vec<u8>> {
+    let path: std::path::PathBuf = [env!("CARGO_MANIFEST_DIR"), "tests", "corpus", "dyncfg", name].iter().collect();
+    let data = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let data = data.strip_suffix(b"\n").unwrap_or(&data);
+    data.split(|&b| b == b'\n').filter(|line| line.first() != Some(&b'#')).map(<[u8]>::to_vec).collect()
+}
+
+/// The one host of a scenario, which is localhost.
+pub struct OneHost(pub Arc<Host>);
+
+impl HostIndex for OneHost {
+    fn all(&self) -> Vec<Arc<Host>> {
+        vec![Arc::clone(&self.0)]
+    }
+
+    fn localhost(&self) -> Arc<Host> {
+        Arc::clone(&self.0)
+    }
+}
+
+/// A UUID's text, as C prints a hash in a call.
+pub fn uuid_text(id: &[u8; 16]) -> Vec<u8> {
+    let hex: String = id.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("{}-{}-{}-{}-{}", &hex[..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..]).into_bytes()
+}
+
+/// The twin of the generator's stubs of the DynCfg core and of the Cloud's copy of a rule
+/// (`tests/oracle/health-loop-stubs.c`): every call health makes is recorded with its fields, and a registration
+/// is answered as the model of the core there answers it: the template's with an `add` per saved job, a job's with
+/// `disable` (the user disabled it or the template, or it is registered disabled) or `enable`, and then, for a
+/// job that is no DynCfg one and has a saved payload, with an `update`.
+pub struct Core<'a> {
+    pub health: &'a Health,
+    pub hosts: &'a dyn HostIndex,
+    pub env: &'a dyn Env,
+    pub clock: Clock<'a>,
+    /// The jobs a saved file has: name and payload, in the core's order.
+    pub saved: &'a [(Vec<u8>, Vec<u8>)],
+    /// The ids a saved file says the user disabled.
+    pub user_disabled: &'a [Vec<u8>],
+    /// Whether the Cloud has a rule's hash.
+    pub cloud_has: bool,
+    /// Where a call goes, with its fields: the list the caller keeps its other calls in, so that their order shows.
+    pub record: &'a dyn Fn(Vec<Vec<u8>>),
+}
+
+impl Core<'_> {
+    pub fn ctx(&self) -> Ctx<'_> {
+        Ctx { nodes: self, cloud: self, hosts: self.hosts, env: self.env, clock: self.clock }
+    }
+
+    fn call(&self, fields: &[&[u8]]) {
+        (self.record)(fields.iter().map(|field| field.to_vec()).collect());
+    }
+
+    fn echo(&self, id: &[u8], cmd: Cmds, name: Option<&[u8]>, payload: Option<&[u8]>) {
+        let cmd_name = cmd.name_one().expect("one command").as_bytes();
+        self.call(&[b"echo", id, cmd_name, name.unwrap_or(b"-"), payload.unwrap_or(b"-")]);
+        let mut reply = Reply::new(ContentType::TextPlain);
+        let code = self.health.dyncfg_callback(&self.ctx(), &mut reply, id, cmd, name, payload);
+        self.call(&[b"echoed", id, cmd_name, code.to_string().as_bytes(), &reply.body]);
+    }
+}
+
+impl Nodes for Core<'_> {
+    fn add(&self, node: &NodeSpec<'_>) -> bool {
+        let mut cmds = Vec::new();
+        node.cmds.write_joined(&mut cmds);
+        self.call(&[
+            b"dyncfg_add",
+            node.id,
+            node.path,
+            node.kind.name().as_bytes(),
+            node.status.name().as_bytes(),
+            node.source_type.name().as_bytes(),
+            node.source,
+            &cmds,
+        ]);
+
+        if node.kind == Type::Template {
+            for (name, payload) in self.saved {
+                self.echo(node.id, Cmds::ADD, Some(name), Some(payload));
+            }
+            return true;
+        }
+        let user_disabled = |id: &[u8]| self.user_disabled.iter().any(|disabled| disabled == id);
+        let disable = user_disabled(node.id) || node.status == Status::Disabled || user_disabled(TEMPLATE_ID);
+        self.echo(node.id, if disable { Cmds::DISABLE } else { Cmds::ENABLE }, None, None);
+        if node.source_type != SourceType::Dyncfg
+            && let Some(name) = node.id.strip_prefix(TEMPLATE_ID).and_then(|rest| rest.strip_prefix(b":"))
+        {
+            for (_, payload) in self.saved.iter().filter(|(saved, _)| saved == name) {
+                self.echo(node.id, Cmds::UPDATE, None, Some(payload));
+            }
+        }
+        true
+    }
+
+    fn del(&self, id: &[u8]) {
+        self.call(&[b"dyncfg_del", id]);
+    }
+
+    fn status(&self, id: &[u8], status: Status) {
+        self.call(&[b"dyncfg_status", id, status.name().as_bytes()]);
+    }
+}
+
+impl Cloud for Core<'_> {
+    fn has(&self, hash: &[u8; 16]) -> bool {
+        self.call(&[b"alert_hash_has_transitioned", &uuid_text(hash), if self.cloud_has { b"1" } else { b"0" }]);
+        self.cloud_has
+    }
+
+    fn send_configuration(&self, hash: &[u8; 16]) {
+        self.call(&[b"aclk_send_alert_configuration", &uuid_text(hash)]);
+    }
+}
+
+/// The fields of an `answer`: the code, the content type, the cache word, the expiry as seconds after `now`
+/// (`-` for none), the body.
+pub fn answer_fields(code: u16, reply: &Reply, now: i64) -> Vec<Vec<u8>> {
+    let content_type = match reply.content_type {
+        ContentType::ApplicationJson => "application/json",
+        ContentType::TextPlain => "text/plain",
+        other => panic!("an answer of {other:?}"),
+    };
+    let expiry = if reply.expires == 0 { "-".to_owned() } else { (reply.expires - now).to_string() };
+    vec![
+        number(code),
+        content_type.as_bytes().to_vec(),
+        if reply.cacheable { b"c".to_vec() } else { b"n".to_vec() },
+        expiry.into_bytes(),
+        reply.body.clone(),
+    ]
 }

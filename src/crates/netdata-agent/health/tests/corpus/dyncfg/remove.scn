@@ -1,0 +1,28 @@
+# An added job removed: its alerts go, the name leaves the store, the core is told to delete the node; then 404.
+database real
+queue 1
+rules tests/corpus/dyncfg/base.conf
+chart loop.d1 loop.d1_name loop.dyncfg - things 1
+var loop.d1 v 70
+register
+clock 0
+pass 0
+store
+dyncfg health:alert:prototype add d_new @tests/corpus/dyncfg/texts.json
+store
+clock 1
+pass 1
+store
+clock 2
+dyncfg health:alert:prototype:d_new remove -
+store
+dyncfg health:alert:prototype:d_new get -
+dyncfg health:alert:prototype:d_new remove -
+clock 3
+pass 3
+store
+dyncfg health:alert:prototype add d_new @tests/corpus/dyncfg/one.json
+store
+clock 4
+pass 4
+store
