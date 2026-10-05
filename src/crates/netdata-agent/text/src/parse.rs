@@ -1059,10 +1059,14 @@ mod uuid_and_strtoull_tests {
     /// double written as a text is refused when `strtod()` leaves `ERANGE`.
     #[test]
     fn strtod_range_errors_follow_glibc() {
-        let cases: [(&str, bool); 18] = [
+        let cases: [(&str, bool); 21] = [
             ("1e400", true),
             ("-1e400", true),
             ("1e-400", true),
+            // past the exponents the digits are weighed for at all: infinite, or nothing, and out of range
+            ("1e401", true),
+            ("-1e5000", true),
+            ("1e-5000", true),
             ("4e-320", true),
             ("1e38", false),
             ("3.5e38", false),

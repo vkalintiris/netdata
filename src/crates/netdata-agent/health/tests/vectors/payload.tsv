@@ -2283,3 +2283,15 @@
 663	required	rule	0	p_name	1	1	loop.dyncfg	\x00	\x00	\x00	\x00	\x00	\x00	\x00	0	\x00	\x00	\x00	\x00	1	0	\x00	average	0	0000000000000000	0	0	0	-60	00000000	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00	0	0	0	de800001	0	0	0
 663	optional	parse	1		{"format_version":1,"name":"p_name","rules":[{"enabled":true,"type":"template","config":{"match":{"on":"loop.dyncfg","host_labels":"*","instance_labels":"*"},"summary":"","info":"","type":"","component":"","classification":"","value":{"database_lookup":{"after":-60,"before":0,"time_group":"average","time_group_condition":"=","time_group_value":0,"dims_group":"sum","data_source":"samples","options":[],"dimensions":""},"calculation":"$v","units":"","update_every":1},"conditions":{"warning_condition":"$this > 50","critical_condition":""},"action":{"options":[],"execute":"","recipient":"","delay":{"up":0,"down":0,"max":0,"multiplier":-4.611686568183201536e+18},"repeat":{"enabled":false,"warning":0,"critical":0}}}}]}	-
 663	optional	rule	0	p_name	1	1	loop.dyncfg	\x00	\x00	\x00	\x00	\x00	\x00	\x00	0	\x00	\x00	\x00	\x00	1	0	\x00	average	0	0000000000000000	0	0	0	-60	00000000	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00	0	0	0	de800001	0	0	0
+664	required	parse	0	cannot convert string '1e401' to double for 'config.action.delay.multiplier'	-	-
+664	optional	parse	0	cannot convert string '1e401' to double for 'config.action.delay.multiplier'	-	-
+665	required	parse	0	cannot convert string '1e401' to double for 'config.value.database_lookup.time_group_value'	-	-
+665	optional	parse	0	cannot convert string '1e401' to double for 'config.value.database_lookup.time_group_value'	-	-
+666	required	parse	0	cannot convert string '-1e5000' to double for 'config.action.delay.multiplier'	-	-
+666	optional	parse	0	cannot convert string '-1e5000' to double for 'config.action.delay.multiplier'	-	-
+667	required	parse	0	cannot convert string '-1e5000' to double for 'config.value.database_lookup.time_group_value'	-	-
+667	optional	parse	0	cannot convert string '-1e5000' to double for 'config.value.database_lookup.time_group_value'	-	-
+668	required	parse	0	cannot convert string '1e-5000' to double for 'config.action.delay.multiplier'	-	-
+668	optional	parse	0	cannot convert string '1e-5000' to double for 'config.action.delay.multiplier'	-	-
+669	required	parse	0	cannot convert string '1e-5000' to double for 'config.value.database_lookup.time_group_value'	-	-
+669	optional	parse	0	cannot convert string '1e-5000' to double for 'config.value.database_lookup.time_group_value'	-	-

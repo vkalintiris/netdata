@@ -264,3 +264,15 @@
 65	template	1	400	application/json	n	-	{"status":400,"message":"type is 'tttttttttttttttttttttttttttttt\xc3', but it can only be 'instance' or 'template'"}	-
 65	job	0	400	application/json	n	-	{"status":400,"message":"type is 'tttttttttttttttttttttttttttttt\xc3', but it can only be 'instance' or 'template'"}	-
 65	job	1	400	application/json	n	-	{"status":400,"message":"type is 'tttttttttttttttttttttttttttttt\xc3', but it can only be 'instance' or 'template'"}	-
+66	template	0	200	text/plain	n	0	     template: u_name\x0a           on: loop.dyncfg\x0a       lookup: average -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a       repeat: warning 0h critical 5s\x0a	-
+66	template	1	200	text/plain	n	0	     template: u_name\x0a           on: loop.dyncfg\x0a       lookup: average -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a       repeat: warning 0h critical 5s\x0a	-
+66	job	0	200	text/plain	n	0	     template: d_tpl\x0a           on: loop.dyncfg\x0a       lookup: average -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a       repeat: warning 0h critical 5s\x0a	-
+66	job	1	200	text/plain	n	0	     template: d_tpl\x0a           on: loop.dyncfg\x0a       lookup: average -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a       repeat: warning 0h critical 5s\x0a	-
+67	template	0	200	text/plain	n	0	     template: u_name\x0a           on: loop.dyncfg\x0a       lookup: average -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a       repeat: warning 1h critical 0h\x0a	-
+67	template	1	200	text/plain	n	0	     template: u_name\x0a           on: loop.dyncfg\x0a       lookup: average -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a       repeat: warning 1h critical 0h\x0a	-
+67	job	0	200	text/plain	n	0	     template: d_tpl\x0a           on: loop.dyncfg\x0a       lookup: average -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a       repeat: warning 1h critical 0h\x0a	-
+67	job	1	200	text/plain	n	0	     template: d_tpl\x0a           on: loop.dyncfg\x0a       lookup: average -1m\x0a         calc: $v\x0a        every: 1s\x0a         warn: $this > 50\x0a       repeat: warning 1h critical 0h\x0a	-
+68	template	0	200	text/plain	n	0	     template: u_name\x0a           on: loop.dyncfg\x0a       lookup: average -1m\x0a         calc: $v\x0a         warn: $this > 50\x0a	-
+68	template	1	200	text/plain	n	0	     template: u_name\x0a           on: loop.dyncfg\x0a       lookup: average -1m\x0a         calc: $v\x0a         warn: $this > 50\x0a	-
+68	job	0	200	text/plain	n	0	     template: d_tpl\x0a           on: loop.dyncfg\x0a       lookup: average -1m\x0a         calc: $v\x0a         warn: $this > 50\x0a	-
+68	job	1	200	text/plain	n	0	     template: d_tpl\x0a           on: loop.dyncfg\x0a       lookup: average -1m\x0a         calc: $v\x0a         warn: $this > 50\x0a	-
