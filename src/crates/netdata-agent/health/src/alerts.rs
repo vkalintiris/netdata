@@ -909,6 +909,23 @@ mod tests {
         assert_eq!((snapshot.status, snapshot.last_status_change), (Status::Uninitialized, NOW));
     }
 
+    /// A host's default exec and recipient are the configuration's from its first pass's initialization on. A
+    /// first pass the stopping service cuts short makes the host's alerts and initializes nothing: the host still
+    /// has no defaults, as one health never ran for.
+    #[test]
+    fn a_host_has_its_defaults_from_the_first_pass_that_initializes_it() {
+        let health = health_with(&rule_text("template", "plain", "t.ctx", &[]));
+        let host = host(&[]);
+        let none: (&[u8], &[u8]) = (b"", b"");
+        assert_eq!(health.host_defaults(&host), none, "health never ran for it");
+        health.host_link(&host, &|| NOW, &|| false);
+        assert!(health.host(&host).is_some_and(|alerts| !alerts.is_initialized()));
+        assert_eq!(health.host_defaults(&host), none, "its first pass was cut short");
+        health.host_link(&host, &|| NOW, &|| true);
+        let configured: (&[u8], &[u8]) = (b"", b"root");
+        assert_eq!(health.host_defaults(&host), configured);
+    }
+
     #[test]
     fn the_key_is_cut_as_c_cuts_it() {
         let name = "n".repeat(1100);

@@ -1297,11 +1297,14 @@ mod replay {
                     let (health, world) = (self.health(), &self.world);
                     let alerts = health.host(&self.host);
                     let ((), records) = netdata_agent_log::capture(|| {
+                        // the generator calls C's table cleanup, which ends with the memory's, and then the
+                        // memory's again, which finds nothing more to do. With a database the daemon's one call
+                        // is replayed, so that its memory half is judged; without one C's table cleanup cannot
+                        // prepare its statement and the generator's second call is the memory's only one
                         if let Some(real) = world.real.borrow().as_ref() {
                             let (host, id) = (&self.host, host_id(&self.host));
                             sql::cleanup(&real.meta, host, &id, alerts.as_deref(), &|| world.clock());
-                        }
-                        if let Some(alerts) = &alerts {
+                        } else if let Some(alerts) = &alerts {
                             alerts.log_cleanup(self.host.health_log_retention_s(), &|| world.clock());
                         }
                     });

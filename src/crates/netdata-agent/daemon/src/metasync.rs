@@ -1207,6 +1207,40 @@ mod tests {
         }
     }
 
+    /// The thread that saves an entry decides what a failed step's second record says: HEALTH resets the statement
+    /// it keeps compiled, another thread (the store job's) finalizes its own.
+    #[test]
+    fn a_failed_save_s_second_record_is_the_saving_thread_s() {
+        use netdata_agent_health::entry::entry_flags;
+
+        let dir = tempfile::tempdir().unwrap();
+        let world = AlertWorld::new(dir.path());
+        let health = world.plugin();
+        let (queue, _unread) = MetaQueue::unread();
+        // this thread is HEALTH from here on
+        let env = world.env(queue);
+        world.pass(&health, &env);
+        let alerts = health.host(&world.host).unwrap();
+        let saved = alerts.log_entries().into_iter().find(|entry| entry.flags & entry_flags::SAVED != 0);
+        let entry = saved.expect("an entry HEALTH saved");
+        // every update of an entry's row is refused from here on
+        let refuse = "CREATE TRIGGER refuse BEFORE UPDATE ON health_log_detail BEGIN SELECT RAISE(ABORT, 'no'); END";
+        world.meta.lock().execute_batch(refuse).unwrap();
+        let second = |records: Vec<netdata_agent_log::Captured>| -> Vec<String> {
+            let messages = records.into_iter().filter_map(|record| record.message);
+            messages.filter(|message| message.contains(" statement rc=")).collect()
+        };
+
+        let (_, here) = netdata_agent_log::capture(|| crate::health::save_entry(&world.meta, &world.host, &entry));
+        let (meta, host) = (Arc::clone(&world.meta), Arc::clone(&world.host));
+        let other = std::thread::spawn(move || {
+            netdata_agent_log::capture(|| crate::health::save_entry(&meta, &host, &entry)).1
+        });
+        let (here, there) = (second(here), second(other.join().unwrap()));
+        assert!(here.len() == 1 && here[0].starts_with("Failed to reset statement rc="), "{here:?}");
+        assert!(there.len() == 1 && there[0].starts_with("Failed to finalize statement rc="), "{there:?}");
+    }
+
     /// The job's step saves what was queued (here an update of a row HEALTH inserted) and records two per save, and
     /// no save is pending afterwards: every entry the host logged has its row, and the alarm its row of the queue
     /// toward the Cloud. A new process on the same database loads the alarm's last entry, and its alert keeps its
