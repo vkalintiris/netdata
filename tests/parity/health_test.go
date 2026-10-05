@@ -940,7 +940,8 @@ func (h *healthPair) settleNoLog(n [2]*healthNorm, prefix string) {
 // as `oracle: …` otherwise: the health state the comparison stands on was not reached); then the candidate has
 // healthCandidateWait to show the same view, and the first difference left ends the case, naming what was compared
 // with both views. While the candidate differs the oracle's view is taken again (a value still settling), and kept
-// only under its guard. Two equal views must also hold their events' times within healthBound of each other (near).
+// only under its guard. Two equal views must also hold their events' times within healthBound of each other (near);
+// while they do not, both sides are read again, and the case fails when the wait ends with the clocks still apart.
 func (h *healthPair) compareNow(t *testing.T, what string, view func(i int) string, guard func(oracle string) error) string {
 	t.Helper()
 	oracle := h.waitOracle(t, what, func() (string, error) {
@@ -948,21 +949,28 @@ func (h *healthPair) compareNow(t *testing.T, what string, view func(i int) stri
 		return o, guard(o)
 	})
 	end := time.Now().Add(healthCandidateWait)
+	var unsettled error
 	for {
 		candidate := view(1)
-		if candidate != oracle {
+		if candidate != oracle || unsettled != nil {
 			if again := view(0); guard(again) == nil {
 				oracle = again
 			}
 		}
 		if candidate == oracle {
-			if err := h.near(oracle, candidate); err != nil {
-				t.Fatalf("%s: the views are equal, the clocks behind them are not: %v\n%s", what, err, healthBrief(oracle))
+			// a clock behind two equal views can still be settling on one side, as a view can: a notification's
+			// `exec_run` is saved right after its spawn, a moment after the entry's row is there (1 ms on C, tens
+			// of ms seen on a candidate). Both sides are read again until the wait is over
+			if unsettled = h.near(oracle, candidate); unsettled == nil {
+				t.Logf("%s, both sides:\n%s", what, healthBrief(oracle))
+				return oracle
 			}
-			t.Logf("%s, both sides:\n%s", what, healthBrief(oracle))
-			return oracle
 		}
 		if time.Now().After(end) {
+			if candidate == oracle {
+				t.Fatalf("%s: the views are equal, the clocks behind them are not after %v: %v\n%s", what, healthCandidateWait,
+					unsettled, healthBrief(oracle))
+			}
 			o, c := healthUnlike(oracle, candidate)
 			t.Fatalf("%s differs after %v\noracle:\n%s\ncandidate:\n%s", what, healthCandidateWait, o, c)
 		}
