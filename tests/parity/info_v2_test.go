@@ -21,8 +21,8 @@ type capabilityDiff struct{ c, rust, closes string }
 
 // capabilityDiffs are those capabilities by name, as the oracle (built with ML, D2) answers under the harness's
 // configuration (`[ml]` and `[health]` off). A milestone that ports the subsystem deletes its entry; a candidate that matches C on a listed
-// capability fails until then. `health` is off on both sides here, so it is not listed: with health on, C says
-// 2/true and the Rust agent 2/false until M9.
+// capability fails until then. `health` is off on both sides here, so it is not listed: with health on both say
+// 2/true (a daemon unit, `daemon/src/capas.rs`; no case asks it with health on).
 var capabilityDiffs = map[string]capabilityDiff{
 	"proto":      {"1/true", "1/false", "M11 Cloud"},
 	"ml":         {"1/false", "0/false", "M14 ML"},
