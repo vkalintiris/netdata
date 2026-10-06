@@ -97,6 +97,12 @@ pub struct Conf {
     logs_done: bool,
 }
 
+/// What [`Conf::section_registry`] read.
+pub struct RegistrySection {
+    pub hostname: String,
+    pub settings: crate::registry::Settings,
+}
+
 fn text(v: Option<Vec<u8>>) -> String {
     v.map(|v| String::from_utf8_lossy(&v).into_owned())
         .unwrap_or_default()
@@ -1262,9 +1268,10 @@ impl Conf {
 
     /// `netdata_conf_section_registry()` (`src/registry/registry_init.c:48-104`): the `[registry]` keys and
     /// `[directories] registry` in C's order, and the three exports the plugins read (D135.5, D140.4); returns the
-    /// registry hostname (localhost's record, D42). The registry itself is not ported: its directory and database go
-    /// with it. C reads this before `[web] mode`, so `enabled` is always read, never forced off.
-    pub fn section_registry(&mut self) -> String {
+    /// registry hostname (localhost's record, D42) and what `/api/v1/registry` answers with (D223). The registry
+    /// itself is not ported: its directory and database go with it. C reads this before `[web] mode`, so `enabled` is
+    /// always read, never forced off.
+    pub fn section_registry(&mut self) -> RegistrySection {
         let _enabled = self.netdata.get_boolean(SECTION_REGISTRY, "enabled", false);
         let default = format!("{}/registry", self.dirs.varlib);
         let path = text(self.netdata.get_path(SECTION_DIRECTORIES, "registry", Some(&default)));
@@ -1273,22 +1280,28 @@ impl Conf {
         self.netdata.get_number(SECTION_REGISTRY, "registry save db every new entries", 1_000_000);
         self.netdata.get_duration_days_to_seconds(SECTION_REGISTRY, "registry expire idle persons", 365 * 86400);
         self.netdata.get(SECTION_REGISTRY, "registry domain", Some(""));
-        let announce = text(self.netdata.get(SECTION_REGISTRY, "registry to announce", Some(REGISTRY_TO_ANNOUNCE)));
+        let announce = self
+            .netdata
+            .get(SECTION_REGISTRY, "registry to announce", Some(REGISTRY_TO_ANNOUNCE))
+            .unwrap_or_default();
         let hostname = text(self.netdata.get(SECTION_REGISTRY, "registry hostname", Some(&self.hostname.clone())));
         self.netdata.get_boolean(SECTION_REGISTRY, "verify browser cookies support", true);
         self.netdata.get_boolean(SECTION_REGISTRY, "enable cookies SameSite and Secure", true);
-        // registry_update_cloud_base_url()
-        let cloud = String::from_utf8_lossy(&crate::cloud::url(&mut self.cloud)).into_owned();
-        export("NETDATA_REGISTRY_CLOUD_BASE_URL", &cloud);
+        // registry_update_cloud_base_url(): the snapshot hello answers with
+        let cloud = crate::cloud::url(&mut self.cloud);
+        export("NETDATA_REGISTRY_CLOUD_BASE_URL", &String::from_utf8_lossy(&cloud));
         export("NETDATA_REGISTRY_HOSTNAME", &hostname);
-        export("NETDATA_REGISTRY_URL", &announce);
+        export("NETDATA_REGISTRY_URL", &String::from_utf8_lossy(&announce));
         // C compares the size_t it casts to: a negative value is huge and stays
         for (name, default) in [("max URL length", 1024), ("max URL name length", 50)] {
             if (self.netdata.get_number(SECTION_REGISTRY, name, default) as u64) < 10 {
                 self.netdata.set_number(SECTION_REGISTRY, name, 10);
             }
         }
-        hostname
+        RegistrySection {
+            hostname,
+            settings: crate::registry::Settings { announce, cloud_base_url: cloud },
+        }
     }
 
     /// The "home" startup step: `[directories] home`, the running user's home unless the key is set, exported as
@@ -2431,7 +2444,10 @@ mod tests {
         conf.dirs.varlib = "/var/lib/netdata".into();
         conf.hostname = "box".into();
         assert!(conf.netdata.load(&path, false, None).is_ok());
-        assert_eq!(conf.section_registry(), "r1");
+        let registry = conf.section_registry();
+        assert_eq!(registry.hostname, "r1");
+        assert_eq!(registry.settings.announce, b"https://registry.my-netdata.io");
+        assert_eq!(registry.settings.cloud_base_url, b"https://app.netdata.cloud");
         let dump = String::from_utf8(conf.netdata.generate(false, true)).unwrap();
         let registry: Vec<&str> = dump
             .split("\n[registry]\n")

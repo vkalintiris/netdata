@@ -9,6 +9,8 @@ use netdata_agent_text::simple_pattern::SimplePattern;
 
 /// `HTTP_ACL`.
 pub mod bits {
+    /// `HTTP_ACL_NONE`: a command every client may reach (the registry's own checks follow).
+    pub const NONE: u32 = 0;
     pub const NOCHECK: u32 = 1 << 0;
     pub const API: u32 = 1 << 1;
     pub const API_UDP: u32 = 1 << 2;

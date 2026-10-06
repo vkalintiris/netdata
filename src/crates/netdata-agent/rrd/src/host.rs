@@ -1106,6 +1106,15 @@ impl Host {
             .clone()
     }
 
+    /// `rrdhost_registry_hostname()`.
+    pub fn registry_hostname(&self) -> String {
+        self.info
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .registry_hostname
+            .clone()
+    }
+
     pub fn update_info(&self, update: impl FnOnce(&mut HostInfo)) {
         update(&mut self.info.write().unwrap_or_else(PoisonError::into_inner));
     }

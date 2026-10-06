@@ -42,6 +42,7 @@ mod metasync;
 mod plugins_d;
 mod profile;
 mod pulse;
+mod registry;
 mod router;
 mod rrdcontext;
 mod server;
@@ -452,7 +453,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     let db = conf::section_db(&mut conf.netdata, system.page_size, &conf.dirs.cache);
     status_file::set_db_mode(db.mode as u8);
     // registry_init()'s configuration: the registry itself is not ported
-    let registry_hostname = conf.section_registry();
+    let registry = conf.section_registry();
+    let registry_hostname = registry.hostname;
 
     startup.step("run dir");
     match system::run_dir(true) {
@@ -472,7 +474,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     }
 
     startup.step("crash reports");
-    status_file::check_crash(&mut conf.netdata, startup::analytics_enabled(&conf.dirs.user_config));
+    status_file::check_crash(&mut conf.netdata, startup::analytics_check_enabled(&conf.dirs.user_config));
     startup.step("temp spawn server");
     // C's "init" server takes id 1 here (D134.3: not ported), so the plugins server keeps C's id
     netdata_agent_spawn::client::skip_server_id();
@@ -963,6 +965,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         build_info,
         cloud_conf_file: conf.cloud_conf_filename(),
         cloud_conf: std::sync::Mutex::new(std::mem::take(&mut conf.cloud)),
+        registry: registry.settings,
     });
     // what a parent's NODE_ID may change here: the agent is never claimed (D61.3), so the Cloud URL follows the parent
     connector.set_env(netdata_agent_streaming::connector::Env {
@@ -1359,7 +1362,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     }
     commands::set_ready();
     // The ANALYTICS thread is not ported: nothing is sent either way.
-    startup.step(if startup::analytics_enabled(&conf.dirs.user_config) {
+    startup.step(if startup::analytics_check_enabled(&conf.dirs.user_config) {
         "anonymous analytics"
     } else {
         "anonymous analytics (disabled)"

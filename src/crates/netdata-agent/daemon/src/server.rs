@@ -82,6 +82,8 @@ pub struct Shared {
     /// `cloud_config` (cloud.conf) and its lock, and the file `reload-claiming-state` reloads it from.
     pub cloud_conf: Mutex<Config>,
     pub cloud_conf_file: String,
+    /// What the registry's requests answer with (`/api/v1/registry`).
+    pub registry: crate::registry::Settings,
 }
 
 impl Shared {
@@ -124,6 +126,8 @@ pub struct Reply {
     pub expires: i64,
     /// Extra header lines (`response.header`), each ending in CRLF.
     pub headers: Vec<u8>,
+    /// `WEB_CLIENT_FLAG_TRACKING_REQUIRED`: under the DNT policy the answer says `Tk: T;cookies`.
+    pub tracking_required: bool,
 }
 
 impl Default for Reply {
@@ -136,6 +140,7 @@ impl Default for Reply {
             date: 0,
             expires: 0,
             headers: Vec::new(),
+            tracking_required: false,
         }
     }
 }
@@ -1129,7 +1134,7 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
         x_frame_options: shared.x_frame_options.as_deref(),
         has_cookies: false,
         respect_do_not_track: shared.settings.respect_do_not_track,
-        tracking_required: false,
+        tracking_required: reply.tracking_required,
         custom: &reply.headers,
         gzip,
         chunked,

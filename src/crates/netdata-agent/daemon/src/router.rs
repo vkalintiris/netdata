@@ -3,8 +3,9 @@
 //! `web_client_api_request_vX()` in `src/web/api/web_api.c`.
 //!
 //! Not ported yet: `/mcp` and `/sse`, and the API commands other than `info`, `chart`, `charts`, `context`,
-//! `contexts`, `data`, `dbengine_stats`, `function`, `functions`, `manage`, `me`, `progress`, `stream_info`,
-//! `stream_path` and health's (`alarms`, `alarm_log` and the others of its block of the table, and `badge.svg`).
+//! `contexts`, `registry`, `data`, `dbengine_stats`, `function`, `functions`, `manage`, `me`, `progress`,
+//! `stream_info`, `stream_path` and health's (`alarms`, `alarm_log` and the others of its block of the table, and
+//! `badge.svg`).
 //! `/netdata.conf` shows only the keys of the subsystems ported so far.
 
 use std::sync::Arc;
@@ -28,6 +29,7 @@ use crate::config;
 use crate::contexts_v2;
 use crate::data;
 use crate::dbengine_stats;
+use crate::registry;
 use crate::functions;
 use crate::health_api;
 use crate::manage;
@@ -105,6 +107,13 @@ const API_V1: &[Command] = &[
         access: access::ANONYMOUS_DATA,
         allow_subpaths: false,
         callback: |_, host, query| v1_contexts::contexts(host, query),
+    },
+    Command {
+        name: "registry",
+        acl: acl::bits::NONE,
+        access: access::NONE,
+        allow_subpaths: false,
+        callback: |route, host, query| registry::api_v1_registry(route, host, query),
     },
     Command {
         name: "data",
@@ -408,6 +417,8 @@ pub struct Route<'a> {
     pub input: &'a [u8],
     /// `WEB_CLIENT_FLAG_PATH_IS_V0` .. `_V3`.
     pub version: Option<u8>,
+    /// `web_client_has_donottrack()`: `DNT: 1` under `[web] respect do not track policy`.
+    pub do_not_track: bool,
     pub trailing_slash: bool,
     pub has_extension: bool,
 }
@@ -452,6 +463,7 @@ pub fn process_request(
         forwarded_for: &req.headers.forwarded_for,
         input,
         version: None,
+        do_not_track: req.headers.do_not_track,
         trailing_slash: end == 0 || path[end - 1] == b'/',
         has_extension: last_marker == Some(b'.'),
     };
@@ -639,6 +651,10 @@ mod tests {
             }),
             cloud_conf: Default::default(),
             cloud_conf_file: "/nonexistent-cloud.conf".into(),
+            registry: crate::registry::Settings {
+                announce: b"https://registry.my-netdata.io".to_vec(),
+                cloud_base_url: b"https://app.netdata.cloud".to_vec(),
+            },
             hosts: Arc::new(netdata_agent_rrd::host::Hosts::new(
                 netdata_agent_rrd::host::Host::new(
                     "0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e",
@@ -1502,5 +1518,115 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&file).expect("the file"), written);
         let messages: Vec<String> = records.into_iter().filter_map(|record| record.message).collect();
         assert_eq!(messages, [format!("Silencer changes written to {}", file.display())]);
+    }
+
+    /// A registry request with its features, and `DNT: 1` as the server takes it under the policy.
+    fn registry(shared: &Shared, path: &[u8], query: &[u8], features: u32, dnt: bool) -> Reply {
+        let mut req = Request::default();
+        req.path = path.to_vec();
+        req.query = query.to_vec();
+        req.url_as_received = [path, b"?", query].concat();
+        req.headers.do_not_track = dnt;
+        process_request(
+            &req,
+            path,
+            acl::bits::TRANSPORTS | features,
+            shared,
+            Instant::now(),
+            &crate::access_log::RequestContext::default(),
+            &|_| false,
+        )
+    }
+
+    /// `/api/v1/registry` with the registry disabled (D223): hello in full, the disabled document for the other four
+    /// actions (asking for tracking), the 400 texts, the ACL and DNT gates in C's order; v1 only, no subpath.
+    #[test]
+    fn the_registry_answers_as_c_with_the_registry_disabled() {
+        let s = shared();
+        let all = acl::bits::ALL_LISTENER_FEATURES;
+        let body = |r: &Reply| String::from_utf8_lossy(&r.body).into_owned();
+        let hello = registry(&s, b"/api/v1/registry", b"action=hello", all, false);
+        assert_eq!(
+            (hello.code, hello.content_type, hello.tracking_required),
+            (status::OK, ContentType::ApplicationJson, false)
+        );
+        let guid = "0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e";
+        assert_eq!(
+            body(&hello),
+            format!(
+                "{{\n    \"action\":\"hello\",\n    \"status\":\"ok\",\n    \"hostname\":\"box\",\n    \
+                 \"machine_guid\":\"{guid}\",\n    \"agent\":{{\n        \"machine_guid\":\"{guid}\",\n        \
+                 \"bearer_protection\":false\n    }},\n    \"cloud_status\":\"available\",\n    \
+                 \"cloud_base_url\":\"https://app.netdata.cloud\",\n    \
+                 \"registry\":\"https://registry.my-netdata.io\",\n    \"anonymous_statistics\":true,\n    \
+                 \"X-Netdata-Auth\":true,\n    \"nodes\":[{{\n            \
+                 \"machine_guid\":\"{guid}\",\n            \"hostname\":\"box\"\n        }}]\n}}\n"
+            )
+        );
+        // the Cloud URL is the snapshot of the registry's init: a later cloud.conf URL (a parent's NODE_ID) is not it
+        s.cloud_conf().set(netdata_agent_inicfg::SECTION_GLOBAL, "url", "https://other.invalid");
+        assert_eq!(body(&registry(&s, b"/api/v1/registry", b"action=hello", all, false)), body(&hello));
+        // DNT: hello answers with the statistics off; every other action is refused before its parameters
+        let dnt = registry(&s, b"/api/v1/registry", b"action=hello", all, true);
+        assert!(body(&dnt).contains("\"anonymous_statistics\":false,"), "{}", body(&dnt));
+        let dnt_text = "Your web browser is sending 'DNT: 1' (Do Not Track). The registry requires persistent cookies \
+                        on your browser to work.";
+        for query in [&b"action=search"[..], b"action=access&machine=m&url=u&name=n", b""] {
+            let r = registry(&s, b"/api/v1/registry", query, all, true);
+            assert_eq!((r.code, body(&r)), (status::BAD_REQUEST, dnt_text.to_owned()), "{query:?}");
+        }
+
+        // the four disabled documents, after each action's parameter check and before the URL's
+        for (query, action) in [
+            (&b"action=access&machine=m&url=bad&name=n"[..], "access"),
+            (b"action=delete&machine=m&url=u&delete_url=d", "delete"),
+            (b"action=search&for=m", "search"),
+            (b"action=switch&machine=m&url=u&to=p", "switch"),
+        ] {
+            let r = registry(&s, b"/api/v1/registry", query, all, false);
+            assert_eq!((r.code, r.content_type, r.tracking_required), (status::OK, ContentType::ApplicationJson, true));
+            assert_eq!(
+                body(&r),
+                format!(
+                    "{{\n    \"action\":\"{action}\",\n    \"status\":\"disabled\",\n    \"hostname\":\"box\",\n    \
+                     \"machine_guid\":\"{guid}\",\n    \"registry\":\"https://registry.my-netdata.io\"\n}}\n"
+                )
+            );
+        }
+        // the 400s: C's texts (the default one names no `switch`), an action's own parameter only after the action
+        for (query, text) in [
+            (&b""[..], "Invalid registry request - you need to set an action: hello, access, delete, search"),
+            (b"action=HELLO", "Invalid registry request - you need to set an action: hello, access, delete, search"),
+            (b"name=n&action=access&machine=m&url=u", "Invalid registry Access request."),
+            (b"action=delete&machine=m&url=u", "Invalid registry Delete request."),
+            (b"action=search", "Invalid registry Search request."),
+            (b"action=switch&machine=m&url=u", "Invalid registry Switch request."),
+        ] {
+            let r = registry(&s, b"/api/v1/registry", query, all, false);
+            assert_eq!(
+                (r.code, r.content_type, r.tracking_required),
+                (status::BAD_REQUEST, ContentType::TextPlain, false)
+            );
+            assert_eq!(body(&r), text, "{query:?}");
+        }
+
+        // hello needs the dashboard's features, the rest the registry's, and that comes before DNT
+        let denied = "You need to be authorized to access this resource";
+        for (query, features, dnt) in [
+            (&b"action=hello"[..], acl::bits::REGISTRY, false),
+            (b"action=search&for=m", acl::bits::DASHBOARD, false),
+            (b"", acl::bits::DASHBOARD, false),
+            (b"action=search&for=m", acl::bits::DASHBOARD, true),
+        ] {
+            let r = registry(&s, b"/api/v1/registry", query, features, dnt);
+            assert_eq!((r.code, body(&r)), (status::UNAVAILABLE_FOR_LEGAL_REASONS, denied.to_owned()), "{query:?}");
+        }
+        assert_eq!(registry(&s, b"/api/v1/registry", b"action=hello", acl::bits::DASHBOARD, false).code, status::OK);
+        let search = registry(&s, b"/api/v1/registry", b"action=search&for=m", acl::bits::REGISTRY, false);
+        assert_eq!(search.code, status::OK);
+
+        // v1 only, no subpath
+        assert_eq!(registry(&s, b"/api/v3/registry", b"action=hello", all, false).code, status::NOT_FOUND);
+        assert_eq!(registry(&s, b"/api/v1/registry/hello", b"", all, false).code, status::BAD_REQUEST);
     }
 }
