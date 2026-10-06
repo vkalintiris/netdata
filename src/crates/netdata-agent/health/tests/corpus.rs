@@ -102,8 +102,8 @@ fn rules_store_and_records_match_c() {
 }
 
 /// The size of the vectors: a guard against a comparison that compared nothing.
-const ITEMS: usize = 247;
-const RECORDS: usize = 807;
-const RULES: usize = 2699;
-const ENTRIES: usize = 2694;
+const ITEMS: usize = 250;
+const RECORDS: usize = 815;
+const RULES: usize = 2719;
+const ENTRIES: usize = 2714;
 const NOT_UTF8: usize = 2;

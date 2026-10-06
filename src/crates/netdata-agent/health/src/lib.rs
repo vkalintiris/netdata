@@ -1,16 +1,19 @@
 //! Health: alerts (C: `src/health/`).
 //!
-//! The crate grows with milestone 9. So far it holds:
+//! It holds:
 //! - the configuration path: the `health.d` reader (`health_config.c`), the prototype store and its validation
 //!   (`health_prototypes.c`), the JSON a rule's hash is made of (`health_dyncfg.c`) and the hash;
 //! - linking: which rule goes to which chart ([`matching`]), a host's alerts ([`alerts`], `rrdcalc.c`), and the
-//!   steps of a host's health pass that link them ([`link`]);
+//!   steps of a host's health pass that link them ([`link`]), with a streaming child's detach and return;
 //! - the variables an alert can name ([`variable`], `health_variable.c`) and what the web API shows of both
 //!   ([`api`]);
 //! - the evaluation loop: a host's pass ([`pass`], `health_event_loop.c`) with the database lookup ([`lookup`]),
-//!   the alert log in memory ([`entry`], `health_log.c`) and its records in the health log.
+//!   the alert log in memory ([`entry`], `health_log.c`) and its records in the health log;
+//! - the alert log's tables ([`sql`], `sqlite_health.c`) and notifications ([`notify`], `health_notifications.c`);
+//! - the silencers ([`silencers`], `health_silencers.c`) and the reload of the configuration;
 //! - DynCfg's health nodes ([`dyncfg`], `health_dyncfg.c`): an alert's payload, the template and the jobs, and
-//!   what a change does to the hosts' alerts.
+//!   what a change does to the hosts' alerts;
+//! - the badge ([`badge`], `web_buffer_svg.c`).
 //!
 //! The pass reaches the daemon through [`pass::Env`]: the chart index, the database lookup, the alert log's tables,
 //! the metadata thread's queue and the spawn of a notification's command ([`notify`], `health_notifications.c`).

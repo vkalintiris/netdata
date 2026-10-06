@@ -1,0 +1,7 @@
+# The lookup's options text for the rules of lookup-opts.conf: one pass with a value.
+rules tests/corpus/loop/lookup-opts.conf
+chart loop.lo loop.lo_name loop.lookopts - things 1
+dim loop.lo value value 7
+clock 0
+lookup loop.lo 200 70 0
+pass 0

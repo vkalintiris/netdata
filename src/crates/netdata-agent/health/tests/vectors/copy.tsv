@@ -1185,6 +1185,7 @@ tests/corpus/badge/badge.conf	copy	b_wait	0	\x00	\x00	$this > 50	(${this} > 50)	
 tests/corpus/badge/badge.conf	copy	b_name	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/badge/badge.conf	copy	b_undef	0	$nothing	${nothing}	\x00	\x00	\x00	\x00
 tests/corpus/badge/badge.conf	copy	b_idle	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/badge/badge.conf	copy	kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/delay/delays.conf	copy	delay_000	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/delay/delays.conf	copy	delay_001	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/delay/delays.conf	copy	delay_002	0	1	1	\x00	\x00	\x00	\x00
@@ -1257,6 +1258,8 @@ tests/corpus/delay/delays.conf	copy	delay_068	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/delay/delays.conf	copy	delay_069	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/delay/delays.conf	copy	delay_twice_max_kept	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/delay/delays.conf	copy	delay_twice_multiplier	0	1	1	\x00	\x00	\x00	\x00
+tests/corpus/delay/delays.conf	copy	delay_invalid_after_valid	0	1	1	\x00	\x00	\x00	\x00
+tests/corpus/delay/delays.conf	copy	delay_up_valid_then_invalid	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/dyncfg/base.conf	copy	d_tpl	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/dyncfg/base.conf	copy	d_alarm	0	$v	${v}	\x00	\x00	$this > 80	(${this} > 80)
 tests/corpus/dyncfg/base.conf	copy	d_chain	0	$v	${v}	$this > 10	(${this} > 10)	\x00	\x00
@@ -1749,6 +1752,9 @@ tests/corpus/keys/options-repeat.conf	copy	rep_016	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/keys/options-repeat.conf	copy	rep_017	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/keys/options-repeat.conf	copy	rep_018	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/keys/options-repeat.conf	copy	rep_019	0	1	1	\x00	\x00	\x00	\x00
+tests/corpus/keys/options-repeat.conf	copy	opt_ored	0	1	1	\x00	\x00	\x00	\x00
+tests/corpus/keys/options-repeat.conf	copy	rep_kept	0	1	1	\x00	\x00	\x00	\x00
+tests/corpus/keys/options-repeat.conf	copy	rep_off_both	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/keys/quotes.conf	copy	quotes_class_0	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/keys/quotes.conf	copy	quotes_class_1	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/keys/quotes.conf	copy	quotes_class_2	0	1	1	\x00	\x00	\x00	\x00
@@ -1988,6 +1994,8 @@ tests/corpus/lines/continuation.conf	copy	cont_info	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/lines/continuation.conf	copy	cont_after_comment	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/lines/continuation.conf	copy	cont_comment_inside	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/lines/continuation.conf	copy	cont_blank_inside	0	2	2	\x00	\x00	\x00	\x00
+tests/corpus/lines/continuation.conf	copy	cont_entity_name	0	1	1	\x00	\x00	\x00	\x00
+tests/corpus/lines/continuation.conf	copy	cont_after_entity	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/lines/crlf.conf	copy	crlf	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/lines/empty-key.conf	copy	empty_key	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/lines/empty-value.conf	copy	empty_value	0	1	1	\x00	\x00	\x00	\x00
@@ -2298,6 +2306,10 @@ tests/corpus/lookup/options.conf	copy	lk_pair_10_14	0	\x00	\x00	$this > 0	(${thi
 tests/corpus/lookup/options.conf	copy	lk_pair_11_13	0	\x00	\x00	$this > 0	(${this} > 0)	\x00	\x00
 tests/corpus/lookup/options.conf	copy	lk_pair_12_15	0	\x00	\x00	$this > 0	(${this} > 0)	\x00	\x00
 tests/corpus/lookup/options.conf	copy	lk_pair_13_14	0	\x00	\x00	$this > 0	(${this} > 0)	\x00	\x00
+tests/corpus/lookup/options.conf	copy	lk_group_min_max	0	\x00	\x00	$this > 0	(${this} > 0)	\x00	\x00
+tests/corpus/lookup/options.conf	copy	lk_group_max_min	0	\x00	\x00	$this > 0	(${this} > 0)	\x00	\x00
+tests/corpus/lookup/options.conf	copy	lk_group_min2max_average	0	\x00	\x00	$this > 0	(${this} > 0)	\x00	\x00
+tests/corpus/lookup/options.conf	copy	lk_group_max_average	0	\x00	\x00	$this > 0	(${this} > 0)	\x00	\x00
 tests/corpus/lookup/unit-table-every.conf	copy	ute_lookup_000	0	\x00	\x00	$this > 0	(${this} > 0)	\x00	\x00
 tests/corpus/lookup/unit-table-every.conf	copy	ute_lookup_001	0	\x00	\x00	$this > 0	(${this} > 0)	\x00	\x00
 tests/corpus/lookup/unit-table-every.conf	copy	ute_lookup_002	0	\x00	\x00	$this > 0	(${this} > 0)	\x00	\x00
@@ -2606,6 +2618,12 @@ tests/corpus/loop/exit.conf	copy	e_one	0	$v	${v}	$this > 50	(${this} > 50)	\x00	
 tests/corpus/loop/free.conf	copy	f_calc	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/loop/free.conf	copy	f_lookup	0	$this * 2	(${this} * 2)	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/loop/gate.conf	copy	g_one	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/loop/lookup-opts.conf	copy	lo_p75	0	\x00	\x00	\x00	\x00	\x00	\x00
+tests/corpus/loop/lookup-opts.conf	copy	lo_countif_eq	0	\x00	\x00	\x00	\x00	\x00	\x00
+tests/corpus/loop/lookup-opts.conf	copy	lo_countif_ge	0	\x00	\x00	\x00	\x00	\x00	\x00
+tests/corpus/loop/lookup-opts.conf	copy	lo_countif_lt	0	\x00	\x00	\x00	\x00	\x00	\x00
+tests/corpus/loop/lookup-opts.conf	copy	lo_countif_le	0	\x00	\x00	\x00	\x00	\x00	\x00
+tests/corpus/loop/lookup-opts.conf	copy	lo_countif_long	0	\x00	\x00	\x00	\x00	\x00	\x00
 tests/corpus/loop/lookup.conf	copy	l_avg	0	\x00	\x00	$this > 50	(${this} > 50)	$this > 90	(${this} > 90)
 tests/corpus/loop/lookup.conf	copy	l_p95	0	\x00	\x00	\x00	\x00	\x00	\x00
 tests/corpus/loop/lookup.conf	copy	l_p90	0	\x00	\x00	\x00	\x00	\x00	\x00
@@ -2658,6 +2676,7 @@ tests/corpus/loop/texts.conf	copy	x_open	0	$v	${v}	\x00	\x00	\x00	\x00
 tests/corpus/loop/texts.conf	copy	x_case	0	$v	${v}	\x00	\x00	\x00	\x00
 tests/corpus/loop/texts.conf	copy	x_plain	0	$v	${v}	\x00	\x00	\x00	\x00
 tests/corpus/loop/texts.conf	copy	x_only_summary	0	$v	${v}	\x00	\x00	\x00	\x00
+tests/corpus/loop/this.conf	copy	t_this	0	($this > -1000000) ? ($this + $v) : $v	((${this} > -(1000000))) ? ((${this} + ${v})) : ${v}	$this > 100	(${this} > 100)	\x00	\x00
 tests/corpus/loop/trim.conf	copy	t_one	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/loop/trim.conf	copy	t_repeat	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/match/basic.conf	copy	m_by_id	0	1	1	\x00	\x00	\x00	\x00
@@ -2688,6 +2707,7 @@ tests/corpus/notify/delay.conf	copy	n_delayed	0	$v	${v}	$this > 50	(${this} > 50
 tests/corpus/notify/delay.conf	copy	n_now	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/notify/format-fail.conf	copy	n_long	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/notify/format-fail.conf	copy	n_long_repeat	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/notify/long.conf	copy	n_long	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/notify/no-clear.conf	copy	n_noclear	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/notify/plain.conf	copy	n_plain	0	$v	${v}	$this > 50	(${this} > 50)	$this > 90	(${this} > 90)
 tests/corpus/notify/repeat.conf	copy	n_repeat	0	$v	${v}	$this > 50	(${this} > 50)	$this > 90	(${this} > 90)

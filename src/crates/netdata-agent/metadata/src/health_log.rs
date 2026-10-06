@@ -1673,26 +1673,4 @@ mod tests {
         assert!(meta.health_alarm_log_cleanup(&[0x22; 16], 0, T + 1000));
         assert_eq!(left(&meta), ["3"]);
     }
-
-    /// C's switch, as a table: rows are the status left, columns the status taken, in the order REMOVED,
-    /// UNDEFINED, UNINITIALIZED, CLEAR, RAISED, WARNING, CRITICAL.
-    #[test]
-    fn the_delay_follows_the_two_statuses() {
-        const STATUSES: [i32; 7] = [-2, -1, 0, 1, 2, 3, 4];
-        const DELAYS: [[i64; 7]; 7] = [
-            [0, 0, 600, 10, 0, 0, 0],
-            [600, 600, 600, 10, 0, 0, 0],
-            [600, 600, 600, 10, 0, 0, 0],
-            [600, 600, 600, 0, 0, 0, 0],
-            [0, 0, 0, 0, 0, 0, 0],
-            [10, 600, 600, 10, 0, 0, 0],
-            [10, 600, 600, 10, 0, 0, 0],
-        ];
-        for (i, old) in STATUSES.into_iter().enumerate() {
-            for (j, new) in STATUSES.into_iter().enumerate() {
-                assert_eq!(calculate_delay(old, new), DELAYS[i][j], "{old} to {new}");
-            }
-        }
-        assert_eq!(calculate_delay(9, 1), 0);
-    }
 }

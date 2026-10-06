@@ -1,0 +1,15 @@
+# A WARNING notification whose command passes 8,192 bytes (`long.conf`): the command is sent whole.
+database real
+auto-wait 0
+rules tests/corpus/notify/long.conf
+chart loop.n loop.n_name loop.notify disks things 1
+var loop.n v 10
+clock 0
+pass 0
+wait
+var loop.n v 70
+clock 1
+pass 1
+wait
+clock 2
+alarm-log 0

@@ -1,0 +1,14 @@
+# The alarm log's export over a row whose rule hash is no UUID (as `load-bad` damages it, with no restart): the export
+# records it and skips the entry.
+database real
+rules tests/corpus/sql/save.conf
+chart loop.c loop.c_name loop.sql disks things 1
+var loop.c v 10
+clock 0
+pass 0
+clock 1
+pass 1
+sql INSERT INTO alert_hash (hash_id, date_updated, template, source) VALUES (x'0304', 0, 's_bad_hash', 'nowhere')
+sql UPDATE health_log SET config_hash_id = x'0304' WHERE chart = 'loop.c' AND name = 's_repeat'
+clock 2
+alarm-log 0

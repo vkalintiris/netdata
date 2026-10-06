@@ -1,0 +1,24 @@
+# `restart-notify` to its first restart's passes, then a pass a day later: the entry the load brought back while its
+# notification was in progress stays in memory until the day-old REMOVED rule frees it.
+database real
+rules tests/corpus/notify/plain.conf
+chart loop.n loop.n_name loop.notify disks things 1
+label loop.n kind ssd
+var loop.n v 10
+clock 0
+pass 0
+var loop.n v 70
+clock 1
+pass 1
+clock 2
+pass 2
+clock 100
+restart
+clock 101
+pass 101
+clock 102
+pass 102
+clock 86502
+pass 86502
+clock 86503
+alarm-log 0

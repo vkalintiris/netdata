@@ -39,7 +39,22 @@ fn units_match_c() {
     assert_eq!(checked, 2784);
 }
 
-/// C's text for each value under eight units at twelve precisions, as a badge prints its value (the automatic
+/// `calculate_delay()` of `sqlite_health.c`: how long the Cloud's queue waits on a status change, for every pair of
+/// statuses and a number past them.
+#[test]
+fn aclk_delays_match_c() {
+    let mut checked = 0;
+    for row in rows("aclk-delay.tsv") {
+        let (from, to) = (row.str(0).parse().expect("a status"), row.str(1).parse().expect("a status"));
+        let delay: i64 = row.str(2).parse().expect("a delay");
+        let rust = netdata_agent_metadata::health_log::calculate_delay(from, to);
+        assert_eq!(rust, delay, "aclk-delay.tsv:{}: {from} to {to}", row.line);
+        checked += 1;
+    }
+    assert_eq!(checked, 64);
+}
+
+/// C's text for each value under nine units at twelve precisions, as a badge prints its value (the automatic
 /// precision is `units_match_c`'s): a fixed precision keeps every zero and stops at 50 digits, and a negative one
 /// other than -1 is automatic too.
 #[test]
@@ -260,8 +275,8 @@ mod replay {
     /// An alarm the table knows: its chart, its name, its alarm id and its next event id.
     type KnownAlarm = (Vec<u8>, Vec<u8>, u32, u32);
 
-    /// The metadata database of a scenario that says `database real`: the agent's handle on a new file, and a
-    /// second connection for the scenario's own statements and for reading the tables.
+    /// The metadata database of a scenario that says `database real`: the agent's handle on a new file (the
+    /// scenario's own statements run on its connection), and a second connection for reading the tables.
     struct Real {
         meta: Arc<MetaDb>,
         raw: rusqlite::Connection,
@@ -1221,9 +1236,11 @@ mod replay {
                 }
                 "aclk-config" => self.world.aclk_config.set(flag(args[0])),
                 "sql" => {
+                    // on the agent's own connection, as the generator runs it on `db_meta`: a schema change made
+                    // on another connection would reach the agent's statements only when they step
                     let real = self.world.real.borrow();
-                    let raw = &real.as_ref().unwrap_or_else(|| panic!("{}: no real database", self.name)).raw;
-                    raw.execute_batch(rest).unwrap_or_else(|err| panic!("{}: {rest}: {err}", self.name));
+                    let meta = &real.as_ref().unwrap_or_else(|| panic!("{}: no real database", self.name)).meta;
+                    meta.lock().execute_batch(rest).unwrap_or_else(|err| panic!("{}: {rest}: {err}", self.name));
                 }
                 "hostlabel" => {
                     let (name, value) = rest.split_once(' ').expect("a label");
@@ -1447,10 +1464,9 @@ mod replay {
                     let (health, world) = (self.health(), &self.world);
                     let alerts = health.host(&self.host);
                     let ((), records) = netdata_agent_log::capture(|| {
-                        // the generator calls C's table cleanup, which ends with the memory's, and then the
-                        // memory's again, which finds nothing more to do. With a database the daemon's one call
-                        // is replayed, so that its memory half is judged; without one C's table cleanup cannot
-                        // prepare its statement and the generator's second call is the memory's only one
+                        // the generator makes the daemon's one call, C's table cleanup, which ends with the
+                        // memory's unless its statement fails to prepare; without a database that statement never
+                        // prepares, and the generator calls the memory's cleanup alone
                         if let Some(real) = world.real.borrow().as_ref() {
                             let (host, id) = (&self.host, host_id(&self.host));
                             sql::cleanup(&real.meta, host, &id, alerts.as_deref(), &|| world.clock());
@@ -2009,7 +2025,7 @@ mod replay {
 /// records.
 #[test]
 fn loop_matches_c() {
-    assert_eq!(replayed("loop"), 224);
+    assert_eq!(replayed("loop"), 229);
 }
 
 /// Every scenario of `tests/corpus/queue/` against C's pass with its save queue in play: the metadata queue takes
@@ -2027,7 +2043,7 @@ fn queue_matches_c() {
 /// trigger refuses each of the statements in turn: C's two records per failed step, and what is left behind.
 #[test]
 fn sql_matches_c() {
-    assert_eq!(replayed("sql"), 115);
+    assert_eq!(replayed("sql"), 133);
 }
 
 /// Every scenario of `tests/corpus/notify/` against C's own `health_send_notification()` and its waits, over a
@@ -2036,7 +2052,7 @@ fn sql_matches_c() {
 /// memory and, later, in the row.
 #[test]
 fn notify_matches_c() {
-    assert_eq!(replayed("notify"), 111);
+    assert_eq!(replayed("notify"), 124);
 }
 
 /// Every scenario of `tests/corpus/silencers/` against C's pass with C's own `health_silencers.c`: requests through
@@ -2071,8 +2087,8 @@ fn child_matches_c() {
 /// expiry, the header line the handler adds and the body.
 #[test]
 fn badge_matches_c() {
-    // 96 requests and the two alert scenarios' two passes each
-    assert_eq!(replayed("badge"), 100);
+    // 98 requests and the three alert scenarios' two passes each
+    assert_eq!(replayed("badge"), 104);
 }
 
 /// The reload of health's configuration: the nodes unregistered and registered with the model core's echoes, every

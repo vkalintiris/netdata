@@ -1,0 +1,13 @@
+# `$this` in a calculation with no lookup: each pass adds `$v` to what the previous pass left; the first takes `$v`.
+rules tests/corpus/loop/this.conf
+chart loop.t loop.t_name loop.this - things 1
+var loop.t v 10
+clock 0
+pass 0
+clock 1
+pass 1
+var loop.t v 40
+clock 2
+pass 2
+clock 3
+pass 3

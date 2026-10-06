@@ -1,0 +1,22 @@
+# The hourly cleanup when its statement cannot be prepared (a column it names dropped from the detail table): C
+# returns before the memory log's cleanup, so memory keeps the replaced entries the retention would drop.
+database real
+retention 50
+rules tests/corpus/sql/save.conf
+chart loop.s loop.s_name loop.sql disks things 1
+label loop.s kind ssd
+var loop.s v 10
+clock 0
+pass 0
+var loop.s v 70
+clock 10
+pass 10
+var loop.s v 10
+clock 40
+pass 40
+var loop.s v 70
+clock 55
+pass 55
+sql ALTER TABLE health_log_detail DROP COLUMN updated_by_id
+clock 200
+cleanup

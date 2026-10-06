@@ -18,3 +18,6 @@ configs
 # a record
 sql UPDATE alert_hash SET time_group_condition = 9, dims_group = 9, data_source = 9 WHERE rowid = 1
 configs
+# green and red: C's writer stores both as NULL, so only a row another hand or an older agent left shows them
+sql UPDATE alert_hash SET green = 1.5, red = -2 WHERE rowid = 2
+configs

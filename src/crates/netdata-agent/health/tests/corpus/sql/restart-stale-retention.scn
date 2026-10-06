@@ -1,0 +1,29 @@
+# `restart-stale` with a retention of 50 seconds: the load's end also drops what the retention would, so the stale,
+# replaced entry goes from memory at the restart.
+database real
+retention 50
+rules tests/corpus/sql/save.conf
+queue 1
+chart loop.s loop.s_name loop.sql disks things 1
+label loop.s kind ssd
+var loop.s v 10
+pending host-recheck
+pending chart-recheck loop.s
+clock 0
+pass 0
+clock 1
+store
+clock 2
+pass 2
+clock 3
+store
+clock 100
+restart
+clock 101
+pass 101
+clock 102
+store
+clock 103
+pass 103
+clock 104
+alarm-log 0
