@@ -1298,10 +1298,7 @@ impl Conf {
                 self.netdata.set_number(SECTION_REGISTRY, name, 10);
             }
         }
-        RegistrySection {
-            hostname,
-            settings: crate::registry::Settings { announce, cloud_base_url: cloud },
-        }
+        RegistrySection { hostname, settings: crate::registry::Settings::new(announce, cloud) }
     }
 
     /// The "home" startup step: `[directories] home`, the running user's home unless the key is set, exported as
@@ -2438,16 +2435,21 @@ mod tests {
     fn registry_section_reads_as_c() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("netdata.conf");
-        std::fs::write(&path, "[registry]\nmax URL length = -5\nmax URL name length = 3\nregistry hostname = r1\n")
-            .unwrap();
+        std::fs::write(
+            &path,
+            "[registry]\nmax URL length = -5\nmax URL name length = 3\nregistry hostname = r1\n\
+             registry to announce = http://parity.invalid/registry\n",
+        )
+        .unwrap();
         let mut conf = Conf::default();
         conf.dirs.varlib = "/var/lib/netdata".into();
         conf.hostname = "box".into();
         assert!(conf.netdata.load(&path, false, None).is_ok());
+        conf.cloud.set(netdata_agent_inicfg::SECTION_GLOBAL, "url", "https://cloud.invalid");
         let registry = conf.section_registry();
         assert_eq!(registry.hostname, "r1");
-        assert_eq!(registry.settings.announce, b"https://registry.my-netdata.io");
-        assert_eq!(registry.settings.cloud_base_url, b"https://app.netdata.cloud");
+        assert_eq!(registry.settings.announce, b"http://parity.invalid/registry");
+        assert_eq!(registry.settings.cloud_base_url(), b"https://cloud.invalid");
         let dump = String::from_utf8(conf.netdata.generate(false, true)).unwrap();
         let registry: Vec<&str> = dump
             .split("\n[registry]\n")
@@ -2467,13 +2469,13 @@ mod tests {
                 "max URL length = -5",
                 "max URL name length = 10",
                 "registry hostname = r1",
+                "registry to announce = http://parity.invalid/registry",
                 "# enabled = no",
                 "# registry db file = /var/lib/netdata/registry/registry.db",
                 "# registry log file = /var/lib/netdata/registry/registry-log.db",
                 "# registry save db every new entries = 1000000",
                 "# registry expire idle persons = 1y",
                 "# registry domain =",
-                "# registry to announce = https://registry.my-netdata.io",
                 "# verify browser cookies support = yes",
                 "# enable cookies SameSite and Secure = yes",
             ]

@@ -3,11 +3,13 @@
 //! (D220 fork 3, D223): `hello` in full, C's `disabled` document for the other four actions, and every 400 and 451 on
 //! the way. With `enabled = yes` C answers from its database; that answer comes with the registry's milestone.
 
+use std::sync::{Mutex, PoisonError};
+
+use netdata_agent_inicfg::Config;
 use netdata_agent_log::netdata_log_error;
 use netdata_agent_query::request::pairs;
 use netdata_agent_rrd::host::Host;
 use netdata_agent_text::json::{JsonOptions, JsonWriter};
-use netdata_agent_web::content_type::ContentType;
 use netdata_agent_web::status;
 
 use crate::acl;
@@ -17,14 +19,36 @@ use crate::router::Route;
 use crate::server::{Reply, permission_denied_acl};
 use crate::startup;
 use crate::status_file::cloud_status;
+use crate::v1_charts::json_reply;
 
 /// What `registry_init()` leaves for the requests: `registry.registry_to_announce`, and `registry.cloud_base_url`,
-/// the snapshot `registry_update_cloud_base_url()` takes at the registry's init. A parent's NODE_ID later changes
-/// cloud.conf's URL, never this snapshot. Kept as bytes: C prints a configured value as it is.
+/// cloud.conf's URL as `registry_update_cloud_base_url()` copies it at the registry's init and at each claim reload
+/// (`netdatacli reload-claiming-state`). A parent's NODE_ID changes cloud.conf's URL in between, not this copy. Kept
+/// as bytes: C prints a configured value as it is.
 #[derive(Default)]
 pub struct Settings {
     pub announce: Vec<u8>,
-    pub cloud_base_url: Vec<u8>,
+    /// Under its own lock, as C's `registry_cloud_base_url_spinlock`.
+    cloud_base_url: Mutex<Vec<u8>>,
+}
+
+impl Settings {
+    pub fn new(announce: Vec<u8>, cloud_base_url: Vec<u8>) -> Self {
+        Settings { announce, cloud_base_url: Mutex::new(cloud_base_url) }
+    }
+
+    /// `registry_update_cloud_base_url()` at a claim reload: cloud.conf's URL copied again and exported for the
+    /// plugins started from then on.
+    pub fn update_cloud_base_url(&self, cloud_conf: &mut Config) {
+        let url = cloud::url(cloud_conf);
+        let mut current = self.cloud_base_url.lock().unwrap_or_else(PoisonError::into_inner);
+        crate::conf::export("NETDATA_REGISTRY_CLOUD_BASE_URL", &String::from_utf8_lossy(&url));
+        *current = url;
+    }
+
+    pub fn cloud_base_url(&self) -> Vec<u8> {
+        self.cloud_base_url.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -174,16 +198,12 @@ fn header(w: &mut JsonWriter, host: &Host, action: &str, status: &str) {
 
 fn json(mut w: JsonWriter, tracking_required: bool) -> Reply {
     w.finalize();
-    Reply {
-        content_type: ContentType::ApplicationJson,
-        body: w.into_bytes(),
-        tracking_required,
-        ..Reply::default()
-    }
+    Reply { tracking_required, ..json_reply(w.into_bytes()) }
 }
 
 /// `registry_json_disabled()`: every action but hello checks `registry.enabled` first, before its URL checks. The
-/// request already asked for tracking (`web_client_enable_tracking_required()`), so the answer says `Tk: T;cookies`.
+/// request already asked for tracking (`web_client_enable_tracking_required()`): under `[web] respect do not track
+/// policy` the answer says `Tk: T;cookies`.
 fn disabled(route: &Route<'_>, host: &Host, action: &str) -> Reply {
     let mut w = JsonWriter::new(JsonOptions::DEFAULT);
     header(&mut w, host, action, "disabled");
@@ -209,7 +229,7 @@ fn hello(route: &Route<'_>, host: &Host, do_not_track: bool) -> Reply {
     w.member_add_boolean("bearer_protection", auth::bearer_protection());
     w.object_close();
     w.member_add_string("cloud_status", cloud_status::name(cloud::status()));
-    w.member_add_string("cloud_base_url", &shared.registry.cloud_base_url);
+    w.member_add_string("cloud_base_url", shared.registry.cloud_base_url());
     w.member_add_string("registry", &shared.registry.announce);
     w.member_add_boolean("anonymous_statistics", !do_not_track && startup::anonymous_statistics());
     w.member_add_boolean("X-Netdata-Auth", true);

@@ -73,7 +73,7 @@ impl Startup {
 /// `netdata_anonymous_statistics_enabled`: on at the start, and off for good once a check finds it off.
 static ANONYMOUS_STATISTICS: AtomicBool = AtomicBool::new(true);
 
-/// `analytics_check_enabled()`: off when the opt-out file is readable or `DISABLE_TELEMETRY` is set to anything.
+/// `analytics_check_enabled()`: off when the opt-out file is readable or `DISABLE_TELEMETRY` is set and not empty.
 pub fn analytics_check_enabled(user_config_dir: &str) -> bool {
     check_enabled(&ANONYMOUS_STATISTICS, user_config_dir)
 }

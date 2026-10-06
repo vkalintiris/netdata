@@ -29,10 +29,10 @@ use crate::config;
 use crate::contexts_v2;
 use crate::data;
 use crate::dbengine_stats;
-use crate::registry;
 use crate::functions;
 use crate::health_api;
 use crate::manage;
+use crate::registry;
 use crate::server::{self, Reply, Shared};
 use crate::static_file;
 use crate::stream_info;
@@ -651,10 +651,10 @@ mod tests {
             }),
             cloud_conf: Default::default(),
             cloud_conf_file: "/nonexistent-cloud.conf".into(),
-            registry: crate::registry::Settings {
-                announce: b"https://registry.my-netdata.io".to_vec(),
-                cloud_base_url: b"https://app.netdata.cloud".to_vec(),
-            },
+            registry: crate::registry::Settings::new(
+                b"https://registry.my-netdata.io".to_vec(),
+                b"https://app.netdata.cloud".to_vec(),
+            ),
             hosts: Arc::new(netdata_agent_rrd::host::Hosts::new(
                 netdata_agent_rrd::host::Host::new(
                     "0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e",
@@ -1521,7 +1521,7 @@ mod tests {
     }
 
     /// A registry request with its features, and `DNT: 1` as the server takes it under the policy.
-    fn registry(shared: &Shared, path: &[u8], query: &[u8], features: u32, dnt: bool) -> Reply {
+    fn registry_request(shared: &Shared, path: &[u8], query: &[u8], features: u32, dnt: bool) -> Reply {
         let mut req = Request::default();
         req.path = path.to_vec();
         req.query = query.to_vec();
@@ -1545,7 +1545,7 @@ mod tests {
         let s = shared();
         let all = acl::bits::ALL_LISTENER_FEATURES;
         let body = |r: &Reply| String::from_utf8_lossy(&r.body).into_owned();
-        let hello = registry(&s, b"/api/v1/registry", b"action=hello", all, false);
+        let hello = registry_request(&s, b"/api/v1/registry", b"action=hello", all, false);
         assert_eq!(
             (hello.code, hello.content_type, hello.tracking_required),
             (status::OK, ContentType::ApplicationJson, false)
@@ -1563,16 +1563,22 @@ mod tests {
                  \"machine_guid\":\"{guid}\",\n            \"hostname\":\"box\"\n        }}]\n}}\n"
             )
         );
-        // the Cloud URL is the snapshot of the registry's init: a later cloud.conf URL (a parent's NODE_ID) is not it
+        // the Cloud URL is the registry's copy: a later cloud.conf URL (a parent's NODE_ID) is not it until a claim
+        // reload copies it again
         s.cloud_conf().set(netdata_agent_inicfg::SECTION_GLOBAL, "url", "https://other.invalid");
-        assert_eq!(body(&registry(&s, b"/api/v1/registry", b"action=hello", all, false)), body(&hello));
+        assert_eq!(body(&registry_request(&s, b"/api/v1/registry", b"action=hello", all, false)), body(&hello));
+        s.registry.update_cloud_base_url(&mut s.cloud_conf());
+        let reloaded = body(&registry_request(&s, b"/api/v1/registry", b"action=hello", all, false));
+        assert_eq!(reloaded, body(&hello).replace("https://app.netdata.cloud", "https://other.invalid"));
+        s.cloud_conf().set(netdata_agent_inicfg::SECTION_GLOBAL, "url", "https://app.netdata.cloud");
+        s.registry.update_cloud_base_url(&mut s.cloud_conf());
         // DNT: hello answers with the statistics off; every other action is refused before its parameters
-        let dnt = registry(&s, b"/api/v1/registry", b"action=hello", all, true);
+        let dnt = registry_request(&s, b"/api/v1/registry", b"action=hello", all, true);
         assert!(body(&dnt).contains("\"anonymous_statistics\":false,"), "{}", body(&dnt));
         let dnt_text = "Your web browser is sending 'DNT: 1' (Do Not Track). The registry requires persistent cookies \
                         on your browser to work.";
         for query in [&b"action=search"[..], b"action=access&machine=m&url=u&name=n", b""] {
-            let r = registry(&s, b"/api/v1/registry", query, all, true);
+            let r = registry_request(&s, b"/api/v1/registry", query, all, true);
             assert_eq!((r.code, body(&r)), (status::BAD_REQUEST, dnt_text.to_owned()), "{query:?}");
         }
 
@@ -1583,7 +1589,7 @@ mod tests {
             (b"action=search&for=m", "search"),
             (b"action=switch&machine=m&url=u&to=p", "switch"),
         ] {
-            let r = registry(&s, b"/api/v1/registry", query, all, false);
+            let r = registry_request(&s, b"/api/v1/registry", query, all, false);
             assert_eq!((r.code, r.content_type, r.tracking_required), (status::OK, ContentType::ApplicationJson, true));
             assert_eq!(
                 body(&r),
@@ -1602,7 +1608,7 @@ mod tests {
             (b"action=search", "Invalid registry Search request."),
             (b"action=switch&machine=m&url=u", "Invalid registry Switch request."),
         ] {
-            let r = registry(&s, b"/api/v1/registry", query, all, false);
+            let r = registry_request(&s, b"/api/v1/registry", query, all, false);
             assert_eq!(
                 (r.code, r.content_type, r.tracking_required),
                 (status::BAD_REQUEST, ContentType::TextPlain, false)
@@ -1618,15 +1624,58 @@ mod tests {
             (b"", acl::bits::DASHBOARD, false),
             (b"action=search&for=m", acl::bits::DASHBOARD, true),
         ] {
-            let r = registry(&s, b"/api/v1/registry", query, features, dnt);
+            let r = registry_request(&s, b"/api/v1/registry", query, features, dnt);
             assert_eq!((r.code, body(&r)), (status::UNAVAILABLE_FOR_LEGAL_REASONS, denied.to_owned()), "{query:?}");
         }
-        assert_eq!(registry(&s, b"/api/v1/registry", b"action=hello", acl::bits::DASHBOARD, false).code, status::OK);
-        let search = registry(&s, b"/api/v1/registry", b"action=search&for=m", acl::bits::REGISTRY, false);
+        let hello = registry_request(&s, b"/api/v1/registry", b"action=hello", acl::bits::DASHBOARD, false);
+        assert_eq!(hello.code, status::OK);
+        let search = registry_request(&s, b"/api/v1/registry", b"action=search&for=m", acl::bits::REGISTRY, false);
         assert_eq!(search.code, status::OK);
 
         // v1 only, no subpath
-        assert_eq!(registry(&s, b"/api/v3/registry", b"action=hello", all, false).code, status::NOT_FOUND);
-        assert_eq!(registry(&s, b"/api/v1/registry/hello", b"", all, false).code, status::BAD_REQUEST);
+        assert_eq!(registry_request(&s, b"/api/v3/registry", b"action=hello", all, false).code, status::NOT_FOUND);
+        assert_eq!(registry_request(&s, b"/api/v1/registry/hello", b"", all, false).code, status::BAD_REQUEST);
+    }
+
+    /// Hello through a child: the header is the routed host's (its registry hostname, GUID and node id), `agent` is
+    /// localhost's GUID and node id with the routed host's claim id, and `nodes[]` lists every host in creation order.
+    #[test]
+    fn the_registry_s_hello_names_the_routed_host_and_localhost_apart() {
+        let s = shared();
+        let localhost = Arc::clone(s.hosts.localhost());
+        localhost.set_node_id([0x11; 16]);
+        let mut info = localhost.info();
+        info.hostname = "child".into();
+        info.registry_hostname = "child-registry".into();
+        let guid = "22222222-2222-4222-8222-222222222222";
+        let child = s
+            .hosts
+            .find_or_create(guid, netdata_agent_rrd::mode::DbMode::Ram, || info, |_| {})
+            .expect("created");
+        child.set_node_id([0x33; 16]);
+        child.set_claim_id_of_origin([0x44; 16]);
+        let all = acl::bits::ALL_LISTENER_FEATURES;
+        let r = registry_request(&s, b"/host/child/api/v1/registry", b"action=hello", all, false);
+        let local = "0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e";
+        let (n1, n3, c4) = (
+            "11111111-1111-1111-1111-111111111111",
+            "33333333-3333-3333-3333-333333333333",
+            "44444444-4444-4444-4444-444444444444",
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&r.body),
+            format!(
+                "{{\n    \"action\":\"hello\",\n    \"status\":\"ok\",\n    \"hostname\":\"child-registry\",\n    \
+                 \"machine_guid\":\"{guid}\",\n    \"node_id\":\"{n3}\",\n    \"agent\":{{\n        \
+                 \"machine_guid\":\"{local}\",\n        \"node_id\":\"{n1}\",\n        \"claim_id\":\"{c4}\",\n        \
+                 \"bearer_protection\":false\n    }},\n    \"cloud_status\":\"available\",\n    \
+                 \"cloud_base_url\":\"https://app.netdata.cloud\",\n    \
+                 \"registry\":\"https://registry.my-netdata.io\",\n    \"anonymous_statistics\":true,\n    \
+                 \"X-Netdata-Auth\":true,\n    \"nodes\":[{{\n            \"machine_guid\":\"{local}\",\n            \
+                 \"node_id\":\"{n1}\",\n            \"hostname\":\"box\"\n        }},{{\n            \
+                 \"machine_guid\":\"{guid}\",\n            \"node_id\":\"{n3}\",\n            \
+                 \"hostname\":\"child-registry\"\n        }}]\n}}\n"
+            )
+        );
     }
 }
