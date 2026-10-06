@@ -454,7 +454,8 @@ pub(crate) fn send(
         alarm_event_id: entry.alarm_event_id,
         when: entry.when as u32,
         name,
-        chart: &entry.chart,
+        // C's NULL chart: a row whose chart is the empty text loads as none (`string_strdupz("")`)
+        chart: if entry.chart.is_empty() { b"NOCHART" } else { &entry.chart },
         new_status: status,
         old_status: entry.old_status.name(),
         new_value: entry.new_value,
@@ -720,6 +721,13 @@ mod tests {
         assert_eq!((sent.exec_run_timestamp, sent.save, sent.execution.is_some()), (Some(NOW + 7), true, true));
         let command = words(env.commands.borrow().last().expect("a command"));
         assert_eq!((command[13].as_str(), command[27].as_str()), ("UNKNOWN", "UNKNOWN=0=UNKNOWN"));
+
+        // an entry as a row whose chart is the empty text loads it: C's entry has no chart, and its command says
+        // NOCHART (`health_notifications.c:480`); no oracle scenario reaches it (D222)
+        entry.chart = Vec::new();
+        send(&hosts[0], &alerts, &entry, &mut RaisedSummary::default(), &health, &env, &|| NOW + 8);
+        let command = words(env.commands.borrow().last().expect("a command"));
+        assert_eq!(command[7..9], ["a", "NOCHART"]);
     }
 
     /// C's `health_send_notification()` over its decision table, through `send`: whether the table is asked and a

@@ -16,10 +16,11 @@
 //   - a chart's first and last entry, and the database lookup (rrdset2value_api_v1_with_owa), which records its
 //     arguments and answers what the scenario says;
 //   - the management key the silencers' request handler asks for (the silencers themselves are C's own);
-//   - SQLite: the load of the alert log (C's ids for an empty table, or none; C's load also looks at the running
-//     service once and logs a record, which come with the alert log's tables), the save (it marks the entry SAVED
-//     or not), the alarm id lookup (the alarms a scenario says the table knows), the alarm's last executed event
-//     (what a scenario says, none by default); the ACLK queue; the sending of a host variable to a parent;
+//   - SQLite: the load of the alert log (C's ids for an empty table, or none; with `database real` the stub hands
+//     the load to C's own sql_health_alarm_log_load(), its look at the running service and its record), the save
+//     (it marks the entry SAVED or not), the alarm id lookup (the alarms a scenario says the table knows), the
+//     alarm's last executed event (what a scenario says, none by default); the ACLK queue; the sending of a host
+//     variable to a parent;
 //   - the metadata queue and its thread's store job: the queue refuses a save (it is then made at once, on the
 //     HEALTH thread only) or takes it, keeping the host and the live entry as C does; a scenario's `store` plays
 //     the job's step for the alert log (src/database/sqlite/sqlite_metadata.c, store_alert_transitions(): each

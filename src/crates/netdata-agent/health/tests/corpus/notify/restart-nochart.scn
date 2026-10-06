@@ -1,0 +1,33 @@
+# A restart after a notified WARNING whose saved row lost its chart's text: C loads the empty text as no chart
+# (`string_strdupz("")` is NULL, `sqlite_health.c:810`) into the REMOVED entry the load injects. A loaded entry is
+# SAVED, so its saves update the detail row only and the table keeps the empty text for the second restart's load.
+# No scenario notifies such an entry: C notifies a loaded entry only when the REMOVED injection failed and no new
+# transition of its alarm came after the load (D222); a unit in `src/notify.rs` holds the NOCHART argument.
+database real
+rules tests/corpus/notify/plain.conf
+chart loop.n loop.n_name loop.notify disks things 1
+label loop.n kind ssd
+var loop.n v 10
+clock 0
+pass 0
+var loop.n v 70
+clock 1
+pass 1
+clock 2
+pass 2
+clock 100
+sql UPDATE health_log SET chart = ''
+restart
+clock 101
+pass 101
+clock 102
+pass 102
+var loop.n v 10
+clock 103
+pass 103
+clock 200
+restart
+clock 201
+pass 201
+clock 202
+alarm-log 0

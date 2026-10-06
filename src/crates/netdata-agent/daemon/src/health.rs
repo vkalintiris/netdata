@@ -197,8 +197,9 @@ impl Cloud for DyncfgLink {
     }
 
     /// `aclk_send_alert_configuration()`: nothing without localhost's ACLK sync configuration; else C's record in
-    /// the access log, with the node id as that configuration has it (no text for a host never claimed). The
-    /// command C then queues for the ACLK thread comes with the Cloud connection.
+    /// the access log. It prints localhost's node id (no text for a host never claimed) where C prints the sync
+    /// configuration's own copy; the two differ only once the agent is claimed, and both the copy and the command C
+    /// then queues for the ACLK thread come with the Cloud connection.
     fn send_configuration(&self, hash: &[u8; 16]) {
         let localhost = self.hosts.localhost();
         if !localhost.aclk_sync_config() {

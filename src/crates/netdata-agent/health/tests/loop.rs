@@ -259,6 +259,12 @@ mod replay {
         value.clone().unwrap_or_else(|| vec![0])
     }
 
+    /// A text the entry keeps as bytes, where C keeps a `STRING *`: C never holds an empty one (`string_strdupz("")`
+    /// is NULL), so the empty text is C's NULL.
+    fn none_if_empty(value: &[u8]) -> Vec<u8> {
+        if value.is_empty() { vec![0] } else { value.to_vec() }
+    }
+
     fn double(value: f64) -> Vec<u8> {
         if value.is_nan() { b"nan".to_vec() } else { format!("{:016x}", value.to_bits()).into_bytes() }
     }
@@ -1891,9 +1897,9 @@ mod replay {
             text(entry.exec_code),
             text(entry.last_repeat),
             nullable(&entry.name),
-            entry.chart.clone(),
-            entry.chart_context.clone(),
-            entry.chart_name.clone(),
+            none_if_empty(&entry.chart),
+            none_if_empty(&entry.chart_context),
+            none_if_empty(&entry.chart_name),
             nullable(&entry.units),
             nullable(&entry.summary),
             nullable(&entry.info),
@@ -2052,7 +2058,7 @@ fn sql_matches_c() {
 /// memory and, later, in the row.
 #[test]
 fn notify_matches_c() {
-    assert_eq!(replayed("notify"), 124);
+    assert_eq!(replayed("notify"), 134);
 }
 
 /// Every scenario of `tests/corpus/silencers/` against C's pass with C's own `health_silencers.c`: requests through
