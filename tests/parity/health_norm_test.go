@@ -43,8 +43,8 @@ import (
 // (healthPair.near, healthPair.bases; D187 point 4): the times of events within healthBound side to side, and each
 // side's id bases within it and not before the chart's first second.
 //
-// A side that serves no alert log (healthNorm.noLog; D198 F1: C's log is SQLite's, a later commit of the Rust agent)
-// has no entry to name its unique ids' base: they print by its alarm ids' base. C seeds both with the same second on
+// A side that serves no alert log (healthNorm.noLog; D198 F1, written before the Rust agent served it at milestone 9
+// commit 5) has no entry to name its unique ids' base: they print by its alarm ids' base. C seeds both with the same second on
 // a host whose health starts on an empty table (sqlite_health.c:864-871), and healthBases holds the oracle, which
 // has both, to that in every run.
 

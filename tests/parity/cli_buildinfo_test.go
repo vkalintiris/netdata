@@ -26,14 +26,14 @@ var buildinfoDiffs = func() map[string]buildinfoDiff {
 		"libs.protobuf":    {`"system"`, "false", "NO", "M11 Cloud"},
 	}
 	for closes, keys := range map[string][]string{
-		"M11 Cloud":     {"features.cloud", "connectivity.aclk"},
-		"M14 ML":        {"features.ml"},
-		"M16 packaging": {"libs.libyaml"},
+		"M11 Cloud": {"features.cloud", "connectivity.aclk"},
+		"M14 ML":    {"features.ml"},
+		// the external plugins' slots follow CMake's build of the plugins, the C sources' removal (D182.10, D135.10)
+		"M16 packaging": {"libs.libyaml", "libs.libcap", "libs.libmnl", "plugins.apps", "plugins.charts.d",
+			"plugins.debugfs", "plugins.cups", "plugins.ebpf", "plugins.freeipmi", "plugins.network-viewer",
+			"plugins.systemd-journal", "plugins.nfacct", "plugins.perf", "plugins.slabinfo", "plugins.xen"},
 		"M12 internal collectors": {"plugins.cgroups", "plugins.cgroup-network", "plugins.proc", "plugins.tc",
 			"plugins.diskspace", "plugins.timex", "plugins.idlejitter"},
-		"M8 plugins.d": {"libs.libcap", "libs.libmnl", "plugins.apps", "plugins.charts.d", "plugins.debugfs",
-			"plugins.cups", "plugins.ebpf", "plugins.freeipmi", "plugins.network-viewer", "plugins.systemd-journal",
-			"plugins.nfacct", "plugins.perf", "plugins.slabinfo", "plugins.xen"},
 		"M13 statsd and exporting": {"plugins.statsd", "exporters.mongodb", "exporters.openmetrics",
 			"exporters.prom-remote-write", "exporters.graphite", "exporters.graphite:http", "exporters.json",
 			"exporters.json:http", "exporters.opentsdb", "exporters.opentsdb:http", "exporters.allmetrics",
