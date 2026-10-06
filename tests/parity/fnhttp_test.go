@@ -157,26 +157,27 @@ var fnHTTPProbeRe = regexp.MustCompile(` src_port=(\d+) .* request="?(/api/v[13]
 
 // fnHTTPAccess are a daemon's access records but the probes' (fnHTTPProbeRe, with their connections' debug records), in
 // file order, normalized; a transaction a case sent stays (`sent:<tx>`; logMasks hide the random ones). A probe's
-// connection records are the CONNECTED before it and the DISCONNECTED after it on its port
-// (web_server_log_connection()): a later connection that reuses the port stays.
+// connection records are the CONNECTED before it and the first DISCONNECTED on its port after that
+// (web_server_log_connection()): the client's close races the request's record, so the disconnect is written before
+// or after it, on either side. A later connection that reuses the port stays.
 func fnHTTPAccess(t *testing.T, d *daemon.Daemon) []string {
 	t.Helper()
 	lines := logLines(t, d.Opts.RunDir, "access.log")
 	drop := make([]bool, len(lines))
-	// the nearest record from i, going by step, of the connection event on port
-	dropEvent := func(i, step int, port, event string) {
+	// the nearest record from i, going by step, of the connection event on port: its index, or i when there is none
+	dropEvent := func(i, step int, port, event string) int {
 		for j := i + step; j >= 0 && j < len(lines); j += step {
 			if m := portRe.FindStringSubmatch(lines[j]); m != nil && m[1] == port && strings.HasSuffix(lines[j], event) {
 				drop[j] = true
-				return
+				return j
 			}
 		}
+		return i
 	}
 	for i, l := range lines {
 		if m := fnHTTPProbeRe.FindStringSubmatch(l); m != nil {
 			drop[i] = true
-			dropEvent(i, -1, m[1], ` CONNECTED"`)
-			dropEvent(i, 1, m[1], ` DISCONNECTED"`)
+			dropEvent(dropEvent(i, -1, m[1], ` CONNECTED"`), 1, m[1], ` DISCONNECTED"`)
 		}
 	}
 	var out []string
