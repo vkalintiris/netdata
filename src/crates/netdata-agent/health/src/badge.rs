@@ -151,7 +151,8 @@ pub fn calc_colorz(color: &[u8], len: usize, value: f64) -> Vec<u8> {
     let value = if value.is_finite() { value } else { f64::NAN };
     let mut color_buffer: Vec<u8> = Vec::new();
     let mut value_buffer: Vec<u8> = Vec::new();
-    // the comparison is kept from one entry to the next, as C's variable is
+    // declared outside the entries, as C's is; every operator sets it and only an entry with one is tested, so what
+    // it carries from an earlier entry is never read
     let mut comparison = Comparison::Greater;
 
     let mut c = 0;

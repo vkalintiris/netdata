@@ -62,7 +62,7 @@ fn values_with_a_precision_match_c() {
     }
     let shown = failures[..failures.len().min(20)].join("\n");
     assert!(failures.is_empty(), "{} of {checked} differ:\n{shown}", failures.len());
-    assert_eq!(checked, 8352);
+    assert_eq!(checked, 9396);
 }
 
 /// C's edit command for each source text of a rule: the new form, the old one with an `@`, and texts of neither.
@@ -2071,8 +2071,8 @@ fn child_matches_c() {
 /// expiry, the header line the handler adds and the body.
 #[test]
 fn badge_matches_c() {
-    // 94 requests and the two alert scenarios' two passes each
-    assert_eq!(replayed("badge"), 98);
+    // 96 requests and the two alert scenarios' two passes each
+    assert_eq!(replayed("badge"), 100);
 }
 
 /// The reload of health's configuration: the nodes unregistered and registered with the model core's echoes, every

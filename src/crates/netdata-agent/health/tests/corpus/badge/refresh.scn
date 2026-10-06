@@ -1,6 +1,6 @@
-# Refresh on the chart path: a number, `auto` three ways (the chart's update every with `unaligned`, else the
-# request's own window), a negative number, zero, a text, another case; over a relative and an absolute window:
-# the cache word, the date left unset, the expiry.
+# Refresh on the chart path: a number, `auto` three ways (the chart's update every with `unaligned`, also over a
+# window of another length, else the request's own window), a negative number, zero, a text, another case; over a
+# relative and an absolute window: the cache word, the date left unset, the expiry.
 chart b.r b.r_name b.ctx fam things 2
 entries b.r 1 100
 lookup b.r 200 5 0
@@ -8,6 +8,7 @@ clock 100
 badge chart=b.r&refresh=5
 badge chart=b.r&refresh=auto
 badge chart=b.r&refresh=auto&options=unaligned
+badge chart=b.r&refresh=auto&options=unaligned&after=-600&before=-60
 badge chart=b.r&refresh=auto&after=-600&before=-60
 badge chart=b.r&refresh=auto&after=100&before=700
 badge chart=b.r&refresh=auto&after=700&before=100

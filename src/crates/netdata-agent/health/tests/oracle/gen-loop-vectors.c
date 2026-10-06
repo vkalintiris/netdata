@@ -2333,7 +2333,9 @@ static void badge_tables(const char *dir) {
     // format_value_and_unit() with a precision: -1 is units.tsv's
     FILE *f = table(dir, "badge-format.tsv", "value (the double's bits, or nan), units, precision, text");
     static const int precisions[] = { -2, 0, 1, 2, 3, 7, 15, 17, 49, 50, 51, INT_MAX };
-    static const char *format_units[] = { "", "things", "%", "seconds", "minutes ago", "hours", "up/down", "null" };
+    // "5xx": a unit that starts with a digit takes the separator too (isalnum(), not isalpha())
+    static const char *format_units[] = { "", "things", "%", "seconds", "minutes ago", "hours", "up/down", "null",
+                                          "5xx" };
     for(size_t u = 0; u < sizeof(format_units) / sizeof(format_units[0]); u++)
         for(size_t p = 0; p < sizeof(precisions) / sizeof(precisions[0]); p++)
             for(size_t v = 0; v < sizeof(unit_values) / sizeof(unit_values[0]); v++) {
@@ -2404,6 +2406,10 @@ static void badge_tables(const char *dir) {
         "re d>5", "red>5 |green", " red>5", "red >5", "red\t>5",
         "red>5|green:null", "green:null|red>5", "red>=5|yellow>=0|blue", "red<=5|yellow<=10|blue",
         "red!=5|green", "red<>5|green", "red:5|green", "red=5|yellow=10|green=0.5",
+        // an entry followed by another, where an early stop and a fall-through differ: a null value against a null
+        // threshold under any operator, a threshold read as an integer, and `null` only in lower case
+        "red!=null|green", "red>null|green", "red<|green", "red>10.9|green", "red>1e2|green", "red>10abc|green",
+        "red:NULL|green", "red=Null|green",
     };
     static const NETDATA_DOUBLE color_values[] = { NAN, INFINITY, -INFINITY, -5.0, -0.0, 0.0, 0.5, 5.0, 10.0, 10.5,
                                                    11.0, 100.0, 1e30 };

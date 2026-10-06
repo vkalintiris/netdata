@@ -85,7 +85,7 @@ fn colors_match_c() {
         }
         checked += 1;
     }
-    judge("badge-color.tsv", checked, 1508, failures);
+    judge("badge-color.tsv", checked, 1612, failures);
 }
 
 /// A color argument: names, hex texts of every length, the length limits, no argument, and no default.
