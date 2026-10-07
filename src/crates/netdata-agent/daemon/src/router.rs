@@ -4,8 +4,8 @@
 //!
 //! Not ported yet: `/mcp` and `/sse`, and the API commands other than `info`, `chart`, `charts`, `context`,
 //! `contexts`, `registry`, `data`, `dbengine_stats`, `function`, `functions`, `manage`, `me`, `progress`,
-//! `stream_info`, `stream_path` and health's (`alarms`, `alarm_log` and the others of its block of the table, and
-//! `badge.svg`).
+//! `stream_info`, `stream_path`, `versions` and health's (`alarms`, `alarm_log` and the others of its block of the
+//! table, and `badge.svg`).
 //! `/netdata.conf` shows only the keys of the subsystems ported so far.
 
 use std::sync::Arc;
@@ -246,6 +246,13 @@ const API_V2: &[Command] = &[
         callback: |route, _, query| contexts_v2::info(route, query),
     },
     Command {
+        name: "versions",
+        acl: acl::bits::NODES,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: |route, _, query| contexts_v2::versions(route, query),
+    },
+    Command {
         name: "progress",
         acl: acl::bits::NOCHECK,
         access: access::ANONYMOUS_DATA,
@@ -340,6 +347,14 @@ const API_V3: &[Command] = &[
         access: access::ANONYMOUS_DATA,
         allow_subpaths: false,
         callback: |route, _, query| contexts_v2::stream_path(route, query),
+    },
+    // v3's row asks for no feature of the client, v2's for the nodes' (web_api_v3.c:141-148, web_api_v2.c:98-105)
+    Command {
+        name: "versions",
+        acl: acl::bits::NOCHECK,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: |route, _, query| contexts_v2::versions(route, query),
     },
     Command {
         name: "progress",
@@ -958,6 +973,45 @@ mod tests {
             let nodes: String = nodes[..nodes.find('}').unwrap()].split_whitespace().collect();
             assert_eq!(nodes, "\"nodes\":{\"total\":1,\"receiving\":0,\"sending\":0,\"archived\":0");
         }
+    }
+
+    /// The top-level members of a pretty answer, in order.
+    fn members(body: &str) -> Vec<&str> {
+        body.lines().filter(|l| l.starts_with("    \"")).map(|l| &l[5..l.find("\":").unwrap()]).collect()
+    }
+
+    /// `/api/v2/versions` and `/api/v3/versions` (`api_v2_versions()`, the VERSIONS mode alone): the hashes between
+    /// `api` and `timings`, and with `options=mcp` the hashes alone, where the bytes are C's for an agent alone with
+    /// no context (the oracle's answer to `/api/v3/versions?options=mcp`). v2's row asks the client for the nodes
+    /// feature; v3's asks for none (`HTTP_ACL_NOCHECK`).
+    #[test]
+    fn versions_are_routed_in_v2_and_v3() {
+        let s = shared();
+        let all = acl::bits::ALL_LISTENER_FEATURES;
+        for path in [&b"/api/v2/versions"[..], b"/api/v3/versions"] {
+            let shown = String::from_utf8_lossy(path).into_owned();
+            let r = asked(&s, path, b"", all);
+            assert_eq!((r.code, r.content_type), (status::OK, ContentType::ApplicationJson), "{shown}");
+            assert!(r.no_cacheable, "{shown}");
+            let body = String::from_utf8(r.body).unwrap();
+            assert_eq!(members(&body), ["api", "versions", "timings"], "{shown}: {body}");
+            let mcp = asked(&s, path, b"options=mcp", all);
+            assert_eq!(
+                String::from_utf8(mcp.body).unwrap(),
+                concat!(
+                    "{\n    \"versions\":{\n        \"routing_hard_hash\":1,\n        \"nodes_hard_hash\":1,\n",
+                    "        \"contexts_hard_hash\":0,\n        \"contexts_soft_hash\":0,\n",
+                    "        \"alerts_hard_hash\":0,\n        \"alerts_soft_hash\":0\n    }\n}\n"
+                ),
+                "{shown}"
+            );
+        }
+        let denied = server::permission_denied_acl();
+        let r = asked(&s, b"/api/v2/versions", b"", all & !acl::bits::NODES);
+        assert_eq!((r.code, &r.body), (denied.code, &denied.body));
+        assert_eq!(asked(&s, b"/api/v2/versions", b"", acl::bits::NODES).code, status::OK);
+        assert_eq!(asked(&s, b"/api/v3/versions", b"", all & !acl::bits::NODES).code, status::OK);
+        assert_eq!(asked(&s, b"/api/v3/versions", b"", 0).code, status::OK);
     }
 
     /// `/api/v1/alarm_variables`, `/api/v1/variable` and `/api/v3/variable`, and the alert members of the chart JSON,
