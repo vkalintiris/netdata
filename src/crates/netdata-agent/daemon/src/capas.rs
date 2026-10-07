@@ -157,8 +157,9 @@ mod tests {
             let slot = Arc::new(ReceiverSlot::new(0, Default::default(), link, Box::new(|| {})));
             assert_eq!(host.set_receiver(slot), Attach::Attached);
         };
+        // C's name of the method, `PLUGINSD_FUNCTION_CONFIG`
         let config = MethodDesc {
-            name: CONFIG_METHOD,
+            name: b"config",
             help: b"",
             tags: b"",
             timeout_s: 10,
