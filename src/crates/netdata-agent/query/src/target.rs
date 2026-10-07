@@ -699,34 +699,19 @@ impl Walk<'_> {
                 self.context(node, &rc, queryable, Some(ri));
             }
         } else {
-            let contexts_sp = pattern(&self.req.contexts);
-            let ok = |rc: &Context| {
-                contexts_sp
-                    .as_ref()
-                    .is_none_or(|sp| sp.matches(rc.id().as_bytes()))
-            };
-            match &self.req.scope_contexts {
-                Some(scope) => {
-                    if let Some(rc) = host.contexts().get(&String::from_utf8_lossy(scope)) {
-                        let q = queryable && ok(&rc);
-                        self.context(node, &rc, q, None);
-                    } else {
-                        let sp = SimplePattern::from_web(scope);
-                        for rc in host.contexts().all() {
-                            if sp.as_ref().is_none_or(|sp| sp.matches(rc.id().as_bytes())) {
-                                let q = queryable && ok(&rc);
-                                self.context(node, &rc, q, None);
-                            }
-                        }
-                    }
-                }
-                None => {
-                    for rc in host.contexts().all() {
-                        let q = queryable && ok(&rc);
-                        self.context(node, &rc, q, None);
-                    }
-                }
-            }
+            let req = self.req;
+            let (scope_sp, contexts_sp) = (pattern(&req.scope_contexts), pattern(&req.contexts));
+            let _ = foreach_context(
+                host,
+                req.scope_contexts.as_deref(),
+                scope_sp.as_ref(),
+                contexts_sp.as_ref(),
+                queryable,
+                |rc, queryable_context| {
+                    self.context(node, rc, queryable_context, None);
+                    ControlFlow::<()>::Continue(())
+                },
+            );
         }
         if self.qt.contexts.len() == before {
             self.qt.nodes.pop();
@@ -815,6 +800,32 @@ pub fn foreach_host<B>(
             versions.alerts_soft_hash += soft;
         }
         f(host, nodes.is_none_or(|sp| host_matches(sp, host)))?;
+    }
+    ControlFlow::Continue(())
+}
+
+/// `query_scope_foreach_context()`: the host's contexts `scope_contexts` selects, in creation order: the one it names
+/// exactly when the host has it, else those its pattern `scope_sp` matches (all of them without a pattern). `f` sees
+/// each with whether it is queryable: the host is, and `contexts_sp` selects the context too. `f` may stop the walk.
+pub fn foreach_context<B>(
+    host: &Host,
+    scope_contexts: Option<&[u8]>,
+    scope_sp: Option<&SimplePattern>,
+    contexts_sp: Option<&SimplePattern>,
+    queryable_host: bool,
+    mut f: impl FnMut(&Arc<Context>, bool) -> ControlFlow<B>,
+) -> ControlFlow<B> {
+    let queryable =
+        |rc: &Context| queryable_host && contexts_sp.is_none_or(|sp| sp.matches(rc.id().as_bytes()));
+    let exact = scope_contexts.and_then(|id| host.contexts().get(&String::from_utf8_lossy(id)));
+    if let Some(rc) = exact {
+        return f(&rc, queryable(&rc));
+    }
+    for rc in host.contexts().all() {
+        if scope_sp.is_some_and(|sp| !sp.matches(rc.id().as_bytes())) {
+            continue;
+        }
+        f(&rc, queryable(&rc))?;
     }
     ControlFlow::Continue(())
 }
@@ -1026,6 +1037,64 @@ mod tests {
         }
         h.contexts().process_queued();
         h
+    }
+
+    /// `query_scope_foreach_context()`: a scope that names one of the host's contexts exactly gives that context
+    /// alone, and its pattern is not asked; any other scope selects by its pattern among all the contexts, in
+    /// creation order. Each context comes with whether the host and the `contexts` pattern leave it queryable. The
+    /// callback can stop the walk.
+    #[test]
+    fn the_context_walk_takes_an_exact_scope_first() {
+        let h = host();
+        for (id, context) in [("b", "ctx.b"), ("c", "other.c")] {
+            h.charts().create(&ChartSpec {
+                type_: "t",
+                id,
+                name: None,
+                family: Some("f"),
+                context: Some(context),
+                title: "T",
+                units: "u",
+                plugin: "p",
+                module: None,
+                priority: 1000,
+                update_every: 1,
+                chart_type: ChartType::Line,
+                mode: DbMode::Ram,
+                history_entries: 3600,
+                page_size: 4096,
+            });
+        }
+        h.contexts().process_queued();
+        let walk = |scope: Option<&[u8]>, scope_sp: &[u8], contexts: &[u8], queryable_host: bool, stop: bool| {
+            let (scope_sp, contexts_sp) = (SimplePattern::from_web(scope_sp), SimplePattern::from_web(contexts));
+            let mut seen = Vec::new();
+            let flow =
+                foreach_context(&h, scope, scope_sp.as_ref(), contexts_sp.as_ref(), queryable_host, |rc, queryable| {
+                    seen.push((rc.id().to_string(), queryable));
+                    if stop { ControlFlow::Break(()) } else { ControlFlow::Continue(()) }
+                });
+            (flow.is_break(), seen)
+        };
+        let listed = |ids: &[(&str, bool)]| ids.iter().map(|(id, q)| (id.to_string(), *q)).collect::<Vec<_>>();
+        let all = |q: [bool; 3]| listed(&[("ctx.a", q[0]), ("ctx.b", q[1]), ("other.c", q[2])]);
+        assert_eq!(walk(None, b"", b"", true, false), (false, all([true; 3])));
+        // a pattern selects, in creation order
+        assert_eq!(
+            walk(Some(b"ctx.*"), b"ctx.*", b"", true, false),
+            (false, listed(&[("ctx.a", true), ("ctx.b", true)]))
+        );
+        // an exact id is taken alone, without asking the pattern
+        assert_eq!(walk(Some(b"ctx.b"), b"nomatch", b"", true, false), (false, listed(&[("ctx.b", true)])));
+        // an id the host has not is left to the pattern
+        assert_eq!(walk(Some(b"ctx.z"), b"other.*", b"", true, false), (false, listed(&[("other.c", true)])));
+        assert_eq!(walk(Some(b"nomatch"), b"nomatch", b"", true, false), (false, Vec::new()));
+        // `contexts` and the host's flag only mark what is walked
+        assert_eq!(walk(None, b"", b"ctx.b", true, false), (false, all([false, true, false])));
+        assert_eq!(walk(Some(b"ctx.b"), b"ctx.b", b"ctx.a", true, false), (false, listed(&[("ctx.b", false)])));
+        assert_eq!(walk(None, b"", b"", false, false), (false, all([false; 3])));
+        // the callback stops it
+        assert_eq!(walk(None, b"", b"", true, true), (true, listed(&[("ctx.a", true)])));
     }
 
     fn v2(h: &Arc<Host>, query: &str) -> QueryTarget {

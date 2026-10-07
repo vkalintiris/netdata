@@ -17,9 +17,9 @@ use netdata_agent_query::tables::{
     contexts_options::{DEBUG, JSON_LONG_KEYS, MCP, MINIFY, RFC3339},
     contexts_options_to_json_array, parse_contexts_options,
 };
-use netdata_agent_query::target::{Versions, foreach_host, matches_retention};
+use netdata_agent_query::target::{Versions, foreach_context, foreach_host, matches_retention};
 use netdata_agent_rrd::clock::now_realtime_s;
-use netdata_agent_rrd::host::Host;
+use netdata_agent_rrd::contexts::Context;
 use netdata_agent_text::json::{JsonOptions, JsonWriter};
 use netdata_agent_text::parse::str2l;
 use netdata_agent_text::simple_pattern::SimplePattern;
@@ -122,39 +122,19 @@ struct Window {
     now: i64,
 }
 
-/// `query_scope_foreach_context()` with `rrdcontext_to_json_v2_add_context()` for the node modes: whether any context
-/// of the host counts. `scope_contexts` first names one context exactly, else its pattern filters them; the
-/// `contexts` selector does not filter nodes (C ignores whether a context is queryable here).
-fn any_context(
-    host: &Host,
-    scope_contexts: Option<&[u8]>,
-    scope: Option<&SimplePattern>,
-    window: Window,
-) -> bool {
-    let counts = |rc: &netdata_agent_rrd::contexts::Context| match window.range {
-        None => true,
-        Some((after, before)) => {
-            let state = rc.state();
-            let last = if rc.flags.is_collected() {
-                window.now
-            } else {
-                state.last_time_s
-            };
-            matches_retention(after, before, state.first_time_s, last, 0)
-        }
+/// `rrdcontext_to_json_v2_add_context()`'s first test: with a window, a context counts only when its retention meets
+/// it, a collected context's reaching the walk's clock.
+fn context_in_window(rc: &Context, window: Window) -> bool {
+    let Some((after, before)) = window.range else {
+        return true;
     };
-    let exact = scope_contexts
-        .map(String::from_utf8_lossy)
-        .and_then(|id| host.contexts().get(&id));
-    match exact {
-        Some(rc) => counts(&rc),
-        None => host
-            .contexts()
-            .all()
-            .iter()
-            .filter(|rc| scope.is_none_or(|sp| sp.matches(rc.id().as_bytes())))
-            .any(|rc| counts(rc)),
-    }
+    let state = rc.state();
+    let last = if rc.flags.is_collected() {
+        window.now
+    } else {
+        state.last_time_s
+    };
+    matches_retention(after, before, state.first_time_s, last, 0)
 }
 
 /// The `request` object of `options=debug`.
@@ -233,12 +213,21 @@ fn render(shared: &Shared, req: &Request, mode: u32, wall_s: i64) -> Reply {
             && !patterns
             && window.range.is_none();
         if mode & (mode::CONTEXTS | mode::SEARCH | mode::ALERTS) != 0 || patterns {
-            matched |= any_context(
+            // query_scope_foreach_context() with rrdcontext_to_json_v2_add_context(): a host with a context that
+            // counts is matched. The `contexts` selector does not filter here (C ignores whether a context is
+            // queryable), so it only keeps a host without any context out.
+            let counted = foreach_context(
                 host,
                 req.scope_contexts.as_deref(),
                 scope_contexts.as_ref(),
-                window,
+                contexts.as_ref(),
+                true,
+                |rc, _| match context_in_window(rc, window) {
+                    true => ControlFlow::Break(()),
+                    false => ControlFlow::Continue(()),
+                },
             );
+            matched |= counted.is_break();
         } else if window.range.is_some() {
             // C checks the host's retention against the window again: it passed above
             matched = true;
