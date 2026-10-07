@@ -117,8 +117,23 @@ func normalizeConf(body []byte, d *daemon.Daemon) string {
 // TestNetdataConf compares /netdata.conf: every key both daemons read must print identically, in the same sections
 // and order, with the same annotations; keys only the oracle reads must be listed in confPending. The candidate must
 // be built with the oracle's compile-time paths (RECIPES.md "Building the candidate for parity checks").
+//
+// Then a child connects (no data) and its path is asked (`host-switch`): a host switch keeps the agent's own
+// configuration (the switch, web_client.c:1323-1325; the dump of netdata_config whatever the host, :1351-1359), so
+// the oracle's dump still names the parent.
 func TestNetdataConf(t *testing.T) {
-	compareNetdataConf(t, daemon.Options{})
+	p := compareNetdataConf(t, daemon.Options{})
+	t.Run("host-switch", func(t *testing.T) {
+		dashConnect(t, p)
+		time.Sleep(time.Second)
+		parent := []byte("\n\thostname = " + parentIdentity.Hostname + "\n")
+		compareNetdataConfPath(t, p, "/host/"+childHost.Hostname+"/netdata.conf", func(body []byte) error {
+			if !bytes.Contains(body, parent) {
+				return fmt.Errorf("the dump does not name the parent (%q)", parent)
+			}
+			return nil
+		})
+	})
 }
 
 // TestNetdataConfStandaloneProfile: the node profile, not an enabled stream API key, doubles the web server threads.
@@ -206,16 +221,28 @@ func compareNetdataConf(t *testing.T, opts daemon.Options) *Pair {
 // compareNetdataConfOn compares a running pair's /netdata.conf dumps (compareNetdataConf's rules).
 func compareNetdataConfOn(t *testing.T, p *Pair) {
 	t.Helper()
+	compareNetdataConfPath(t, p, "/netdata.conf", nil)
+}
+
+// compareNetdataConfPath compares a running pair's dumps at path (compareNetdataConf's rules), once the oracle's dump
+// passes guard (nil: none).
+func compareNetdataConfPath(t *testing.T, p *Pair, path string, guard func(body []byte) error) {
+	t.Helper()
 	var dumps [2]confDump
 	var heads [2][]byte
 	for i, side := range p.Each() {
-		b, err := rawExchange(side.Daemon.Addr, []byte("GET /netdata.conf HTTP/1.1\r\n\r\n"), 5*time.Second)
+		b, err := rawExchange(side.Daemon.Addr, []byte("GET "+path+" HTTP/1.1\r\n\r\n"), 5*time.Second)
 		if err != nil {
 			t.Fatalf("%s: %v", side.Role, err)
 		}
 		head, body, ok := bytes.Cut(b, []byte("\r\n\r\n"))
 		if !ok || !bytes.HasPrefix(head, []byte("HTTP/1.1 200 OK\r\n")) {
 			t.Fatalf("%s: no 200 answer:\n%s", side.Role, head)
+		}
+		if side.Role == Oracle && guard != nil {
+			if err := guard(body); err != nil {
+				t.Fatalf("oracle: %s: %v", path, err)
+			}
 		}
 		// The bodies differ in length while keys are pending.
 		heads[i] = contentLengthRe.ReplaceAll(maskRaw(head), []byte("Content-Length: <masked>"))

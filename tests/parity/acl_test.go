@@ -3,8 +3,6 @@
 package parity
 
 import (
-	"bytes"
-	"strings"
 	"testing"
 	"time"
 
@@ -28,6 +26,10 @@ import (
 // management right and the route's own access bit refuses it (451). Where the dashboard list alone leaves it out
 // (`badges-only`: the badges list's default takes every address) the route answers (a badge, `chart not found`: the
 // agent has no chart of that name), while a data request of the same client is refused for the right it lacks (451).
+//
+// The do-not-track policy (`do-not-track`: `respect do not track policy = yes`, the lists at their defaults): every
+// answer without cookies says it does not track (`Tk: N`, web_client.c:996-1009), whether the client sent `DNT: 1`
+// or not (the header only marks the client for the registry's cookies, http_header.c:74-79).
 func TestWebACL(t *testing.T) {
 	webDir := oracleWebDir(t)
 	get := func(path string, headers ...string) []byte {
@@ -101,6 +103,13 @@ func TestWebACL(t *testing.T) {
 				"info": get("/api/v1/info"),
 			},
 		},
+		"do-not-track": {
+			extra: "    respect do not track policy = yes\n",
+			cases: map[string][]byte{
+				"no-dnt": get("/"),
+				"dnt":    get("/", "DNT: 1"),
+			},
+		},
 	}
 	// what the oracle must answer the management route's rows and the badge route's with: the answer's start and its
 	// end
@@ -111,31 +120,36 @@ func TestWebACL(t *testing.T) {
 		"features-denied/badge":          {"HTTP/1.1 451 Unavailable For Legal Reasons\r\n", denied},
 		"badges-only/badge":              {badgeOK, "</script></svg>"},
 		"badges-only/data":               {"HTTP/1.1 451 Unavailable For Legal Reasons\r\n", denied},
+		"do-not-track/no-dnt":            {"HTTP/1.1 200 OK\r\n", "</script></html>"},
+		"do-not-track/dnt":               {"HTTP/1.1 200 OK\r\n", "</script></html>"},
 	}
 	// a part the oracle's answer must hold besides
-	aclHolds := map[string]string{"badges-only/badge": ">chart not found</text>"}
+	aclHolds := map[string]string{
+		"badges-only/badge":   ">chart not found</text>",
+		"do-not-track/no-dnt": "\r\nTk: N\r\n",
+		"do-not-track/dnt":    "\r\nTk: N\r\n",
+	}
 	for name, cfg := range configs {
 		t.Run(name, func(t *testing.T) {
 			p := StartPair(t, daemon.Options{WebDir: webDir, WebExtra: cfg.extra, StreamMemoryMode: "ram", StorageTiers: 1}, parentIdentity)
 			for cname, request := range cfg.cases {
 				t.Run(cname, func(t *testing.T) {
-					var got [2][]byte
-					for i, side := range p.Each() {
-						// A refused connection is closed at once: nothing, or a reset, comes back.
-						b, _ := rawExchangeFrom("127.0.0.2", side.Daemon.Addr, request, 2*time.Second)
-						got[i] = maskRaw(b)
-					}
-					if want, ok := aclWant[name+"/"+cname]; ok && !(strings.HasPrefix(string(got[0]), want[0]) && strings.HasSuffix(string(got[0]), want[1])) {
-						t.Fatalf("oracle: answered %q, want %q at its start and %q at its end", truncateBytes(got[0]), want[0], want[1])
-					}
-					if part := aclHolds[name+"/"+cname]; !strings.Contains(string(got[0]), part) {
-						t.Fatalf("oracle: answered %q, which does not hold %q", truncateBytes(got[0]), part)
-					}
-					if !bytes.Equal(got[0], got[1]) {
-						t.Errorf("responses differ\noracle:    %q\ncandidate: %q", truncateBytes(got[0]), truncateBytes(got[1]))
-					}
+					aclRow(t, p, "127.0.0.2", request, aclWant[name+"/"+cname], aclHolds[name+"/"+cname])
 				})
 			}
 		})
 	}
+}
+
+// aclRow sends request from `from` to both agents and compares the masked raw answers, after the oracle's answer is
+// checked: it must start with want[0], end with want[1] and hold `holds` (an empty text checks nothing; exactJudge).
+func aclRow(t *testing.T, p *Pair, from string, request []byte, want [2]string, holds string) {
+	t.Helper()
+	var got [2][]byte
+	for i, side := range p.Each() {
+		// A refused connection is closed at once: nothing, or a reset, comes back.
+		b, _ := rawExchangeFrom(from, side.Daemon.Addr, request, 2*time.Second)
+		got[i] = maskRaw(b)
+	}
+	exactJudge(t, got, want, []string{holds}, nil)
 }

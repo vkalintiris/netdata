@@ -164,3 +164,33 @@ func TestLocalhostIdentity(t *testing.T) {
 		}
 	})
 }
+
+// infoTailAge is how long after both agents are ready TestInfoV1Tail asks: C's ANALYTICS thread starts once the agent
+// is ready (main.c:1395-1413), gathers its immutable members at its 10th second and its mutable ones after its 120th
+// (analytics.c:655-697, analytics.h:10-11).
+const infoTailAge = 12 * time.Second
+
+// infoTailFamily compares `/api/v1/info` whole: its host labels as a map (C adds them from concurrent startup threads,
+// `null.streamed-chart`'s rule).
+var infoTailFamily = v2Family{unordered: []string{"host_labels"}}
+
+// infoTailGuard checks the oracle's members after `functions` (api_v1_info.c:134-171) in the 12-115 s phase: no
+// collector (localhost's charts' plugin and module pairs, api_v1_info.c:5-18: no chart with the pulse off and no
+// plugin), the fixed cloud flag, the immutable analytics (exporting connectors "" once gathered, null before:
+// analytics.c:317-325, :1350), the mutable ones not gathered yet (charts 0 and notification methods null until the
+// 120th second: analytics.c:603-611, :1345-1395), and ML off.
+var infoTailGuard = dashGuard(dashMembers(nil, "collectors", "[]", "cloud-enabled", "true", "exporting-connectors",
+	`""`, "charts-count", "0", "notification-methods", "null", "ml-info", `{"enabled":false}`))
+
+// TestInfoV1Tail (check `api.v1-info-tail`, milestone 10 commit 14, fork F7 A): `/api/v1/info` whole on a standalone
+// pair (no pulse charts), asked once both agents have been ready for infoTailAge and the oracle is younger than its
+// first mutable gather.
+func TestInfoV1Tail(t *testing.T) {
+	p := StartPair(t, daemon.Options{PulseOff: true}, parentIdentity)
+	time.Sleep(infoTailAge)
+	req := v2Req{name: "info", target: "/api/v1/info", status: "200", guard: infoTailGuard}
+	compareV2(t, p, req, infoTailFamily)
+	if age := time.Since(p.Oracle.LaunchStartedAt); age > 115*time.Second {
+		t.Errorf("harness: asked %s after the oracle's launch, past the 12-115 s phase", age)
+	}
+}

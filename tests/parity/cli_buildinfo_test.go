@@ -77,9 +77,11 @@ func buildinfoSlotsOf(v Value) ([]string, map[string]string) {
 }
 
 // compareBuildinfoSlots compares two build infos slot by slot: the same slots in order, equal values but for the
-// available memory (a decimal string on both sides) and `buildinfoDiffs`, whose values must be the listed ones.
+// available memory (a decimal string on both sides) and `buildinfoDiffs`, whose values must be the listed ones (all
+// equal when the oracle is its own candidate).
 func compareBuildinfoSlots(t *testing.T, where string, keys, cKeys []string, oValues, cValues map[string]string) {
 	t.Helper()
+	same := sameBinary(t)
 	if strings.Join(keys, " ") != strings.Join(cKeys, " ") {
 		t.Fatalf("%s: slots differ\noracle:    %v\ncandidate: %v", where, keys, cKeys)
 	}
@@ -92,7 +94,7 @@ func compareBuildinfoSlots(t *testing.T, where string, keys, cKeys []string, oVa
 			if !decimalRe.MatchString(o) || !decimalRe.MatchString(c) {
 				t.Errorf("%s: %s: oracle %s, candidate %s", where, key, o, c)
 			}
-		case ok:
+		case ok && !same:
 			listed++
 			any := func(want, got string) bool { return want == "*" && strings.HasPrefix(got, `"`) || want == got }
 			if !any(d.c, o) || !any(d.rust, c) {
@@ -107,14 +109,15 @@ func compareBuildinfoSlots(t *testing.T, where string, keys, cKeys []string, oVa
 			t.Errorf("%s: %s: oracle %s, candidate %s", where, key, o, c)
 		}
 	}
-	if listed != len(buildinfoDiffs) {
+	if !same && listed != len(buildinfoDiffs) {
 		t.Errorf("%s: %d of the %d listed slots exist", where, listed, len(buildinfoDiffs))
 	}
 }
 
 // TestCLIBuildInfo compares -W buildinfo, -W buildinfojson and -W cmakecache (check `cli.buildinfo`): stdout, stderr
 // and the exit code. Both binaries must be built with the same install paths. The slots agree but for the available
-// memory (a decimal string on both sides) and `buildinfoDiffs`; the text's lines pair with the JSON's slots in order.
+// memory (a decimal string on both sides) and `buildinfoDiffs` (none when the oracle is its own candidate); the
+// text's lines pair with the JSON's slots in order.
 func TestCLIBuildInfo(t *testing.T) {
 	oracle, candidate := os.Getenv("PARITY_ORACLE"), os.Getenv("PARITY_CANDIDATE")
 	if oracle == "" || candidate == "" {
@@ -135,6 +138,7 @@ func TestCLIBuildInfo(t *testing.T) {
 		}
 		return got
 	}
+	same := sameBinary(t)
 	json := get("-W", "buildinfojson")
 	keys, oValues := buildinfoSlots(t, Oracle, json[0].out)
 	cKeys, cValues := buildinfoSlots(t, Candidate, json[1].out)
@@ -149,7 +153,7 @@ func TestCLIBuildInfo(t *testing.T) {
 				section = m[1]
 			} else if m := buildinfoMemberRe.FindStringSubmatch(l); m != nil {
 				key := section + "." + m[1]
-				if _, ok := buildinfoDiffs[key]; ok || key == "runtime.mem-available" {
+				if _, ok := buildinfoDiffs[key]; ok && !same || key == "runtime.mem-available" {
 					l = `        "` + m[1] + `":<masked>` + m[3]
 				}
 			}
@@ -190,7 +194,7 @@ func TestCLIBuildInfo(t *testing.T) {
 			if !decimalRe.MatchString(fmt.Sprintf("%q", oValue)) || !decimalRe.MatchString(fmt.Sprintf("%q", cValue)) {
 				t.Errorf("%s: oracle %q, candidate %q", key, oValue, cValue)
 			}
-		case ok:
+		case ok && !same:
 			if d.text != "*" && cValue != d.text {
 				t.Errorf("%s (%s): the candidate's text %q, listed %q", key, d.closes, cValue, d.text)
 			}

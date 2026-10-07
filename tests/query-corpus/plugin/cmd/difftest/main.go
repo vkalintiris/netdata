@@ -432,7 +432,8 @@ func collect(rec *recorder, c *plugin.Collect) {
 // phase's values, a phase's own lines before its first block, until the process ends (plugin.Values).
 func values(rec *recorder, dir string, v *plugin.Values) {
 	var def strings.Builder
-	fmt.Fprintf(&def, "CHART %s '' 'title' 'units' '%s' '%s' line 1000 1 '' '' ''\n", v.Chart, cmp.Or(v.Family, "family"), v.Context)
+	fmt.Fprintf(&def, "CHART %s '' 'title' 'units' '%s' '%s' line 1000 1 '' '' '%s'\n", v.Chart,
+		cmp.Or(v.Family, "family"), v.Context, v.Module)
 	for _, d := range v.Dims {
 		fmt.Fprintf(&def, "DIMENSION %s '' absolute 1 1\n", d)
 	}

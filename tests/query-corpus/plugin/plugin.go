@@ -130,10 +130,12 @@ type Collect struct {
 // engine's directory (Release; released at mid-second, two engines switch at the same second), the last one, or one
 // without Until, holds. Each phase's first second is recorded (`phase`, Step its index), and every second (`collected`).
 type Values struct {
-	Chart   string   `json:"chart"`
-	Context string   `json:"context,omitempty"`
-	Family  string   `json:"family,omitempty"`
-	Dims    []string `json:"dims"`
+	Chart   string `json:"chart"`
+	Context string `json:"context,omitempty"`
+	Family  string `json:"family,omitempty"`
+	// Module is the chart's module, the CHART line's last word (empty: none, which C labels `_collect_module` "[none]")
+	Module string   `json:"module,omitempty"`
+	Dims   []string `json:"dims"`
 	// Labels are the chart's labels, each `name value` (the value may hold spaces), written in this order
 	Labels []string `json:"labels,omitempty"`
 	Phases []Phase  `json:"phases"`

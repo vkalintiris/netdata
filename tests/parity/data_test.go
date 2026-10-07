@@ -23,14 +23,20 @@ var (
 	// v2 wrappers: the answering agent's clock, and the context dictionary's version, which counts worker-timed
 	// update events (spec §11).
 	v2ClockRe = regexp.MustCompile(`"(now|contexts_hard_hash)":("[^"]*"|[0-9]+)`)
-	// The detailed tree prints now as a collected metric's last entry.
-	lastEntryRe = regexp.MustCompile(`"(le|last_entry)":(\d+)`)
 )
 
-// maskNowEntries replaces last entries within [from, to] (the seconds the request was in flight) with NOW.
-func maskNowEntries(b []byte, from, to int64) []byte {
-	return lastEntryRe.ReplaceAllFunc(b, func(m []byte) []byte {
-		sub := lastEntryRe.FindSubmatch(m)
+// maskNowKeys writes "NOW" for each member of b named one of keys whose value is a second in [from, to], the seconds
+// the request was in flight: an agent prints its clock there for what is collected (a detailed tree's last entries; a
+// v2 walk's context `last_entry`, database/contexts/api_v2_contexts.c:1213, and an online host's `db.last_time`,
+// rrdhost.h:617-618, from the walk's one `now`, :1374). Any other value is left to the comparison.
+func maskNowKeys(b []byte, from, to int64, keys ...string) []byte {
+	quoted := make([]string, len(keys))
+	for i, k := range keys {
+		quoted[i] = regexp.QuoteMeta(k)
+	}
+	re := regexp.MustCompile(`"(` + strings.Join(quoted, "|") + `)":(\d+)`)
+	return re.ReplaceAllFunc(b, func(m []byte) []byte {
+		sub := re.FindSubmatch(m)
 		v, err := strconv.ParseInt(string(sub[2]), 10, 64)
 		if err == nil && v >= from && v <= to {
 			return []byte(`"` + string(sub[1]) + `":"NOW"`)
@@ -39,9 +45,47 @@ func maskNowEntries(b []byte, from, to int64) []byte {
 	})
 }
 
+// maskNowEntries is maskNowKeys of a data answer's last entries (the detailed tree's `le` and `last_entry`).
+func maskNowEntries(b []byte, from, to int64) []byte {
+	return maskNowKeys(b, from, to, "le", "last_entry")
+}
+
+// dataMask hides what differs between two data answers of one fixture: the clock, the timings, and the last entries
+// of now (the seconds [from, to] the request was in flight).
+func dataMask(b []byte, from, to int64) []byte {
+	return maskNowEntries(maskTimings(maskRaw(b)), from, to)
+}
+
+// dataAgree tells whether two masked data answers agree but for the labels' order (labelOrderOnly).
+func dataAgree(a, b []byte) bool { return bytes.Equal(a, b) || labelOrderOnly(a, b) }
+
+// dataJudge judges the oracle's masked data answer and compares the two (exactJudge); where they differ only in the
+// labels' order, the candidate's counts as the oracle's.
+func dataJudge(t *testing.T, got [2][]byte, want [2]string, holds []string, guard func(Value) error) {
+	t.Helper()
+	if labelOrderOnly(got[0], got[1]) {
+		got[1] = got[0]
+	}
+	exactJudge(t, got, want, holds, guard)
+}
+
+// dataDashboardType is the type a browser's fetch() gives a string payload the page sends without one (the Fetch
+// standard, "extract a body"): the dashboard's data POST.
+const dataDashboardType = "Content-Type: text/plain;charset=UTF-8"
+
+// dataDashboardBody is the payload the dashboard POSTs to `/api/v3/data` for a context's latest value (WEB/v3/app.*.js
+// @191540, its key order; the window is the last 600 s before now). C reads no payload (api_v2_data.c:20-340).
+func dataDashboardBody(context string, now int64) []byte {
+	return fmt.Appendf(nil, `{"format":"json2","scope":{"contexts":[%q]},"aggregations":{"metrics":[`+
+		`{"group_by":["nodes"],"group_by_label":[],"aggregation":"avg"}],"time":{"time_group":"avg",`+
+		`"time_resampling":0}},"window":{"after":%d,"before":%d,"points":1}}`, context, now-600, now)
+}
+
+// maskClock hides a v2 answer's clock and its contexts' version (v2ClockRe).
+func maskClock(b []byte) []byte { return v2ClockRe.ReplaceAll(b, []byte(`"$1":"<masked>"`)) }
+
 func maskTimings(b []byte) []byte {
-	b = contentLengthRe.ReplaceAll(b, []byte("Content-Length: <masked>"))
-	b = v2ClockRe.ReplaceAll(b, []byte(`"$1":"<masked>"`))
+	b = maskClock(contentLengthRe.ReplaceAll(b, []byte("Content-Length: <masked>")))
 	return timingsRe.ReplaceAllFunc(b, func(m []byte) []byte {
 		name, _, _ := bytes.Cut(m, []byte(":"))
 		// A fresh slice: appending to name would write over the source after the match.
@@ -105,16 +149,8 @@ func streamDataFixture(t *testing.T, conn *stream.Conn, base int64) {
 // over absolute windows: time groupings, natural and virtual points, formats, options and errors.
 func TestDataAPI(t *testing.T) {
 	p := StartPair(t, daemon.Options{StreamMemoryMode: "ram", StorageTiers: 1}, parentIdentity)
-	base := time.Now().Unix()/60*60 - 120
-	for _, side := range p.Each() {
-		conn, err := stream.Connect(side.Daemon.Addr, side.Daemon.StreamKey, childHost, stream.CapsLive)
-		if err != nil {
-			t.Fatalf("%s: %v", side.Role, err)
-		}
-		t.Cleanup(func() { _ = conn.Close() })
-		streamDataFixture(t, conn, base)
-	}
-	time.Sleep(2500 * time.Millisecond)
+	base := dashBase()
+	dashChild(t, p, base)
 
 	win := fmt.Sprintf("after=%d&before=%d", base, base+60)
 	chart := "/api/v1/data?chart=q.a&" + win
@@ -245,18 +281,55 @@ func TestDataAPI(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			var got [2][]byte
 			for i, side := range p.Each() {
-				from := time.Now().Unix()
-				b, err := rawExchange(side.Daemon.Addr, []byte("GET "+host+path+" HTTP/1.1\r\n\r\n"), 2*time.Second)
-				if err != nil {
-					t.Fatalf("%s: %v", side.Role, err)
-				}
-				got[i] = maskNowEntries(maskTimings(maskRaw(b)), from, time.Now().Unix())
+				got[i] = dataAsk(t, side.Role, side.Daemon.Addr, []byte("GET "+host+path+" HTTP/1.1\r\n\r\n"))
 			}
-			if !bytes.Equal(got[0], got[1]) && !labelOrderOnly(got[0], got[1]) {
+			if !dataAgree(got[0], got[1]) {
 				t.Errorf("responses differ\n%s", firstDifference(got[0], got[1]))
 			}
 		})
 	}
+	// The dashboard's POST (D224 F10) with v3-default's query: C reads no payload (api_v2_data.c:20-340), so the
+	// oracle answers it as that GET, whatever the body asks (one point grouped by node, the 600 s before now): the
+	// query's 6 points of 10 s grouped by dimension.
+	t.Run("v3-post", func(t *testing.T) {
+		target := host + cases["v3-default"]
+		post := rawRequest("POST", target, []string{dataDashboardType}, dataDashboardBody("q.ctx", time.Now().Unix()))
+		dataSame(t, p, []byte("GET "+target+" HTTP/1.1\r\n\r\n"), post, [2]string{"HTTP/1.1 200 OK\r\n", "\n}\n"},
+			[]string{`"update_every":10,`, `"grouped_by":["dimension"]`}, nil)
+	})
+}
+
+// dataSame judges a POST whose payload C does not read (api_v2_data.c:20-340): the oracle's answer to post must be
+// its answer to get (the same target) asked just before or just after it; then the two answers to post are judged
+// as a data row's (dataJudge). An answer whose window ends at now moves with the clock: a round whose answers fall in
+// different seconds is asked again (3 rounds at most).
+func dataSame(t *testing.T, p *Pair, get, post []byte, want [2]string, holds []string, guard func(Value) error) {
+	t.Helper()
+	var got [2][]byte
+	asGet, agree := false, false
+	for round := 0; round < 3 && !(asGet && agree); round++ {
+		before := dataAsk(t, Oracle, p.Oracle.Addr, get)
+		got[0] = dataAsk(t, Oracle, p.Oracle.Addr, post)
+		got[1] = dataAsk(t, Candidate, p.Candidate.Addr, post)
+		after := dataAsk(t, Oracle, p.Oracle.Addr, get)
+		asGet = dataAgree(got[0], before) || dataAgree(got[0], after)
+		agree = dataAgree(got[0], got[1])
+	}
+	if !asGet {
+		t.Fatalf("oracle: the POST is not answered as the GET: %q", truncateBytes(got[0]))
+	}
+	dataJudge(t, got, want, holds, guard)
+}
+
+// dataAsk sends request to one agent and returns its answer with the data masks.
+func dataAsk(t *testing.T, side Role, addr string, request []byte) []byte {
+	t.Helper()
+	from := time.Now().Unix()
+	b, err := rawExchange(addr, request, 2*time.Second)
+	if err != nil {
+		t.Fatalf("%s: %v", side, err)
+	}
+	return dataMask(b, from, time.Now().Unix())
 }
 
 // labelOrderPaths are where the answers print labels in their order, which in C is heap-address order and differs
@@ -306,16 +379,8 @@ func TestDataGroupingWindows(t *testing.T) {
 		StorageTiers:     1,
 		WebExtra:         "    ses max tg_des_window = 3\n    des max tg_des_window = 1\n",
 	}, parentIdentity)
-	base := time.Now().Unix()/60*60 - 120
-	for _, side := range p.Each() {
-		conn, err := stream.Connect(side.Daemon.Addr, side.Daemon.StreamKey, childHost, stream.CapsLive)
-		if err != nil {
-			t.Fatalf("%s: %v", side.Role, err)
-		}
-		t.Cleanup(func() { _ = conn.Close() })
-		streamDataFixture(t, conn, base)
-	}
-	time.Sleep(2500 * time.Millisecond)
+	base := dashBase()
+	dashChild(t, p, base)
 	host := "/host/" + childHost.Hostname
 	for _, q := range []string{"group=ses&points=60", "group=des&points=60", "group=ses&points=7", "group=ema&points=1"} {
 		path := fmt.Sprintf("%s/api/v1/data?chart=q.a&after=%d&before=%d&%s", host, base, base+60, q)

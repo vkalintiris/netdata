@@ -160,10 +160,13 @@ func rawHoldAndClose(addr string, request []byte, wait func(), half bool, timeou
 	return resp, nil
 }
 
+// rawTransactionRe is an answer's transaction id: random unless the request names one (web_client.c:1470-1471).
+var rawTransactionRe = regexp.MustCompile(`(?m)^X-Transaction-ID: [0-9a-f]*`)
+
 // rawMasks hide the header values that differ between any two responses (clock and random transaction ids).
 var rawMasks = []*regexp.Regexp{
 	regexp.MustCompile(`(?m)^(Date|Expires): [^\r]*`),
-	regexp.MustCompile(`(?m)^X-Transaction-ID: [0-9a-f]*`),
+	rawTransactionRe,
 }
 
 func maskRaw(b []byte) []byte {
@@ -237,6 +240,34 @@ func TestStaticAndRouting(t *testing.T) {
 		cases["gzip"+strings.ReplaceAll(path, "/", "_")] = []byte("GET " + path + " HTTP/1.1\r\nAccept-Encoding: gzip\r\n\r\n")
 	}
 	compareRaw(t, p, cases)
+	// v1 commands v3 does not route (D219 K8, `api.v3.missing_v1_endpoints`): C answers each with its name
+	for _, name := range []string{"charts", "chart", "aclk", "dbengine_stats", "ml_info", "alarms", "alarms_values",
+		"alarm_log", "alarm_variables", "alarm_count"} {
+		t.Run("v3-missing-"+name, func(t *testing.T) {
+			aclRow(t, p, "", get("/api/v3/"+name), [2]string{"HTTP/1.1 404 Not Found\r\n",
+				"\r\n\r\nUnsupported API command: " + name}, "")
+		})
+	}
+	// The dashboard's leftovers (D224 F12). C reads no Range header (its header table, http_header.c:361-398, has
+	// none): the whole file, 200. A path switched to localhost may switch again: only another host refuses it
+	// (web_client.c:1190-1193).
+	index, err := os.ReadFile(filepath.Join(webDir, "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	compareExacts(t, p, []exactReq{
+		{name: "range", target: "/index.html", headers: []string{"Range: bytes=0-9"},
+			want:  [2]string{"HTTP/1.1 200 OK\r\n", string(index[len(index)-64:])},
+			holds: []string{fmt.Sprintf("\r\nContent-Length: %d\r\n", len(index))}},
+		{name: "host-twice", target: "/host/parity-parent/host/parity-parent/x.js",
+			want: [2]string{"HTTP/1.1 404 Not Found\r\n", "\r\n\r\nFile does not exist, or is not accessible: x.js"}},
+	})
+	// a child (no data) now: the rows above ran without it. Its path may not switch hosts again (400,
+	// web_client.c:1190-1193).
+	dashConnect(t, p)
+	time.Sleep(time.Second)
+	compareExacts(t, p, []exactReq{{name: "nested-host", target: "/host/" + childHost.Hostname + "/host/x/x.js",
+		want: [2]string{"HTTP/1.1 400 Bad Request\r\n", "\r\n\r\nNesting of hosts is not allowed."}}})
 }
 
 func truncateBytes(b []byte) string {
@@ -368,8 +399,9 @@ func TestIgnoredSignals(t *testing.T) {
 }
 
 // TestStaticEdgeFiles serves a scratch web directory: an empty file requested with gzip (C sends the gzip and chunked
-// header lines and closes without a chunk) and a file dated in the year 10000 (C's Date header is empty). Neither
-// the Date nor the Expires value of these responses is masked when it is empty.
+// header lines and closes without a chunk), a file dated in the year 10000 (C's Date header is empty) and a FIFO
+// (C refuses what is not a regular file before it opens anything). Neither the Date nor the Expires value of these
+// responses is masked when it is empty.
 func TestStaticEdgeFiles(t *testing.T) {
 	// tmpfs keeps 64-bit timestamps; ext4 wraps a year-10000 mtime.
 	web := t.TempDir()
@@ -381,6 +413,9 @@ func TestStaticEdgeFiles(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(web, name), []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := syscall.Mkfifo(filepath.Join(web, "fifo.txt"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 	// utimensat() directly: os.Chtimes goes through int64 nanoseconds, which overflow in the year 10000.
 	const future = 253402300800
@@ -401,6 +436,9 @@ func TestStaticEdgeFiles(t *testing.T) {
 		t.Log("the filesystem cannot store a year-10000 mtime; that case is skipped")
 	}
 	compareRaw(t, p, cases)
+	// stat() says it is no regular file: no open, 404 (web_client.c:530-531, :605-611)
+	compareExacts(t, p, []exactReq{{name: "fifo", target: "/fifo.txt",
+		want: [2]string{"HTTP/1.1 404 Not Found\r\n", "\r\n\r\nCannot open file: fifo.txt"}}})
 	if futureOK {
 		// The mask hides Date values; check the empty one directly.
 		for _, side := range p.Each() {

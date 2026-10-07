@@ -43,104 +43,19 @@ import (
 	"time"
 
 	"github.com/netdata/netdata/tests/query-corpus/fixture"
-	"github.com/netdata/netdata/tests/query-corpus/stream"
 )
 
+// The fixtures live in fixture/weights.go (the parity checks of the weights endpoints use them too).
 const (
-	wContext    = "fixture.weights"
-	wKS2Context = "fixture.weightsks2"
-	wRows       = 240
-	wSplit      = 120 // baseline (T0, T0+120], highlight [T0+120, T0+240]
+	wContext    = fixture.WeightsContext
+	wKS2Context = fixture.WeightsKS2Context
+	wRows       = fixture.WeightsRows
+	wSplit      = fixture.WeightsSplit // baseline (T0, T0+120], highlight [T0+120, T0+240]
 )
-
-// main weights fixture:
-//
-//	flat:  constant 50 (equal averages → volume skips it);
-//	level: 10/11 alternating in baseline, constant 30 in highlight;
-//	split: 100/101 alternating in baseline, +3 ramp in highlight;
-//	anom:  constant 20, anomalous only in the highlight window.
-func weightsFixture() fixture.Chart {
-	dims := []fixture.Dimension{{ID: "flat"}, {ID: "level"}, {ID: "split"}, {ID: "anom"}}
-	val := func(id string, i int) string {
-		switch id {
-		case "flat":
-			return "50"
-		case "level":
-			if i <= wSplit {
-				if i%2 == 1 {
-					return "10"
-				}
-				return "11"
-			}
-			return "30"
-		case "split":
-			if i <= wSplit {
-				if i%2 == 1 {
-					return "100"
-				}
-				return "101"
-			}
-			return strconv.Itoa(100 + 3*(i-wSplit-1))
-		case "anom":
-			return "20"
-		}
-		panic(id)
-	}
-	for d := range dims {
-		for i := 1; i <= wRows; i++ {
-			flags := stream.FlagNotAnomalous
-			if dims[d].ID == "anom" && i > wSplit {
-				flags = stream.FlagAnomalous
-			}
-			dims[d].Points = append(dims[d].Points, fixture.Point{
-				T: fixture.T0 + int64(i), Collected: val(dims[d].ID, i), Flags: flags,
-			})
-		}
-	}
-	return fixture.Chart{
-		ID: wContext, Title: "weights", Units: "units", Family: "fixture",
-		Context: wContext, UpdateEvery: 1,
-		Dimensions: dims,
-	}
-}
-
-// ks2 endpoints fixture:
-//
-//	flat2: constant 50 — identical (all-zero) diffs both windows → d=0
-//	       → weight exactly 0;
-//	jump:  0/1 alternation in baseline (diffs ±1e5), then a -5 ramp in
-//	       the highlight (all consecutive diffs +5e5/+6e5, including
-//	       the window-boundary pair) — every highlight diff exceeds
-//	       every baseline diff → d=1 with n*d^2>=18 → weight exactly 1.
-func weightsKS2Fixture() fixture.Chart {
-	dims := []fixture.Dimension{{ID: "flat2"}, {ID: "jump"}}
-	val := func(id string, i int) string {
-		if id == "flat2" {
-			return "50"
-		}
-		if i <= wSplit {
-			return strconv.Itoa(i % 2)
-		}
-		return strconv.Itoa(-5 * (i - wSplit))
-	}
-	for d := range dims {
-		for i := 1; i <= wRows; i++ {
-			dims[d].Points = append(dims[d].Points, fixture.Point{
-				T: fixture.T0 + int64(i), Collected: val(dims[d].ID, i), Flags: stream.FlagNotAnomalous,
-			})
-		}
-	}
-	return fixture.Chart{
-		ID: wKS2Context, Title: "weights ks2", Units: "units", Family: "fixture",
-		Context: wKS2Context, UpdateEvery: 1,
-		Dimensions: dims,
-	}
-}
 
 // weightsSettle pushes ch once and waits for BOTH the retention barrier
-// and the rrdcontext retention stamp (first_time_t != 0): the stamp
-// lags chart creation by ~1-2s and the per-metric weights gate skips
-// unstamped contexts entirely.
+// and the rrdcontext retention stamp (Daemon.WaitContextStamp): the
+// per-metric weights gate skips unstamped contexts entirely.
 func weightsSettle(t *testing.T, host, machineGUID string, ch fixture.Chart) {
 	t.Helper()
 	if _, err := td.WaitRetention(host, ch.Context, ch.FirstT(), ch.LastT(), 2*time.Second); err != nil {
@@ -149,22 +64,8 @@ func weightsSettle(t *testing.T, host, machineGUID string, ch fixture.Chart) {
 			t.Fatal(err)
 		}
 	}
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		doc, err := td.HostJSON(host, "api/v1/contexts", url.Values{})
-		if err == nil {
-			if cs, ok := doc["contexts"].(map[string]any); ok {
-				if c, ok := cs[ch.Context].(map[string]any); ok {
-					if ft, _ := c["first_time_t"].(float64); ft != 0 {
-						return
-					}
-				}
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("rrdcontext retention stamp for %s never arrived", ch.Context)
-		}
-		time.Sleep(200 * time.Millisecond)
+	if err := td.WaitContextStamp(host, ch.Context, 30*time.Second); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -789,7 +690,7 @@ func TestWeightsValueMultiNodeGuards(t *testing.T) {
 func TestWeightsValueMultiNode(t *testing.T) {
 	trackContractComponent(t, "W/value", "multi-node")
 
-	weightsSettle(t, "weights-h", guid(160), weightsFixture())
+	weightsSettle(t, "weights-h", guid(160), fixture.Weights())
 
 	p := url.Values{}
 	p.Set("scope_contexts", wContext)
@@ -824,7 +725,7 @@ func TestWeightsPerMetricAnomalyRate(t *testing.T) {
 		contractScope{"W/anomaly-rate-per-metric-values", ""},
 		contractScope{"W/anomaly-rate-per-metric-nonzero-default", ""},
 	)
-	weightsSettle(t, "weights-h", guid(160), weightsFixture())
+	weightsSettle(t, "weights-h", guid(160), fixture.Weights())
 
 	t.Run("values", func(t *testing.T) {
 		trackContract(t, "W/anomaly-rate-per-metric-values")
@@ -875,7 +776,7 @@ func TestWeightsPerMetricAnomalyRate(t *testing.T) {
 func TestWeightsMultiDimAnomalyRate(t *testing.T) {
 	trackContract(t, "W/anomaly-rate-multidim")
 
-	weightsSettle(t, "weights-h", guid(160), weightsFixture())
+	weightsSettle(t, "weights-h", guid(160), fixture.Weights())
 
 	rates := map[string]float64{"flat": 0, "level": 0, "split": 0, "anom": 12000.0 / 121}
 	averages := weightsHighlightAverages()
@@ -904,7 +805,7 @@ func TestWeightsMultiDimAnomalyRate(t *testing.T) {
 
 func TestWeightsVolume(t *testing.T) {
 	skipIfNotApplicable(t, contractScope{"W/volume-equal-baseline-skip", ""}, contractScope{"W/volume-formula", ""})
-	weightsSettle(t, "weights-h", guid(160), weightsFixture())
+	weightsSettle(t, "weights-h", guid(160), fixture.Weights())
 
 	doc, err := td.HostJSON("weights-h", "api/v1/weights", weightsV1Params("volume", wContext, "raw", true))
 	if err != nil {
@@ -942,7 +843,7 @@ func TestWeightsVolume(t *testing.T) {
 
 func TestWeightsKS2(t *testing.T) {
 	skipIfNotApplicable(t, contractScope{"W/ks2-raw-endpoints", ""}, contractScope{"W/ks2-spread-normalization", ""})
-	weightsSettle(t, "weights-ks2", guid(163), weightsKS2Fixture())
+	weightsSettle(t, "weights-ks2", guid(163), fixture.WeightsKS2())
 
 	want := map[string]float64{"flat2": 0, "jump": 1}
 	t.Run("raw-endpoints", func(t *testing.T) {
@@ -988,7 +889,7 @@ func TestWeightsKS2(t *testing.T) {
 func TestWeightsValueNeverSpreads(t *testing.T) {
 	trackContractComponent(t, "W/value", "never-spreads")
 
-	weightsSettle(t, "weights-h", guid(160), weightsFixture())
+	weightsSettle(t, "weights-h", guid(160), fixture.Weights())
 
 	// method=value skips spreading even on v1 — raw averages come back
 	doc, err := td.HostJSON("weights-h", "api/v1/weights", weightsV1Params("value", wContext, "null2zero", false))

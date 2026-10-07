@@ -3,10 +3,10 @@
 package parity
 
 import (
-	"bytes"
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -21,8 +21,9 @@ type capabilityDiff struct{ c, rust, closes string }
 
 // capabilityDiffs are those capabilities by name, as the oracle (built with ML, D2) answers under the harness's
 // configuration (`[ml]` and `[health]` off). A milestone that ports the subsystem deletes its entry; a candidate that matches C on a listed
-// capability fails until then. `health` is off on both sides here, so it is not listed: with health on both say
-// 2/true (a daemon unit, `daemon/src/capas.rs`; no case asks it with health on).
+// capability fails until then. They apply only when the candidate is another binary than the oracle (sameBinary).
+// `health` is not listed: off, both say 2/false; on, both say 2/true (the node-instance list this answer prints,
+// aclk_capas.c:51, through database/contexts/api_v2_contexts.c:440; `health.api` `endpoints` asks it with health on).
 var capabilityDiffs = map[string]capabilityDiff{
 	"proto":      {"1/true", "1/false", "M11 Cloud"},
 	"ml":         {"1/false", "0/false", "M14 ML"},
@@ -82,6 +83,15 @@ var infoV2Retention = []Mask{
 	{"agents.[].db_size.[].expected_retention_human", "the clock"},
 }
 
+// infoV2Fresh hides what a fresh dbengine's tiers take from their engine's start and from the clock.
+var infoV2Fresh = append([]Mask{infoV2Since}, infoV2Retention...)
+
+// infoV2RunR is runR's list: infoV2Retention, and tier 0's sample count, which each agent sums at its start from its
+// journal files in parallel pool jobs that can count a metric's samples twice (rrdengine.c:1933-2025, mrg.c:508-590):
+// seen 4 to 106565 higher, on either side (D228). Tiers 1 and 2 never varied and stay compared.
+var infoV2RunR = append(slices.Clone(infoV2Retention),
+	Mask{"agents.[].db_size.[0].samples", "tier 0's count at start: parallel journal population (D228)"})
+
 // jsonScalarRe finds every key and scalar value of a JSON text, which leaves its layout.
 var jsonScalarRe = regexp.MustCompile(`"(?:[^"\\]|\\.)*"|-?[0-9][0-9.eE+-]*|true|false|null`)
 
@@ -140,31 +150,35 @@ func agentMember(v Value, key string) (Value, bool) {
 	return Value{}, false
 }
 
-// compareCapabilities checks the two capability lists: the same names in order, equal but for capabilityDiffs.
+// capabilityValues are a capability list's names in order and each one's `version/enabled`.
+func capabilityValues(v Value) ([]string, map[string]string) {
+	var names []string
+	values := map[string]string{}
+	for _, item := range v.Items {
+		var name, version, enabled string
+		for _, m := range item.Members {
+			switch m.Key {
+			case "name":
+				name = m.Value.Text
+			case "version":
+				version = m.Value.String()
+			case "enabled":
+				enabled = m.Value.String()
+			}
+		}
+		names = append(names, name)
+		values[name] = version + "/" + enabled
+	}
+	return names, values
+}
+
+// compareCapabilities checks the two capability lists: the same names in order, equal but for capabilityDiffs (all
+// equal when the oracle is its own candidate).
 func compareCapabilities(t *testing.T, where string, o, c Value) {
 	t.Helper()
-	list := func(v Value) ([]string, map[string]string) {
-		var names []string
-		values := map[string]string{}
-		for _, item := range v.Items {
-			var name, version, enabled string
-			for _, m := range item.Members {
-				switch m.Key {
-				case "name":
-					name = m.Value.Text
-				case "version":
-					version = m.Value.String()
-				case "enabled":
-					enabled = m.Value.String()
-				}
-			}
-			names = append(names, name)
-			values[name] = version + "/" + enabled
-		}
-		return names, values
-	}
-	names, oValues := list(o)
-	cNames, cValues := list(c)
+	same := sameBinary(t)
+	names, oValues := capabilityValues(o)
+	cNames, cValues := capabilityValues(c)
 	if strings.Join(names, " ") != strings.Join(cNames, " ") {
 		t.Fatalf("%s: capabilities differ\noracle:    %v\ncandidate: %v", where, names, cNames)
 	}
@@ -173,7 +187,7 @@ func compareCapabilities(t *testing.T, where string, o, c Value) {
 		ov, cv := oValues[name], cValues[name]
 		d, ok := capabilityDiffs[name]
 		switch {
-		case ok:
+		case ok && !same:
 			listed++
 			if ov != d.c || cv != d.rust {
 				t.Errorf("%s: capability %s (%s): oracle %s, candidate %s; listed %s and %s", where, name,
@@ -187,76 +201,23 @@ func compareCapabilities(t *testing.T, where string, o, c Value) {
 			t.Errorf("%s: capability %s: oracle %s, candidate %s", where, name, ov, cv)
 		}
 	}
-	if listed != len(capabilityDiffs) {
+	if !same && listed != len(capabilityDiffs) {
 		t.Errorf("%s: %d of the %d listed capabilities exist", where, listed, len(capabilityDiffs))
 	}
 }
 
-// compareInfoV2 sends each request to both daemons (from `from` when set) and compares the answers: the status
-// line and the headers but for the clock and the length; a JSON body as ordered values after the masks, its build
-// info slot by slot and its capabilities by name; any other body byte for byte.
+// infoV2Family is the family of an info answer: the clocks and durations masked (infoV2Volatile), and masks.
+func infoV2Family(masks ...Mask) v2Family {
+	return v2Family{masks: slices.Concat(infoV2Volatile, masks)}
+}
+
+// compareInfoV2 compares each request's answers (from `from` when set) as the v2 envelope: compareV2 with the
+// clocks and durations masked, and masks.
 func compareInfoV2(t *testing.T, p *Pair, from string, requests [][2]string, masks ...Mask) {
 	t.Helper()
-	masks = append(append([]Mask{}, infoV2Volatile...), masks...)
+	fam := infoV2Family(masks...)
 	for _, r := range requests {
-		path, status := r[0], r[1]
-		var raw [2][]byte
-		for i, side := range p.Each() {
-			raw[i] = infoV2Get(t, side.Role, side.Daemon.Addr, from, path)
-		}
-		if !bytes.HasPrefix(raw[0], []byte("HTTP/1.1 "+status+" ")) {
-			t.Errorf("%s: the oracle answers %q, expected %s", path, truncateBytes(raw[0]), status)
-			continue
-		}
-		var head [2][]byte
-		for i := range raw {
-			h, _, _ := bytes.Cut(raw[i], []byte("\r\n\r\n"))
-			head[i] = contentLengthRe.ReplaceAll(maskRaw(h), []byte("Content-Length: <masked>"))
-		}
-		if !bytes.Equal(head[0], head[1]) {
-			t.Errorf("%s: headers differ\noracle:    %q\ncandidate: %q", path, head[0], head[1])
-		}
-		// each side's run directory, in the build info's directories
-		var body [2][]byte
-		for i, side := range p.Each() {
-			body[i] = bytes.ReplaceAll(httpBody(raw[i]), []byte(side.Daemon.Opts.RunDir), []byte("<run>"))
-		}
-		if status != "200" {
-			if !bytes.Equal(body[0], body[1]) {
-				t.Errorf("%s: bodies differ\noracle:    %q\ncandidate: %q", path, truncateBytes(body[0]),
-					truncateBytes(body[1]))
-			}
-			continue
-		}
-		var v [2]Value
-		for i, side := range p.Each() {
-			var err error
-			if v[i], err = ParseJSON(body[i]); err != nil {
-				t.Fatalf("%s %s: %v: %s", side.Role, path, err, truncateBytes(body[i]))
-			}
-		}
-		if oa, ok := agentMember(v[0], "application"); ok {
-			ca, _ := agentMember(v[1], "application")
-			keys, oValues := buildinfoSlotsOf(oa)
-			cKeys, cValues := buildinfoSlotsOf(ca)
-			compareBuildinfoSlots(t, path+" application", keys, cKeys, oValues, cValues)
-		}
-		if oc, ok := agentMember(v[0], "capabilities"); ok {
-			cc, _ := agentMember(v[1], "capabilities")
-			compareCapabilities(t, path, oc, cc)
-		}
-		if o, c := clockShapes(v[0]), clockShapes(v[1]); strings.Join(o, " ") != strings.Join(c, " ") {
-			t.Errorf("%s: clocks: oracle %v, candidate %v", path, o, c)
-		}
-		for _, d := range Compare(ApplyMasks(v[0], masks), ApplyMasks(v[1], masks)) {
-			t.Errorf("%s: %s", path, d)
-		}
-		// the minified and pretty layouts: the same bytes once every value is masked
-		layout := func(b []byte) string { return jsonScalarRe.ReplaceAllString(string(b), "V") }
-		if layout(body[0]) != layout(body[1]) {
-			t.Errorf("%s: layouts differ\n%s", path, firstDifference([]byte(layout(body[0])),
-				[]byte(layout(body[1]))))
-		}
+		compareV2(t, p, v2Req{name: r[0], target: r[0], status: r[1], from: from}, fam)
 	}
 }
 
@@ -278,26 +239,18 @@ func TestInfoV2(t *testing.T) {
 			parentIdentity)
 		// an empty tier's retention starts with its engine: a request in that second has none
 		time.Sleep(2 * time.Second)
-		compareInfoV2(t, p, "", requests[:1], append([]Mask{infoV2Since}, infoV2Retention...)...)
+		compareInfoV2(t, p, "", requests[:1], infoV2Fresh...)
 	})
 	t.Run("runR", func(t *testing.T) {
 		fx, id := runRParent(t)
 		p := StartPair(t, daemon.Options{StorageTiers: 3, TierRetentionMB: [3]int{25, 25, 25},
 			SeedCache: filepath.Join(fx, "runR", "cache"), PulseOff: true}, id)
-		compareInfoV2(t, p, "", infoV2Requests(id.Hostname)[:3], infoV2Retention...)
+		compareInfoV2(t, p, "", infoV2Requests(id.Hostname)[:3], infoV2RunR...)
 	})
 	t.Run("child", func(t *testing.T) {
 		p := StartPair(t, daemon.Options{DBMode: "alloc", StreamMemoryMode: "ram", StorageTiers: 1, PulseOff: true},
 			parentIdentity)
-		for _, side := range p.Each() {
-			conn, err := stream.Connect(side.Daemon.Addr, side.Daemon.StreamKey, childHost, stream.CapsLive)
-			if err != nil {
-				t.Fatalf("%s: %v", side.Role, err)
-			}
-			t.Cleanup(func() { _ = conn.Close() })
-			streamDataFixture(t, conn, time.Now().Unix()/60*60-120)
-		}
-		time.Sleep(2 * time.Second)
+		dashChild(t, p, dashBase())
 		compareInfoV2(t, p, "", [][2]string{{"/api/v2/info", "200"},
 			{fmt.Sprintf("/host/%s/api/v2/info", childHost.Hostname), "200"}}, infoV2Since)
 	})

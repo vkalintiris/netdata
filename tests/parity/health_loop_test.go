@@ -121,6 +121,33 @@ func healthLoopLog(guard func([]string) error) func(t *testing.T, h *healthPair)
 	}
 }
 
+// healthFiltered is a guard on the `flags` case's data view (dataAlerts) under a filter, at a = 70: the host's alert
+// versions (42 link entries, `entries` so far), the summary's alerts from hf_before on, and hf.values kept (its 14
+// alerts counted in itself, its context and its node, and its tree's alerts from hf_before on) or left out (listed,
+// nothing counted, no tree).
+func healthFiltered(entries int, kept bool) func(string) error {
+	counts := `{"cl":7,"wr":4,"cr":1,"ot":2}`
+	if !kept {
+		counts = "none"
+	}
+	parts := []string{fmt.Sprintf("versions.alerts_hard_hash: %d\nversions.alerts_soft_hash: %d\n", 14*3, entries),
+		`summary.alerts: [{"nm":"hf_before","wr":1},{"nm":"hf_base","wr":1},`,
+		fmt.Sprintf("summary.nodes[0] mg=%q: %s\n", parentIdentity.MachineGUID, counts),
+		`summary.contexts[0] id="hf.ctx": ` + counts + "\n", `summary.instances[0] id="hf.values": ` + counts}
+	if kept {
+		parts = append(parts, `detailed hf.ctx hf.values: {"hf_before":{"st":"WARNING","vl":70,`)
+	}
+	return func(view string) error {
+		if err := healthHolds(parts...)(view); err != nil {
+			return err
+		}
+		if !kept && strings.Contains(view, "\ndetailed ") {
+			return fmt.Errorf("the instance left out has a tree")
+		}
+		return nil
+	}
+}
+
 // healthChart is the collected chart of a scenario (healthScenario), for what the constructor does not take: a family,
 // labels, a phase's own lines.
 func healthChart(sc *plugin.Scenario) *plugin.Values {
@@ -409,6 +436,39 @@ repeat: warning 10s critical 10s
 `
 )
 
+// The `count-point` case (D219 K4, D224 F8): hp.side (dimensions a and b) is defined before the collected chart hp.a
+// (a), both of context hp.ctx; hp.side is collected at two seconds (each phase's block names its own). The template
+// hp_tmpl is on both, hp_lone and hp_never (a lookup over a day: UNINITIALIZED) on hp.a alone.
+const (
+	healthPointEmit = `CHART hp.side '' 'title' 'units' 'family' 'hp.ctx' line 1000 1 '' '' ''
+DIMENSION a '' absolute 1 1
+DIMENSION b '' absolute 1 1
+`
+	healthPointBlock = "BEGIN hp.side\nSET a = 10\nSET b = 1\nEND {{sec}} 0\n"
+	healthPointConf  = `# the loop check's rules on hp.ctx
+template: hp_tmpl
+      on: hp.ctx
+    calc: $a
+   every: 1s
+    warn: $this > 50
+   units: things
+
+   alarm: hp_lone
+      on: hp.a
+    calc: $a
+   every: 1s
+    crit: $this > 50
+   units: things
+
+   alarm: hp_never
+      on: hp.a
+  lookup: average -1d of a
+   every: 1s
+    warn: $this > 50
+   units: things
+`
+)
+
 // TestHealthLoop (check `health.loop`, M9 commit 4, D198 F1): what the evaluation loop alone produces, without the
 // alert log (`/api/v1/alarm_log` is SQLite's in C): `/api/v1/alarms`, `/api/v1/alarms_values` and
 // `/api/v1/alarm_count` (each body's bytes, healthNorm.json), the alert members of `/api/v1/info`, of a chart's JSON,
@@ -423,7 +483,9 @@ repeat: warning 10s critical 10s
 //     records and the unique ids they take;
 //   - `texts`: `${family}` and `${label:…}` in `summary` and `info`, at the link and after the chart's labels change;
 //   - `obsolete`: an alert of a chart defined obsolete and never collected; `obsolete-long` (PARITY_LONG): a chart
-//     collected, then obsolete, 60 s later;
+//     collected, then obsolete, 60 s later, and its data view once its alert is removed;
+//   - `count-point`: a context's data view whose dimension or instance filter leaves out the chart with the alerts
+//     (milestone 10 commit 0, D219 K4), beside `flags`' `alerts=` and `instances=` views (K3);
 //   - `off`: the three endpoints and the members with health off.
 func TestHealthLoop(t *testing.T) {
 	names := []string{"hs_avg", "hs_calc", "hs_max"}
@@ -560,6 +622,39 @@ func TestHealthLoop(t *testing.T) {
 					return h.dataAlerts(i, "scope_contexts=hf.ctx&after=-4&points=1&options=details,unaligned")
 				}, healthHolds(fmt.Sprintf("versions.alerts_hard_hash: %d\nversions.alerts_soft_hash: %d\n", 14*3, entries),
 					`{"nm":"hf_calc_only","ot":1}`, `{"cl":7,"wr":4,"cr":1,"ot":2}`, `detailed hf.ctx hf.values: {"hf_`))
+				// D219 K3: the same query with a filter. `alerts=` asks each alert of the chart, in the order they were linked
+				// (the file's, hf_before first: health/rrdcalc.c:308 appends), its name and then `NAME:STATUS`; the first
+				// positive match keeps the instance and the first negative one drops it (query_target.c:684-735). A
+				// kept instance counts its alerts in itself, its context and its node; one the filter, `instances=` or
+				// `labels=` drops is still listed, counts nothing (:842-848) and has no tree, while the summary's
+				// alerts still name its alerts (formatters/jsonwrap-summary-alerts.c:11-48 walks every instance of the
+				// query)
+				for _, k := range []struct {
+					q    string
+					kept bool
+				}{
+					{"alerts=hf_base", true},
+					{"alerts=nope", false},
+					{"alerts=hf_crit_only:CRITICAL", true},
+					{"alerts=hf_crit_only:WARNING", false},
+					// hf_before is refused before any other alert is asked
+					{"alerts=!hf_before%7C*", false},
+					// hf_before matches `*` before hf_base could be refused
+					{"alerts=!hf_base%7C*", true},
+					{"instances=nomatch", false},
+					// the label filter, judged before the alerts (query_target.c:833-845): every label key it names
+					// must match (pattern-array.c:46-79). C labels every chart `_collect_plugin` with its plugin, here
+					// the fake plugin's file (rrdset-index-id.c:23-26), and none `nolabel`; a word's asterisks are lost
+					// on the way into the pattern array (simple_pattern.c:414-420 hands back the word without them,
+					// pattern-array.c:112 makes it an exact pattern), so `*` matches nothing there
+					{"labels=_collect_plugin:difftest.plugin", true},
+					{"labels=_collect_plugin:*", false},
+					{"labels=nolabel:x", false},
+				} {
+					h.compareNow(t, "the alert members of /api/v2/data, "+k.q, func(i int) string {
+						return h.dataAlerts(i, "scope_contexts=hf.ctx&after=-4&points=1&options=details,unaligned&"+k.q)
+					}, healthFiltered(entries, k.kept))
+				}
 			},
 			after: healthLoopLog(func(oracle []string) error {
 				// hf_base, hf_after and hf_crit_only change in the pass that reads 70; hf_before, computed before hf_base, a
@@ -725,6 +820,55 @@ func TestHealthLoop(t *testing.T) {
 				return nil
 			})),
 		},
+		"count-point": func() healthCase {
+			sc := healthScenario(healthPointEmit, "hp.a", "hp.ctx", []string{"a"}, map[string]int64{"a": 10}, map[string]int64{"a": 70})
+			v := healthChart(sc)
+			v.Phases[0].Emit, v.Phases[1].Emit = healthPointBlock, healthPointBlock
+			return healthCase{
+				conf: healthPointConf,
+				sc:   sc,
+				play: func(t *testing.T, h *healthPair) {
+					h.create(t)
+					h.release(t, "p1", 1, healthCalcHold)
+					// four alerts linked three times each, three first statuses (hp_never stays UNINITIALIZED: its window
+					// of a day never has data), then hp.a's two changes
+					h.asks(t, "",
+						healthAsk{"/api/v1/alarms_values?all", healthValuesWant(map[string]string{"hp.side.hp_tmpl": "CLEAR",
+							"hp.a.hp_tmpl": "WARNING", "hp.a.hp_lone": "CRITICAL", "hp.a.hp_never": "UNINITIALIZED"})},
+						healthAsk{"/api/v1/alarms?all", healthLatest(17)})
+					// the data view of hp.ctx, then of hp.side alone by its dimensions and by the instance filter. The alert
+					// counts of an instance are taken before its dimensions are added (query_target.c:847-848), so the
+					// instance `scope_dimensions=b` drops for having no `b` (:426-438, :866-870) still counts in its node
+					// and its context, while the summary's instances and alerts walk the query's instances only
+					// (jsonwrap-summary-alerts.c:11-48). `instances=` leaves hp.a in the query, listed and counted nowhere
+					// (:831-848), its alerts named in the summary's. hp_tmpl is counted over both instances, hp_never as
+					// `ot` (:669-676); the tree has the alerts at CLEAR or above of the queried instances.
+					head := "versions.alerts_hard_hash: 12\nversions.alerts_soft_hash: 17\n"
+					all := `summary.alerts: [{"nm":"hp_tmpl","cl":1,"wr":1},{"nm":"hp_lone","cr":1},{"nm":"hp_never","ot":1}]` + "\n"
+					node := fmt.Sprintf("summary.nodes[0] mg=%q: ", parentIdentity.MachineGUID)
+					four := `{"cl":1,"wr":1,"cr":1,"ot":1}`
+					side := `summary.instances[0] id="hp.side": {"cl":1}` + "\n"
+					sideTree := `detailed hp.ctx hp.side: {"hp_tmpl":{"st":"CLEAR","vl":10,"un":"things"}}`
+					for _, r := range []struct{ q, want string }{
+						{"", head + all + node + four + "\n" + `summary.contexts[0] id="hp.ctx": ` + four + "\n" + side +
+							`summary.instances[1] id="hp.a": {"wr":1,"cr":1,"ot":1}` + "\n" + sideTree + "\n" +
+							`detailed hp.ctx hp.a: {"hp_tmpl":{"st":"WARNING","vl":70,"un":"things"},"hp_lone":{"st":"CRITICAL","vl":70,"un":"things"}}`},
+						{"scope_dimensions=b&", head + `summary.alerts: [{"nm":"hp_tmpl","cl":1}]` + "\n" + node + four + "\n" +
+							`summary.contexts[0] id="hp.ctx": ` + four + "\n" + side + sideTree},
+						{"instances=hp.side&", head + all + node + `{"cl":1}` + "\n" + `summary.contexts[0] id="hp.ctx": {"cl":1}` + "\n" + side +
+							`summary.instances[1] id="hp.a": none` + "\n" + sideTree},
+					} {
+						query := "scope_contexts=hp.ctx&after=-60&points=1&" + r.q + "options=details,unaligned"
+						h.compareNow(t, "the alert members of /api/v2/data, "+query, func(i int) string { return h.dataAlerts(i, query) },
+							healthIs(r.want))
+					}
+				},
+				// hp.a's two changes, at the default level
+				after: healthLoopLog(healthLogWant(2,
+					[]string{" instance=hp.a ", " alert=hp_tmpl ", " alert_value=70 alert_value_old=10 alert_status=WARNING alert_value_old=CLEAR "},
+					[]string{" instance=hp.a ", " alert=hp_lone ", " alert_value=70 alert_value_old=10 alert_status=CRITICAL alert_value_old=CLEAR "})),
+			}
+		}(),
 		"off": {
 			conf: healthSigConf,
 			off:  true,
@@ -793,6 +937,15 @@ func TestHealthLoop(t *testing.T) {
 				h.compareNow(t, "removed: /api/v1/alarms?all", func(i int) string { return all(i, h) }, live(13))
 				h.compareNow(t, "removed: "+vars+"'s alerts", alerts,
 					healthHolds(`"ho_old":{"value":null,`, `"ho_old_rep":{"value":10,`, `"ho_live":{"value":10,`))
+				// the obsolete chart's data view (D219 K4's REMOVED clause): the removed alert is counted as `ot`
+				// (query_target.c:669-676, jsonwrap-summary-alerts.c:36-41) and left out of the tree (CLEAR or above only)
+				removed := "scope_contexts=ho.octx&after=-120&points=1&options=details,unaligned"
+				h.compareNow(t, "removed: the alert members of /api/v2/data, "+removed, func(i int) string { return h.dataAlerts(i, removed) },
+					healthIs("versions.alerts_hard_hash: 9\nversions.alerts_soft_hash: 13\n"+
+						`summary.alerts: [{"nm":"ho_old","ot":1},{"nm":"ho_old_rep","cl":1}]`+"\n"+
+						fmt.Sprintf("summary.nodes[0] mg=%q: ", parentIdentity.MachineGUID)+`{"cl":1,"ot":1}`+"\n"+
+						`summary.contexts[0] id="ho.octx": {"cl":1,"ot":1}`+"\n"+`summary.instances[0] id="ho.old": {"cl":1,"ot":1}`+"\n"+
+						`detailed ho.octx ho.old: {"ho_old_rep":{"st":"CLEAR","vl":10,"un":"things"}}`))
 			},
 			// the removal takes the alert's value: `nan` in the message
 			after: healthLoopLog(healthLogWant(13, []string{" alert=ho_old ", " alert_value=null alert_value_old=10 alert_status=REMOVED alert_value_old=CLEAR ",

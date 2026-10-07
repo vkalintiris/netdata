@@ -189,7 +189,7 @@ func TestFallbackPins(t *testing.T) {
 	t.Run("unknown-weights-method-is-ks2", func(t *testing.T) {
 		trackContract(t, "API/fallback-unknown-weights-method")
 
-		weightsSettle(t, "weights-ks2", guid(163), weightsKS2Fixture())
+		weightsSettle(t, "weights-ks2", guid(163), fixture.WeightsKS2())
 		p := weightsV1Params("no-such-method", wKS2Context, "null2zero", true)
 		doc, err := td.HostJSON("weights-ks2", "api/v1/weights", p)
 		if err != nil {

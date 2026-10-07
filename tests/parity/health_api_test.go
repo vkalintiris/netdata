@@ -197,6 +197,7 @@ func TestHealthAPI(t *testing.T) {
 				h.compareNow(t, "/api/v1/chart's alarms", func(i int) string {
 					return h.plainMember(i, "/api/v1/chart?chart=hsig.values", "alarms")
 				}, holds(`"ha_low":{"id":"ha_low","status":"WARNING","units":"things","duration":1}`))
+				healthCapabilities(t, h)
 			},
 		},
 		"log": {
@@ -238,6 +239,29 @@ func TestHealthAPI(t *testing.T) {
 			},
 		},
 	})
+}
+
+// healthCapabilities compares the capabilities `/api/v2/info` lists with health on (D219 F5 K7), by name as `api.v2-info`
+// does (compareCapabilities), once the oracle's say `health` 2/true: localhost's node-instance capabilities
+// (database/contexts/api_v2_contexts_agents.c:71, api_v2_contexts.c:437-452), whose `health` is enabled with the host's
+// health (aclk/aclk_capas.c:51). Not the whole answer: a dbengine tier's size moves between two reads while a chart is
+// collected.
+func healthCapabilities(t *testing.T, h *healthPair) {
+	t.Helper()
+	var caps [2]Value
+	for i, s := range h.p.Each() {
+		r := healthGet(s.Daemon, "/api/v2/info")
+		v, err := ParseJSON(r.Body)
+		if r.Status != http.StatusOK || err != nil {
+			t.Fatalf("%s: /api/v2/info answered %d (%v): %s", s.Role, r.Status, err, truncateBytes(r.Body))
+		}
+		caps[i], _ = agentMember(v, "capabilities")
+	}
+	if _, values := capabilityValues(caps[0]); values["health"] != "2/true" {
+		t.Fatalf("oracle: /api/v2/info's capability health is %q, want 2/true: %s", values["health"], caps[0].String())
+	}
+	compareCapabilities(t, "/api/v2/info", caps[0], caps[1])
+	t.Logf("/api/v2/info's capabilities, the oracle's: %s", caps[0].String())
 }
 
 // member is side i's view of one top-level member of a JSON answer, as the agent's order and values give it (the

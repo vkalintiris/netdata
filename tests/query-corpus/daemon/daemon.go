@@ -1391,6 +1391,29 @@ func (d *Daemon) WaitRetention(host, context string, first, last int64, timeout 
 	return d.WaitRetentionHoles(host, context, first, last, 0, timeout)
 }
 
+// WaitContextStamp polls `api/v1/contexts` on host until context has its retention stamp (`first_time_t` other than
+// 0): the stamp lags the chart's creation by about 1-2 s, and the per-metric weights walk skips a context without one
+// (weights.c:2490-2506).
+func (d *Daemon) WaitContextStamp(host, context string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		doc, err := d.HostJSON(host, "api/v1/contexts", url.Values{})
+		if err == nil {
+			if cs, ok := doc["contexts"].(map[string]any); ok {
+				if c, ok := cs[context].(map[string]any); ok {
+					if ft, _ := c["first_time_t"].(float64); ft != 0 {
+						return nil
+					}
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("daemon: the retention stamp of %s/%s never arrived within %s", host, context, timeout)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
 // WaitRetentionHoles is WaitRetention for a series with `holes` holes (ExpectedFirstEntryHoles).
 func (d *Daemon) WaitRetentionHoles(host, context string, first, last int64, holes int, timeout time.Duration) (Retention, error) {
 	deadline := time.Now().Add(timeout)
