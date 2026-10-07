@@ -198,6 +198,7 @@ func TestHealthAPI(t *testing.T) {
 					return h.plainMember(i, "/api/v1/chart?chart=hsig.values", "alarms")
 				}, holds(`"ha_low":{"id":"ha_low","status":"WARNING","units":"things","duration":1}`))
 				healthCapabilities(t, h)
+				healthNodes(t, h)
 			},
 		},
 		"log": {
@@ -262,6 +263,39 @@ func healthCapabilities(t *testing.T, h *healthPair) {
 	}
 	compareCapabilities(t, "/api/v2/info", caps[0], caps[1])
 	t.Logf("/api/v2/info's capabilities, the oracle's: %s", caps[0].String())
+}
+
+// healthNodes compares localhost's `health` and `capabilities` in `/api/v3/nodes` with health on (D231 F1): the
+// health status and the five-way alert count exactly, the capabilities by name (compareCapabilities), once the
+// oracle's answer holds nodesHealthOn. Not the whole answer: localhost's labels and system info are `api.v2-nodes`'
+// (health off). A candidate's failure is an error, not the case's end, so the case still stops both agents and
+// judges their stop. Red on Rust until milestone 10 commit 2.
+func healthNodes(t *testing.T, h *healthPair) {
+	t.Helper()
+	var health, caps [2]Value
+	for i, s := range h.p.Each() {
+		r := healthGet(s.Daemon, "/api/v3/nodes")
+		v, err := ParseJSON(r.Body)
+		if r.Status != http.StatusOK || err != nil {
+			if i == 0 {
+				t.Fatalf("oracle: /api/v3/nodes answered %d (%v): %s", r.Status, err, truncateBytes(r.Body))
+			}
+			t.Errorf("candidate: /api/v3/nodes answered %d (%v): %s", r.Status, err, truncateBytes(r.Body))
+			return
+		}
+		if i == 0 {
+			if err := dashGuard(nodesHealthOn)(v); err != nil {
+				t.Fatalf("oracle: /api/v3/nodes: %v: %s", err, truncateBytes(r.Body))
+			}
+		}
+		health[i], _ = dashAt(v, "nodes", "[0]", "health")
+		caps[i], _ = dashAt(v, "nodes", "[0]", "capabilities")
+	}
+	if o, c := health[0].String(), health[1].String(); o != c {
+		t.Errorf("/api/v3/nodes' localhost health: oracle %s, candidate %s", o, c)
+	}
+	compareCapabilities(t, "/api/v3/nodes' localhost", caps[0], caps[1])
+	t.Logf("/api/v3/nodes' localhost, the oracle's: health %s, capabilities %s", health[0], caps[0])
 }
 
 // member is side i's view of one top-level member of a JSON answer, as the agent's order and values give it (the

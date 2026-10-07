@@ -3,7 +3,7 @@
 //! `web_client_api_request_vX()` in `src/web/api/web_api.c`.
 //!
 //! Not ported yet: `/mcp` and `/sse`, and the API commands other than `info`, `chart`, `charts`, `context`,
-//! `contexts`, `registry`, `data`, `dbengine_stats`, `function`, `functions`, `manage`, `me`, `progress`,
+//! `contexts`, `registry`, `data`, `dbengine_stats`, `function`, `functions`, `manage`, `me`, `nodes`, `progress`,
 //! `stream_info`, `stream_path`, `versions` and health's (`alarms`, `alarm_log` and the others of its block of the
 //! table, and `badge.svg`).
 //! `/netdata.conf` shows only the keys of the subsystems ported so far.
@@ -246,6 +246,13 @@ const API_V2: &[Command] = &[
         callback: |route, _, query| contexts_v2::info(route, query),
     },
     Command {
+        name: "nodes",
+        acl: acl::bits::NODES,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: |route, _, query| contexts_v2::nodes(route, query),
+    },
+    Command {
         name: "versions",
         acl: acl::bits::NODES,
         access: access::ANONYMOUS_DATA,
@@ -340,6 +347,13 @@ const API_V3: &[Command] = &[
         access: access::NONE,
         allow_subpaths: false,
         callback: |route, _, query| contexts_v2::info(route, query),
+    },
+    Command {
+        name: "nodes",
+        acl: acl::bits::NODES,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: |route, _, query| contexts_v2::nodes(route, query),
     },
     Command {
         name: "stream_path",
@@ -1012,6 +1026,120 @@ mod tests {
         assert_eq!(asked(&s, b"/api/v2/versions", b"", acl::bits::NODES).code, status::OK);
         assert_eq!(asked(&s, b"/api/v3/versions", b"", all & !acl::bits::NODES).code, status::OK);
         assert_eq!(asked(&s, b"/api/v3/versions", b"", 0).code, status::OK);
+    }
+
+    /// `/api/v2/nodes` and `/api/v3/nodes` (`api_v2_nodes()`, the NODES and NODES_INFO modes): the hosts with their
+    /// version, labels, system info and state, then `health` and `capabilities`, between `api` and `timings`; no
+    /// `versions` and no `agents`. With `options=mcp` the host is in its MCP form and `api` and `timings` are left
+    /// out. Both rows ask the client for the nodes feature, and for that alone. With health on, the host's alerts
+    /// are counted under their own status as each request finds them.
+    #[test]
+    fn nodes_are_routed_in_v2_and_v3() {
+        use netdata_agent_health::alert::Status;
+        use netdata_agent_rrd::chart::{Algorithm, ChartSpec, ChartType};
+        let s = shared();
+        let all = acl::bits::ALL_LISTENER_FEATURES;
+        let text = |path: &[u8], query: &[u8]| {
+            let r = asked(&s, path, query, all);
+            let shown = String::from_utf8_lossy(path).into_owned();
+            assert_eq!((r.code, r.content_type), (status::OK, ContentType::ApplicationJson), "{shown}");
+            assert!(r.no_cacheable, "{shown}");
+            String::from_utf8(r.body).unwrap()
+        };
+        let last = r#"{"name":"dyncfg","version":2,"enabled":true}]}]"#;
+        for path in [&b"/api/v2/nodes"[..], b"/api/v3/nodes"] {
+            let shown = String::from_utf8_lossy(path).into_owned();
+            assert_eq!(members(&text(path, b"")), ["api", "nodes", "timings"], "{shown}");
+            let body = text(path, b"options=minify");
+            let head = concat!(
+                r#"{"api":2,"nodes":[{"mg":"0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e","nm":"box","ni":0,"v":"v0","#,
+                r#""labels":{"#
+            );
+            assert!(body.starts_with(head), "{shown}: {body}");
+            let info = r#""state":"reachable","health":{"status":"disabled"},"capabilities":[{"name":"proto","#;
+            assert!(body.contains(info), "{shown}: {body}");
+            assert!(body.contains(&format!(r#"{last},"timings":{{"#)), "{shown}: {body}");
+
+            let mcp = text(path, b"options=mcp|minify");
+            let head = concat!(
+                r#"{"nodes":[{"machine_guid":"0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e","hostname":"box","#,
+                r#""relationship":"localhost","connected":true,"v":"v0","labels":{"#
+            );
+            assert!(mcp.starts_with(head), "{shown}: {mcp}");
+            assert!(mcp.trim_end().ends_with(&format!("{last}}}")), "{shown}: {mcp}");
+
+            let denied = server::permission_denied_acl();
+            let r = asked(&s, path, b"", all & !acl::bits::NODES);
+            assert_eq!((r.code, &r.body), (denied.code, &denied.body), "{shown}");
+            assert_eq!(asked(&s, path, b"", acl::bits::NODES).code, status::OK, "{shown}");
+        }
+
+        // health on: `online`, with the host's one alert under the status it has at the request
+        let host = s.hosts.localhost();
+        host.set_health_enabled(true);
+        let (chart, _) = host.charts().create(&ChartSpec {
+            type_: "t",
+            id: "c",
+            name: None,
+            family: Some("f"),
+            context: Some("t.ctx"),
+            title: "T",
+            units: "u",
+            plugin: "p",
+            module: None,
+            priority: 1000,
+            update_every: 1,
+            chart_type: ChartType::Line,
+            mode: netdata_agent_rrd::mode::DbMode::Ram,
+            history_entries: 5,
+            page_size: 4096,
+        });
+        chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+        let dir = tempfile::tempdir().unwrap();
+        let rules = dir.path().join("a.conf");
+        std::fs::write(&rules, "template: a\n on: t.ctx\n every: 10s\n calc: 1\n").unwrap();
+        {
+            use std::os::unix::ffi::OsStrExt;
+            assert!(netdata_agent_health::readfile::health_readfile(&s.health, rules.as_os_str().as_bytes(), false));
+        }
+        s.health.host_link(host, &|| 1_700_000_000, &|| true);
+        let health = || {
+            let body = text(b"/api/v3/nodes", b"options=minify");
+            let (at, end) = (body.find(r#""health":{"#).unwrap(), body.find(r#","capabilities""#).unwrap());
+            body[at..end].to_owned()
+        };
+        let counted = |status: &str, counts: [u32; 5]| {
+            let [critical, warning, clear, undefined, uninitialized] = counts;
+            format!(
+                concat!(
+                    r#""health":{{"status":"{}","alerts":{{"critical":{},"warning":{},"clear":{},"undefined":{},"#,
+                    r#""uninitialized":{}}}}}"#
+                ),
+                status, critical, warning, clear, undefined, uninitialized
+            )
+        };
+        // its chart was never collected: the alert counts nowhere
+        assert_eq!(health(), counted("online", [0, 0, 0, 0, 0]));
+        chart.update_collection(|collection| collection.last_collected = (5, 0));
+        assert_eq!(health(), counted("online", [0, 0, 0, 0, 1]));
+        let alert = s.health.host(host).unwrap().chart_alerts(&chart).pop().expect("the alert");
+        for (status, counts) in [
+            (Status::Critical, [1, 0, 0, 0, 0]),
+            (Status::Warning, [0, 1, 0, 0, 0]),
+            (Status::Clear, [0, 0, 1, 0, 0]),
+            (Status::Undefined, [0, 0, 0, 1, 0]),
+            (Status::Removed, [0, 0, 0, 0, 0]),
+        ] {
+            let mut run = alert.run();
+            run.status = status;
+            alert.publish(&run, None);
+            assert_eq!(health(), counted("online", counts), "{status:?}");
+        }
+        // a chart that waits for its alerts: `initializing`, still with the count
+        host.raise_pending_flags(netdata_agent_rrd::host::pending_flags::HEALTH_INITIALIZATION);
+        assert_eq!(health(), counted("initializing", [0, 0, 0, 0, 0]));
+        let body = text(b"/api/v3/nodes", b"options=minify");
+        assert!(body.contains(r#"{"name":"health","version":2,"enabled":true}"#), "{body}");
     }
 
     /// `/api/v1/alarm_variables`, `/api/v1/variable` and `/api/v3/variable`, and the alert members of the chart JSON,

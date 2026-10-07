@@ -1,8 +1,8 @@
 //! The contexts v2 engine, ported from `api_v2_contexts_internal()` (`src/web/api/v2/api_v2_contexts.c`),
 //! `rrdcontext_to_json_v2()` and its host walk (`src/database/contexts/api_v2_contexts.c`, `query_scope.c`) for the
 //! modes the agent serves so far: `/api/v3/stream_path`, `/api/v2/info` (`/api/v3/info`), `/api/v2/functions`
-//! (`/api/v3/functions`) and `/api/v2/versions` (`/api/v3/versions`). Decisions D51, D92, D160 and D231 in the status
-//! repository.
+//! (`/api/v3/functions`), `/api/v2/versions` (`/api/v3/versions`) and `/api/v2/nodes` (`/api/v3/nodes`). Decisions
+//! D51, D92, D160 and D231 in the status repository.
 
 use std::ops::ControlFlow;
 use std::sync::Arc;
@@ -322,6 +322,14 @@ pub fn info(route: &Route<'_>, query: &[u8]) -> Reply {
     let info_mode = mode::AGENTS | mode::AGENTS_INFO;
     let req = parse(query, info_mode, 0);
     render(route.shared, &req, info_mode, now_realtime_s())
+}
+
+/// `api_v2_nodes()` (`/api/v2/nodes`, `/api/v3/nodes`): the hosts in scope, each with its version, labels, system
+/// info and state, its health and its capabilities; the host in the URL does not matter.
+pub fn nodes(route: &Route<'_>, query: &[u8]) -> Reply {
+    let nodes_mode = mode::NODES | mode::NODES_INFO;
+    let req = parse(query, nodes_mode, 0);
+    render(route.shared, &req, nodes_mode, now_realtime_s())
 }
 
 /// `api_v2_versions()` (`/api/v2/versions`, `/api/v3/versions`): the version hashes of the hosts in scope, none of
