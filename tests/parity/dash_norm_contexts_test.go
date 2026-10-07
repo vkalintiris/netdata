@@ -122,25 +122,6 @@ func testDashNormContexts(t *testing.T) {
 	}
 	niO := ni("38929", "34050", "1791312184", "8", "1791312187", "5", "655360", "7d15h")
 	niC := ni("42091", "39074", "1791312187", "5", "1791312190", "2", "262144", "3d1h")
-	// diffs are the paths where two bodies differ once fam's normalisation (both in the recorded body's second) and
-	// masks apply
-	diffs := func(o, c string, fam v2Family, masks []Mask) string {
-		t.Helper()
-		var docs [2]Value
-		for i, b := range []string{o, c} {
-			body := fam.normalise(i, flight, []byte(b))
-			v, err := ParseJSON(body)
-			if err != nil {
-				t.Fatalf("%v: %s", err, body)
-			}
-			docs[i] = v
-		}
-		var out []string
-		for _, d := range Compare(ApplyMasks(docs[0], masks), ApplyMasks(docs[1], masks), fam.unordered...) {
-			out = append(out, d.Path)
-		}
-		return strings.Join(out, " ")
-	}
 	for name, c := range map[string]struct {
 		candidate string
 		fam       v2Family
@@ -173,7 +154,7 @@ func testDashNormContexts(t *testing.T) {
 			`"since":1791312190,"age":3,`, 1), nodeInstancesFamily, nodeInstancesFamily.masks,
 			"$.nodes[1].instances[0].ingest.age"},
 	} {
-		if got := diffs(niO, c.candidate, c.fam, c.masks); got != c.want {
+		if got := dashNormDiffs(t, c.fam, c.masks, flight, niO, c.candidate); got != c.want {
 			t.Errorf("node_instances, %s: differences at %q, want %q", name, got, c.want)
 		}
 	}
@@ -209,7 +190,7 @@ func testDashNormContexts(t *testing.T) {
 		"a capability, without the family": {mlOn, v2Family{}, "$.nodes[0].capabilities[1].enabled"},
 		"the child's version":              {strings.Replace(nodes, `"v":"1.0"`, `"v":"1.1"`, 1), nodesFamily, "$.nodes[1].v"},
 	} {
-		if got := diffs(nodes, c.candidate, c.fam, c.fam.masks); got != c.want {
+		if got := dashNormDiffs(t, c.fam, c.fam.masks, flight, nodes, c.candidate); got != c.want {
 			t.Errorf("nodes, %s: differences at %q, want %q", name, got, c.want)
 		}
 	}

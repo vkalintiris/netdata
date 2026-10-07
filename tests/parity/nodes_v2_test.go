@@ -3,6 +3,7 @@
 package parity
 
 import (
+	"bytes"
 	"fmt"
 	"regexp"
 	"slices"
@@ -41,20 +42,33 @@ func dashChildNode(i, ni int) []dashFact {
 	return dashNode(i, ni, childHost.MachineGUID, childHost.Hostname)
 }
 
-// nodeCaps is the capability list C gives a node (aclk_capas.c:39-55) under the harness's configuration: ML built in
-// but off (`ml` 1/false), metric correlations version 1 (weights.c:16), health off (2/false). Functions and dyncfg
-// are localhost's own (:41-42); a child has them only when it streams functions, which the fixture child does not
-// negotiate (stream.CapsLive).
-func nodeCaps(local bool) string {
-	funcs, dyncfg := `"version":0,"enabled":false`, `"version":2,"enabled":false`
-	if local {
-		funcs, dyncfg = `"version":1,"enabled":true`, `"version":2,"enabled":true`
-	}
+// The values of the capabilities that vary by node (aclk_capas.c:41-42, :49, :51, :53), as nodeCapsOf takes them:
+// funcs, health and dyncfg each on and off.
+const (
+	capFuncsOn, capFuncsOff   = `"version":1,"enabled":true`, `"version":0,"enabled":false`
+	capHealthOn, capHealthOff = `"version":2,"enabled":true`, `"version":2,"enabled":false`
+	capDyncfgOn, capDyncfgOff = `"version":2,"enabled":true`, `"version":2,"enabled":false`
+)
+
+// nodeCapsOf is the capability list C gives a node (aclk_capas.c:39-55) with these funcs, health and dyncfg values
+// (`"version":V,"enabled":E`), the others as the harness configures them: ML built in but off (`ml` 1/false), metric
+// correlations version 1 (weights.c:16).
+func nodeCapsOf(funcs, health, dyncfg string) string {
 	return `[{"name":"proto","version":1,"enabled":true},{"name":"ml","version":1,"enabled":false},` +
 		`{"name":"mc","version":1,"enabled":true},{"name":"ctx","version":1,"enabled":true},` +
 		`{"name":"funcs",` + funcs + `},{"name":"http_api_v2","version":7,"enabled":true},` +
-		`{"name":"health","version":2,"enabled":false},{"name":"req_cancel","version":1,"enabled":true},` +
+		`{"name":"health",` + health + `},{"name":"req_cancel","version":1,"enabled":true},` +
 		`{"name":"dyncfg",` + dyncfg + `}]`
+}
+
+// nodeCaps is a node's capability list with health off, the harness's default (nodeCapsOf). Functions and dyncfg are
+// localhost's own (aclk_capas.c:41-42); a child has them only when it streams functions, which the fixture child does
+// not negotiate (stream.CapsLive).
+func nodeCaps(local bool) string {
+	if local {
+		return nodeCapsOf(capFuncsOn, capHealthOff, capDyncfgOn)
+	}
+	return nodeCapsOf(capFuncsOff, capHealthOff, capDyncfgOff)
 }
 
 // nodesCapabilities are the capability lists of an answer's nodes and of their instances, in order, each with the
@@ -197,8 +211,52 @@ func nodesRows() []v2Req {
 		{name: "v2-nodes-child", target: "/api/v2/nodes?scope_nodes=" + childHost.Hostname, status: "200",
 			guard: dashGuard([]dashFact{dashKeys("api nodes timings"), dashAbsent("nodes", "[1]")},
 				nodesChildFacts(0, 0))},
+		// a context scope (web/api/v2/api_v2_contexts.c:27-30, D231): a host is kept only with a matching context
+		// (api_v2_contexts.c:656-658, :663-674), so localhost, which has none with the pulse off, is dropped and the
+		// child alone is numbered 0
+		{name: "v2-nodes-ctx", target: "/api/v2/nodes?scope_contexts=" + qCharts.context, status: "200",
+			guard: dashGuard([]dashFact{dashKeys("api nodes timings"), dashAbsent("nodes", "[1]")},
+				nodesChildFacts(0, 0))},
 	}
 }
+
+// nodesHealthOn are the facts of `/api/v3/nodes` in `health.api`'s `endpoints` case (D231 F1), whose localhost runs
+// healthAPIConf's three alerts on its chart, settled with ha_low WARNING and the two others CLEAR: localhost's health
+// `online` (the status's RUNNING) with the five-way count C takes of its alerts at the request
+// (api_v2_contexts.c:463-480; rrdhost-status.c:314-366: each alert of a collected chart by its status), and its
+// capabilities with health on (aclk_capas.c:51).
+var nodesHealthOn = slices.Concat(dashParent(0, 0), dashMembers([]string{"nodes", "[0]"},
+	"health", `{"status":"online","alerts":{"critical":0,"warning":1,"clear":2,"undefined":0,"uninitialized":0}}`,
+	"capabilities", nodeCapsOf(capFuncsOn, capHealthOn, capDyncfgOn)))
+
+// fnStreamNodesFamily compares `/api/v3/nodes` on `fn.stream`'s two parents, whose addresses are addrs (0 the
+// oracle's): nodesFamily, with each side's own address written PARENT before the comparison. A C child labels its
+// host with its destination (`_streams_to`, database/rrdhost-labels.c:229-230), its own parent's address.
+func fnStreamNodesFamily(addrs [2]string) v2Family {
+	fam := nodesFamily
+	fam.render = func(i int, body []byte) []byte {
+		return bytes.ReplaceAll(body, []byte(addrs[i]), []byte("PARENT"))
+	}
+	return fam
+}
+
+// fnStreamNodesFacts are the facts of `/api/v3/nodes` on a parent of `fn.stream`'s `calls` topology (D231 F2), as C
+// printed them (C against C, H33's probe p1): localhost, then the C child (`stream.rchild`'s identity) and its vnode,
+// numbered in the order the parent made their hosts (the vnode's sender waits for the child, fnStreamCalls), each
+// reachable with health off. Both negotiated functions on their own receivers (funcs 1/true,
+// streaming/stream-receiver-api.c:15-20); the child lists the `config` method and the vnode does not (dyncfg 2/true
+// and 2/false, daemon/dyncfg/dyncfg.c:531-536). The child names its destination, this parent, in `_streams_to`.
+var fnStreamNodesFacts = slices.Concat(
+	[]dashFact{dashKeys("api nodes timings"), dashAbsent("nodes", "[3]"),
+		dashIs(`"PARENT"`, "nodes", "[1]", "labels", "_streams_to")},
+	dashParent(0, 0), dashMembers([]string{"nodes", "[0]"}, "capabilities", nodeCaps(true)),
+	dashNode(1, 1, rchildGUID, rchildHostname),
+	dashMembers([]string{"nodes", "[1]"}, "state", `"reachable"`, "health", `{"status":"disabled"}`,
+		"capabilities", nodeCapsOf(capFuncsOn, capHealthOff, capDyncfgOn)),
+	dashNode(2, 2, rvGUID, rvName),
+	dashMembers([]string{"nodes", "[2]"}, "state", `"reachable"`, "health", `{"status":"disabled"}`,
+		"capabilities", nodeCapsOf(capFuncsOn, capHealthOff, capDyncfgOff)),
+)
 
 // versionsRows are check `api.v2-nodes`'s version requests (the two routes share the callback).
 func versionsRows() []v2Req {
@@ -216,10 +274,10 @@ const versionsMCP = "{\n    \"versions\":{\n        \"routing_hard_hash\":1,\n  
 	"        \"alerts_soft_hash\":0\n    }\n}\n"
 
 // TestNodesAPI compares the nodes and versions routes (check `api.v2-nodes`, D224): the dashboard's node list
-// (`/api/v3/nodes`), a host scope, and both version routes, on a parent with the fixture child; then `access`: the
-// ACL refusal (451) and bearer protection (412) of each route (web_api.c:82-89), but `/api/v3/versions`, which no
-// ACL guards (HTTP_ACL_NOCHECK, web_api_v3.c:142-147; `/api/v2/versions` has the NODES ACL, web_api_v2.c:99-104).
-// Red on Rust until commit 2.
+// (`/api/v3/nodes`), a host scope, a context scope (D231), and both version routes, on a parent with the fixture
+// child; then `access`: the ACL refusal (451) and bearer protection (412) of each route (web_api.c:82-89), but
+// `/api/v3/versions`, which no ACL guards (HTTP_ACL_NOCHECK, web_api_v3.c:142-147; `/api/v2/versions` has the NODES
+// ACL, web_api_v2.c:99-104). Red on Rust until commit 2.
 func TestNodesAPI(t *testing.T) {
 	t.Run("data", func(t *testing.T) {
 		p := dashPair(t, daemon.Options{})

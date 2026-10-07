@@ -299,13 +299,19 @@ func dashPair(t *testing.T, extra daemon.Options) *Pair {
 	return StartPair(t, dashPairOptions(extra), parentIdentity)
 }
 
-// dashConnect connects the fixture child (`childHost`) live to each side in turn, sending nothing yet, and hands back
-// the two connections (0 the oracle's); the test's end closes them.
+// dashConnect connects the fixture child (`childHost`) live to each side (dashConnectAs).
 func dashConnect(t *testing.T, p *Pair) [2]*stream.Conn {
+	t.Helper()
+	return dashConnectAs(t, p, childHost)
+}
+
+// dashConnectAs connects a child as `host` live to each side in turn, sending nothing yet, and hands back the two
+// connections (0 the oracle's); the test's end closes them.
+func dashConnectAs(t *testing.T, p *Pair, host stream.HostInfo) [2]*stream.Conn {
 	t.Helper()
 	var conns [2]*stream.Conn
 	for i, side := range p.Each() {
-		conn, err := stream.Connect(side.Daemon.Addr, side.Daemon.StreamKey, childHost, stream.CapsLive)
+		conn, err := stream.Connect(side.Daemon.Addr, side.Daemon.StreamKey, host, stream.CapsLive)
 		if err != nil {
 			t.Fatalf("%s: %v", side.Role, err)
 		}
@@ -315,14 +321,23 @@ func dashConnect(t *testing.T, p *Pair) [2]*stream.Conn {
 	return conns
 }
 
-// dashChild connects the fixture child to each side (dashConnect) and sends it the data fixture ending at base+60
-// (`streamDataFixture`), the same base on both sides, then waits for both to take it in. It hands back the two
-// connections (0 the oracle's), for a check that disconnects the child itself.
+// dashChild connects the fixture child to each side and sends it the data fixture ending at base+60 (dashChildAs:
+// `childHost` with qCharts, as `streamDataFixture`).
 func dashChild(t *testing.T, p *Pair, base int64) [2]*stream.Conn {
 	t.Helper()
-	conns := dashConnect(t, p)
+	return dashChildAs(t, p, base, childHost, qCharts)
+}
+
+// dashChildAs connects a child as `host` to each side (dashConnectAs) and sends it the data fixture of each of charts
+// in turn, each ending at base+60 (streamChartsFixture), the same base on both sides, then waits for both to take it
+// in. It hands back the two connections (0 the oracle's), for a check that disconnects the child itself.
+func dashChildAs(t *testing.T, p *Pair, base int64, host stream.HostInfo, charts ...dataCharts) [2]*stream.Conn {
+	t.Helper()
+	conns := dashConnectAs(t, p, host)
 	for _, conn := range conns {
-		streamDataFixture(t, conn, base)
+		for _, cs := range charts {
+			streamChartsFixture(t, conn, base, cs)
+		}
 	}
 	time.Sleep(2500 * time.Millisecond)
 	return conns
@@ -592,6 +607,26 @@ func dashKeys(keys string, path ...string) dashFact {
 		}
 		if have := strings.Join(memberKeys(got), " "); got.Kind != KindObject || have != keys {
 			return fmt.Errorf("%s has members [%s], want [%s]", dashPath(path), have, keys)
+		}
+		return nil
+	}
+}
+
+// dashSet holds when the value at path is want's JSON but for the order of every object's members and every array's
+// items in it: an aggregated label list, which C walks in the order of its strings' heap addresses (keys and values,
+// database/rrdlabels-aggregated.c:130-173).
+func dashSet(want string, path ...string) dashFact {
+	w, err := ParseJSON([]byte(want))
+	return func(v Value) error {
+		if err != nil {
+			return fmt.Errorf("harness: %s: %v", want, err)
+		}
+		got, err := dashAt(v, path...)
+		if err != nil {
+			return fmt.Errorf("%v, want %s as a set", err, want)
+		}
+		if d := Compare(w, got, "**", "**[]"); len(d) > 0 {
+			return fmt.Errorf("%s is %s, want %s as a set (%s)", dashPath(path), got, want, d[0])
 		}
 		return nil
 	}

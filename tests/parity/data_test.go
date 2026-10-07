@@ -93,12 +93,31 @@ func maskTimings(b []byte) []byte {
 	})
 }
 
-// streamDataFixture sends a child with two charts of one context: q.a (update every 1 s: a with gaps, b with
-// negatives, resets and anomalous samples, z always zero, inc incremental, h hidden) and q.two (update every 2 s),
-// ending at base+60.
+// dataCharts are the words of the data fixture's CHART lines that name and describe its two charts: their type (the
+// charts are <type>.a and <type>.two), the first one's name, the titles, the units, the family, the context, and
+// the first one's priority (the second's is one more).
+type dataCharts struct {
+	typ, name, titleA, titleTwo, units, family, context string
+	priority                                            int
+}
+
+// qCharts are the fixture child's charts: q.a (named q_a_name) and q.two, of context q.ctx.
+var qCharts = dataCharts{typ: "q", name: "q_a_name", titleA: "title a", titleTwo: "title two", units: "units",
+	family: "fam", context: "q.ctx", priority: 1000}
+
+// streamDataFixture sends the fixture child's charts (qCharts) and their data (streamChartsFixture).
 func streamDataFixture(t *testing.T, conn *stream.Conn, base int64) {
 	t.Helper()
-	conn.Linef("CHART 'q.a' 'q_a_name' 'title a' 'units' 'fam' 'q.ctx' line 1000 1 '' fixture-pusher corpus")
+	streamChartsFixture(t, conn, base, qCharts)
+}
+
+// streamChartsFixture sends a child two charts of one context, as cs names them: <type>.a (update every 1 s: a with
+// gaps, b with negatives, resets and anomalous samples, z always zero, inc incremental, h hidden) and <type>.two
+// (update every 2 s), ending at base+60.
+func streamChartsFixture(t *testing.T, conn *stream.Conn, base int64, cs dataCharts) {
+	t.Helper()
+	conn.Linef("CHART '%s.a' '%s' '%s' '%s' '%s' '%s' line %d 1 '' fixture-pusher corpus", cs.typ, cs.name, cs.titleA,
+		cs.units, cs.family, cs.context, cs.priority)
 	conn.Linef("DIMENSION 'a' 'alpha' absolute 1 1 ''")
 	conn.Linef("DIMENSION 'b' '' absolute 1 1 ''")
 	conn.Linef("DIMENSION 'z' '' absolute 1 1 ''")
@@ -106,13 +125,14 @@ func streamDataFixture(t *testing.T, conn *stream.Conn, base int64) {
 	conn.Linef("DIMENSION 'h' '' absolute 1 1 'hidden'")
 	conn.Linef("CLABEL 'k' 'v1' 2")
 	conn.Linef("CLABEL_COMMIT")
-	conn.Linef("CHART 'q.two' '' 'title two' 'units' 'fam' 'q.ctx' line 1001 2 '' fixture-pusher corpus")
+	conn.Linef("CHART '%s.two' '' '%s' '%s' '%s' '%s' line %d 2 '' fixture-pusher corpus", cs.typ, cs.titleTwo,
+		cs.units, cs.family, cs.context, cs.priority+1)
 	conn.Linef("DIMENSION 'a' '' absolute 1 1 ''")
 	conn.Linef("DIMENSION 'b' '' absolute 1 1 ''")
 	conn.Linef("CLABEL 'k' 'v2' 2")
 	conn.Linef("CLABEL_COMMIT")
 	for i := int64(1); i <= 60; i++ {
-		conn.Linef("BEGIN2 'q.a' 1 %d #", base+i)
+		conn.Linef("BEGIN2 '%s.a' 1 %d #", cs.typ, base+i)
 		if i%9 == 0 {
 			conn.Linef("SET2 'a' 0 0 E")
 		} else {
@@ -134,7 +154,7 @@ func streamDataFixture(t *testing.T, conn *stream.Conn, base int64) {
 		conn.Linef("SET2 'h' %d %d A", i, i)
 		conn.Linef("END2")
 		if i%2 == 0 {
-			conn.Linef("BEGIN2 'q.two' 2 %d #", base+i)
+			conn.Linef("BEGIN2 '%s.two' 2 %d #", cs.typ, base+i)
 			conn.Linef("SET2 'a' %d %d A", i, 100+i)
 			conn.Linef("SET2 'b' %d %d A", i, -i)
 			conn.Linef("END2")
