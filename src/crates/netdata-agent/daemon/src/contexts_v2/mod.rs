@@ -3,15 +3,13 @@
 //! modes the agent serves so far: `/api/v3/stream_path`, `/api/v2/info` (`/api/v3/info`) and `/api/v2/functions`
 //! (`/api/v3/functions`). Decisions D51, D92 and D160 in the status repository.
 
-use std::collections::HashMap;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::Instant;
 
-use netdata_agent_nrpc::{Method, access, catalog};
+use netdata_agent_nrpc::catalog;
 
-use netdata_agent_query::jsonwrap::timings;
-use netdata_agent_query::jsonwrap_v2::{Agent, agents_v2, cloud_timings, node_add_v2, version_hashes_v2};
+use netdata_agent_query::jsonwrap_v2::{cloud_timings, version_hashes_v2};
 use netdata_agent_query::keys::Keys;
 use netdata_agent_query::request::pairs;
 use netdata_agent_query::tables::{
@@ -21,7 +19,6 @@ use netdata_agent_query::tables::{
 use netdata_agent_query::target::{Versions, foreach_host, matches_retention};
 use netdata_agent_rrd::clock::now_realtime_s;
 use netdata_agent_rrd::host::Host;
-use netdata_agent_rrd::retention::retention_stats;
 use netdata_agent_text::json::{JsonOptions, JsonWriter};
 use netdata_agent_text::parse::str2l;
 use netdata_agent_text::simple_pattern::SimplePattern;
@@ -31,7 +28,15 @@ use netdata_agent_web::status;
 
 use crate::router::Route;
 use crate::server::{Reply, Shared};
-use crate::{capas, cloud, startup};
+use crate::startup;
+
+mod agents;
+mod functions;
+mod nodes;
+
+use agents::agents;
+use functions::Functions;
+use nodes::node_to_json;
 
 /// `CONTEXTS_V2_MODE`.
 pub mod mode {
@@ -151,74 +156,6 @@ fn any_context(
     }
 }
 
-/// `buffer_json_node_add_v2_mcp()`.
-fn node_add_v2_mcp(w: &mut JsonWriter, host: &Host) {
-    w.member_add_string("machine_guid", host.machine_guid());
-    let node_id = host.node_id();
-    if node_id != [0; 16] {
-        w.member_add_uuid("node_id", &node_id);
-    }
-    w.member_add_string("hostname", host.hostname());
-    w.member_add_string(
-        "relationship",
-        if host.is_localhost() {
-            "localhost"
-        } else if host.is_virtual() {
-            "virtual"
-        } else {
-            "child"
-        },
-    );
-    w.member_add_boolean("connected", host.is_online());
-}
-
-/// `rrdcontext_to_json_v2_rrdhost()` for the node modes served.
-fn node_to_json(
-    w: &mut JsonWriter,
-    host: &Host,
-    localhost: &Host,
-    ni: usize,
-    k: Keys,
-    req: &Request,
-    mode: u32,
-) {
-    w.add_array_item_object();
-    if req.options & MCP != 0 {
-        node_add_v2_mcp(w, host);
-    } else {
-        let show_status = mode & mode::AGENTS != 0 && mode & mode::NODE_INSTANCES == 0;
-        node_add_v2(w, k, host, ni, 0, show_status);
-    }
-    if mode & (mode::NODES_INFO | mode::NODES_STREAM_PATH) != 0 {
-        let info = host.info();
-        w.member_add_string("v", &info.program_version);
-        // host_labels2json()
-        w.member_add_object("labels");
-        host.labels().to_json_members(w);
-        w.object_close();
-        info.system_info.to_json_v2(w);
-        w.member_add_string(
-            "state",
-            if host.is_online() {
-                "reachable"
-            } else {
-                "stale"
-            },
-        );
-    }
-    if mode & mode::NODES_STREAM_PATH != 0 {
-        netdata_agent_ingest::stream_path::to_json(
-            w,
-            host,
-            localhost,
-            b"streaming_path",
-            false,
-            None,
-        );
-    }
-    w.object_close();
-}
-
 /// The `request` object of `options=debug`.
 fn request_to_json(w: &mut JsonWriter, req: &Request, mode: u32) {
     let text = |v: &Option<Vec<u8>>| v.clone();
@@ -250,58 +187,6 @@ fn request_to_json(w: &mut JsonWriter, req: &Request, mode: u32) {
     w.member_add_time_t_formatted("before", req.before, rfc3339);
     w.object_close();
     w.object_close();
-}
-
-/// The functions dictionary of `rrdcontext_to_json_v2()`: one entry per `"<version>|<name>"` in the order first seen,
-/// with the attributes of the first host that has it and the `ni` of every host that does.
-#[derive(Default)]
-struct Functions {
-    entries: Vec<(Vec<u8>, Arc<Method>, Vec<usize>)>,
-    by_key: HashMap<Vec<u8>, usize>,
-}
-
-impl Functions {
-    /// A host's `nrpc_catalog_host_to_dict()` entries merged by C's insert and conflict callbacks.
-    fn add(&mut self, host: Vec<(Vec<u8>, Arc<Method>)>, ni: usize) {
-        for (key, method) in host {
-            match self.by_key.get(&key) {
-                Some(&i) => self.entries[i].2.push(ni),
-                None => {
-                    self.by_key.insert(key.clone(), self.entries.len());
-                    self.entries.push((key, method, vec![ni]));
-                }
-            }
-        }
-    }
-
-    /// The `functions` array: each entry named after its key's first `|`; `mcp` leaves out `ni`, the priority (C's
-    /// `int` printed as `uint64`) and the version.
-    fn to_json(&self, w: &mut JsonWriter, mcp: bool) {
-        w.member_add_array(Some(b"functions"));
-        for (key, method, ni) in &self.entries {
-            let name = key.iter().position(|&b| b == b'|').map_or(&key[..], |i| &key[i + 1..]);
-            w.add_array_item_object();
-            w.member_add_string("name", name);
-            w.member_add_string("help", &method.help);
-            if !mcp {
-                w.member_add_array(Some(b"ni"));
-                for &n in ni {
-                    w.add_array_item_uint64(n as u64);
-                }
-                w.array_close();
-                w.member_add_uint64("priority", method.priority as u64);
-                w.member_add_uint64("version", u64::from(method.version));
-            }
-            w.member_add_string("tags", &method.tags);
-            w.member_add_array(Some(b"access"));
-            for name in access::names(method.access) {
-                w.add_array_item_string(name);
-            }
-            w.array_close();
-            w.object_close();
-        }
-        w.array_close();
-    }
 }
 
 /// `rrdcontext_to_json_v2()` for the modes served.
@@ -425,114 +310,6 @@ fn render(shared: &Shared, req: &Request, mode: u32, wall_s: i64) -> Reply {
     }
 }
 
-/// `buffer_json_agents_v2()` as `rrdcontext_to_json_v2()` calls it: localhost at `now_s`, the info members with
-/// `AGENTS_INFO`, then the timings; when they end.
-fn agents(
-    w: &mut JsonWriter,
-    shared: &Shared,
-    req: &Request,
-    mode: u32,
-    now_s: i64,
-    received: Instant,
-    executed: Instant,
-) -> Instant {
-    let localhost = shared.hosts.localhost();
-    let hostname = localhost.hostname();
-    let nodes_hard_hash = || u64::from(shared.hosts.version());
-    let agent = Agent {
-        machine_guid: localhost.machine_guid(),
-        node_id: localhost.node_id(),
-        hostname: &hostname,
-        nodes_hard_hash: &nodes_hard_hash,
-    };
-    let rfc3339 = req.options & RFC3339 != 0;
-    let mut finished = executed;
-    agents_v2(w, agent, now_s, rfc3339, true, |w| {
-        if mode & mode::AGENTS_INFO != 0 {
-            agent_info(w, shared, now_s, rfc3339);
-        }
-        finished = Instant::now();
-        // nothing is preprocessed
-        timings(w, "timings", received, received, executed, finished);
-    });
-    finished
-}
-
-/// The `info` members of `buffer_json_agents_v2()`.
-fn agent_info(w: &mut JsonWriter, shared: &Shared, now_s: i64, rfc3339: bool) {
-    w.member_add_object("application");
-    shared.build_info.to_json_object(w);
-    w.object_close();
-    let url = cloud::url(&mut shared.cloud_conf());
-    cloud::status_to_json(w, now_s, &url);
-    // rrdstats_metadata_collect()
-    let m = shared.hosts.metadata_stats();
-    w.member_add_object("nodes");
-    w.member_add_uint64("total", m.nodes_total);
-    w.member_add_uint64("receiving", m.nodes_receiving);
-    w.member_add_uint64("sending", m.nodes_sending);
-    w.member_add_uint64("archived", m.nodes_archived);
-    w.object_close();
-    for (key, c) in [("metrics", m.metrics), ("instances", m.instances)] {
-        w.member_add_object(key);
-        w.member_add_uint64("collected", c.collected);
-        w.member_add_uint64("available", c.available);
-        w.object_close();
-    }
-    w.member_add_object("contexts");
-    w.member_add_uint64("collected", m.contexts.collected);
-    w.member_add_uint64("available", m.contexts.available);
-    w.member_add_uint64("unique", m.contexts_unique);
-    w.object_close();
-    // C writes localhost's capabilities here
-    capas::to_json(w, b"capabilities", shared.hosts.localhost().info().health_enabled);
-    w.member_add_object("api");
-    w.member_add_uint64("version", capas::HTTP_API_V2_VERSION);
-    w.member_add_boolean("bearer_protection", crate::auth::bearer_protection());
-    w.object_close();
-    db_size(w, shared, rfc3339);
-}
-
-/// `db_size` from `rrdstats_retention_collect()`: each tier with an engine.
-fn db_size(w: &mut JsonWriter, shared: &Shared, rfc3339: bool) {
-    let info = shared.hosts.localhost().info();
-    let tiers = retention_stats(
-        shared.hosts.storage(),
-        info.db_mode,
-        i64::from(info.update_every),
-        shared.history_entries,
-        now_realtime_s(),
-    );
-    w.member_add_array(Some(b"db_size"));
-    for t in &tiers {
-        w.add_array_item_object();
-        w.member_add_uint64("tier", t.tier as u64);
-        w.member_add_string("granularity", &t.granularity_human);
-        w.member_add_uint64("metrics", t.metrics);
-        w.member_add_uint64("samples", t.samples);
-        let sized = t.disk_used != 0 || t.disk_max != 0;
-        if sized {
-            w.member_add_uint64("disk_used", t.disk_used);
-            w.member_add_uint64("disk_max", t.disk_max);
-            w.member_add_double("disk_percent", (t.disk_percent * 100.0 + 0.5).floor() / 100.0);
-        }
-        if t.retention != 0 {
-            w.member_add_time_t_formatted("from", t.first_time_s, rfc3339);
-            w.member_add_time_t_formatted("to", t.last_time_s, rfc3339);
-            w.member_add_time_t("retention", t.retention);
-            w.member_add_string("retention_human", &t.retention_human);
-            if sized {
-                w.member_add_time_t("requested_retention", t.requested_retention);
-                w.member_add_string("requested_retention_human", &t.requested_retention_human);
-                w.member_add_time_t("expected_retention", t.expected_retention);
-                w.member_add_string("expected_retention_human", &t.expected_retention_human);
-            }
-        }
-        w.object_close();
-    }
-    w.array_close();
-}
-
 /// `api_v3_stream_path()`: the nodes with their stream paths; the host in the URL does not matter.
 pub fn stream_path(route: &Route<'_>, query: &[u8]) -> Reply {
     let stream_path_mode = mode::NODES | mode::NODES_STREAM_PATH;
@@ -558,63 +335,6 @@ pub fn functions(route: &Route<'_>, query: &[u8]) -> Reply {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use netdata_agent_nrpc::testing::inert;
-
-    /// C's functions dictionary (`api_v2_contexts.c:779-806`) and writer (`:1481-1516`): a name and version two hosts
-    /// share keeps the first host's attributes and lists both; another version is its own entry; the bytes are C's
-    /// (H9's oracle body).
-    #[test]
-    fn functions_merge_and_print_as_cs() {
-        use netdata_agent_nrpc::{MethodDesc, Registry, Source};
-        let desc = |name: &'static [u8], help: &'static [u8], version| MethodDesc {
-            name,
-            help,
-            tags: b"",
-            timeout_s: 10,
-            priority: 0,
-            version,
-            access: access::ANONYMOUS_DATA,
-            sync: false,
-            source: Source::Stream,
-            handler: inert(),
-        };
-        let (local, vnode) = (Registry::default(), Registry::default());
-        local.register("l", &desc(b"difftest-same", b"same on localhost", 1)).unwrap();
-        local.register("l", &desc(b"difftest-ver", b"version 1", 1)).unwrap();
-        vnode.register("v", &desc(b"difftest-same", b"same on the vnode", 1)).unwrap();
-        vnode.register("v", &desc(b"difftest-ver", b"version 2", 2)).unwrap();
-        let mut functions = Functions::default();
-        functions.add(catalog::to_dict(&local), 0);
-        functions.add(catalog::to_dict(&vnode), 1);
-        let printed = |mcp| {
-            let mut w = JsonWriter::new(JsonOptions::MINIFY);
-            functions.to_json(&mut w, mcp);
-            w.finalize();
-            String::from_utf8(w.into_bytes()).unwrap()
-        };
-        let entry = |name: &str, help: &str, ni: &str, version| {
-            format!(
-                concat!(
-                    r#"{{"name":"{}","help":"{}","ni":[{}],"priority":100,"version":{},"#,
-                    r#""tags":"top","access":["anonymous-data"]}}"#
-                ),
-                name, help, ni, version
-            )
-        };
-        assert_eq!(
-            printed(false),
-            format!(
-                r#"{{"functions":[{},{},{}]}}"#,
-                entry("difftest-same", "same on localhost", "0,1", 1),
-                entry("difftest-ver", "version 1", "0", 1),
-                entry("difftest-ver", "version 2", "1", 2)
-            )
-        );
-        assert!(printed(true).starts_with(concat!(
-            r#"{"functions":[{"name":"difftest-same","help":"same on localhost","tags":"top","#,
-            r#""access":["anonymous-data"]},"#
-        )));
-    }
 
     #[test]
     fn parameters_as_c_reads_them() {
