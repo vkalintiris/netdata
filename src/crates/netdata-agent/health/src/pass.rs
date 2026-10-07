@@ -196,7 +196,7 @@ impl PassCounts {
     }
 
     /// `health_alert_status_counts_add()`: REMOVED and RAISED count nowhere.
-    fn add(&mut self, status: Status) {
+    pub(crate) fn add(&mut self, status: Status) {
         if let Some(count) = self.slot(status) {
             *count += 1;
         }

@@ -1,10 +1,15 @@
-//! `aclk_get_node_instance_capas()` (`src/aclk/aclk_capas.c`) and `agent_capabilities_to_json()`: what the agent
-//! offers its clients. A capability of a subsystem not ported yet is off (D92.1), so no client asks for it.
+//! `aclk_get_node_instance_capas()` (`src/aclk/aclk_capas.c`) and `agent_capabilities_to_json()`: what a host of the
+//! agent offers its clients. A capability of a subsystem not ported yet is off (D92.1), so no client asks for it.
 
+use netdata_agent_pluginsd_proto::caps;
+use netdata_agent_rrd::host::Host;
 use netdata_agent_text::json::JsonWriter;
 
 /// `HTTP_API_V2_VERSION` (`aclk_get_http_api_version()`).
 pub const HTTP_API_V2_VERSION: u64 = 7;
+
+/// `PLUGINSD_FUNCTION_CONFIG`: the method a host answers DynCfg with.
+const CONFIG_METHOD: &[u8] = b"config";
 
 /// `struct capability`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,8 +27,8 @@ const fn capa(name: &'static str, version: u64, enabled: bool) -> Capability {
     }
 }
 
-/// `aclk_get_node_instance_capas()`, the same for every host until the subsystems that vary it are ported; health
-/// is the host's own setting, see [`to_json`].
+/// `aclk_get_node_instance_capas()`'s entries in its order, with what is the same for every host; `funcs`, `health`
+/// and `dyncfg` are each host's own, set by [`to_json`].
 pub const NODE_INSTANCE: [Capability; 9] = [
     // ACLK's protocol (M11)
     capa("proto", 1, false),
@@ -32,27 +37,37 @@ pub const NODE_INSTANCE: [Capability; 9] = [
     // metric_correlations_version: the weights API (M10)
     capa("mc", 1, false),
     capa("ctx", 1, true),
-    // Functions: localhost's; a child's (FUNCTIONS negotiated, aclk_capas.c:41,49) is shown only where its
-    // consumers are, /api/v2/nodes and node_instances (M10) and the ACLK (M11), D164.B4
+    // localhost's own, or what a child's receiver negotiated
     capa("funcs", 1, true),
     capa("http_api_v2", HTTP_API_V2_VERSION, true),
-    // host->health.enabled, set where the capabilities are written
+    // host->health.enabled
     capa("health", 2, false),
     // ACLK's request cancellation (M11)
     capa("req_cancel", 1, false),
-    // DynCfg: localhost's; a child's (dyncfg_available_for_rrdhost(), aclk_capas.c:42,53) is shown only where its
-    // consumers are, as funcs'
+    // localhost's own, or a host's whose `config` method is available
     capa("dyncfg", 2, true),
 ];
 
-/// `agent_capabilities_to_json()`: the capabilities of a host for which health is enabled or not.
-pub fn to_json(w: &mut JsonWriter, key: &[u8], health_enabled: bool) {
+/// `agent_capabilities_to_json()` over `aclk_get_node_instance_capas()`: the host's capabilities. Functions are
+/// localhost's, or a child's whose receiver negotiated them (`receiver_has_capability()`), in version and flag
+/// alike; DynCfg is localhost's, or a host's whose `config` method is available now
+/// (`dyncfg_available_for_rrdhost()`); health is the host's own setting.
+pub fn to_json(w: &mut JsonWriter, key: &[u8], host: &Host) {
+    let local = host.is_localhost();
+    let functions = local || host.receiver().is_some_and(|slot| slot.link.capabilities & caps::FUNCTIONS != 0);
+    let dyncfg = local || host.functions().available(CONFIG_METHOD);
     w.member_add_array(Some(key));
     for c in NODE_INSTANCE {
+        let (version, enabled) = match c.name {
+            "funcs" => (u64::from(functions), functions),
+            "health" => (c.version, host.health_enabled()),
+            "dyncfg" => (c.version, dyncfg),
+            _ => (c.version, c.enabled),
+        };
         w.add_array_item_object();
         w.member_add_string("name", c.name);
-        w.member_add_uint64("version", c.version);
-        w.member_add_boolean("enabled", if c.name == "health" { health_enabled } else { c.enabled });
+        w.member_add_uint64("version", version);
+        w.member_add_boolean("enabled", enabled);
         w.object_close();
     }
     w.array_close();
@@ -60,23 +75,123 @@ pub fn to_json(w: &mut JsonWriter, key: &[u8], health_enabled: bool) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use netdata_agent_nrpc::testing::inert;
+    use netdata_agent_nrpc::{MethodDesc, Source, access};
+    use netdata_agent_rrd::host::{Attach, HostInfo, ReceiverLink, ReceiverSlot};
     use netdata_agent_text::json::JsonOptions;
 
     use super::*;
 
-    /// The health capability is the host's own setting; the others are the agent's.
-    #[test]
-    fn the_health_capability_follows_the_host() {
-        let render = |health_enabled: bool| {
-            let mut w = JsonWriter::new(JsonOptions::MINIFY);
-            to_json(&mut w, b"capabilities", health_enabled);
-            w.finalize();
-            String::from_utf8(w.into_bytes()).unwrap()
+    fn host(local: bool) -> Host {
+        let info = HostInfo {
+            hostname: "box".into(),
+            registry_hostname: "box".into(),
+            os: "linux".into(),
+            timezone: "UTC".into(),
+            abbrev_timezone: "UTC".into(),
+            utc_offset: 0,
+            program_name: "netdata".into(),
+            program_version: "v0".into(),
+            update_every: 1,
+            db_mode: netdata_agent_rrd::mode::DbMode::Ram,
+            history_entries: 3600,
+            health_enabled: false,
+            system_info: Default::default(),
+            replication_enabled: false,
+            replication_period: 0,
+            replication_step: 0,
+            stream_send: None,
+            cache_dir: None,
         };
-        let (on, off) = (render(true), render(false));
-        assert!(on.contains(r#"{"name":"health","version":2,"enabled":true}"#), "{on}");
-        assert!(off.contains(r#"{"name":"health","version":2,"enabled":false}"#), "{off}");
-        let (enabled, disabled) = (r#""health","version":2,"enabled":true"#, r#""health","version":2,"enabled":false"#);
-        assert_eq!(on.replace(enabled, disabled), off);
+        Host::new("0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e", local, info)
+    }
+
+    fn rendered(host: &Host) -> String {
+        let mut w = JsonWriter::new(JsonOptions::MINIFY);
+        to_json(&mut w, b"capabilities", host);
+        w.finalize();
+        String::from_utf8(w.into_bytes()).unwrap()
+    }
+
+    /// The three entries that are the host's own, as (`funcs`, `health`, `dyncfg`), each `version/enabled`; the other
+    /// six must be the table's.
+    fn own(host: &Host) -> [String; 3] {
+        let text = rendered(host);
+        let entry = |name: &str| {
+            let at = text.find(&format!(r#"{{"name":"{name}","#)).unwrap_or_else(|| panic!("{name} in {text}"));
+            let rest = &text[at..];
+            let (version, enabled) = rest[..rest.find('}').unwrap()].split_once(r#","enabled":"#).unwrap();
+            format!("{}/{enabled}", &version[version.rfind(':').unwrap() + 1..])
+        };
+        for c in NODE_INSTANCE.iter().filter(|c| !["funcs", "health", "dyncfg"].contains(&c.name)) {
+            assert_eq!(entry(c.name), format!("{}/{}", c.version, c.enabled), "{}", c.name);
+        }
+        ["funcs", "health", "dyncfg"].map(entry)
+    }
+
+    /// Localhost's nine entries, in C's order and with C's versions (`aclk_capas.c:44-55`); the flags of the
+    /// subsystems not ported yet are off. `/api/v2/info` prints these.
+    #[test]
+    fn localhost_s_capabilities_are_the_table_s() {
+        assert_eq!(
+            rendered(&host(true)),
+            concat!(
+                r#"{"capabilities":[{"name":"proto","version":1,"enabled":false},"#,
+                r#"{"name":"ml","version":0,"enabled":false},{"name":"mc","version":1,"enabled":false},"#,
+                r#"{"name":"ctx","version":1,"enabled":true},{"name":"funcs","version":1,"enabled":true},"#,
+                r#"{"name":"http_api_v2","version":7,"enabled":true},{"name":"health","version":2,"enabled":false},"#,
+                r#"{"name":"req_cancel","version":1,"enabled":false},{"name":"dyncfg","version":2,"enabled":true}]}"#
+            )
+        );
+    }
+
+    /// Functions, health and DynCfg are each host's own: localhost has functions and DynCfg whatever its receiver;
+    /// a child has functions only while its receiver negotiated them (version and flag both 0 otherwise), and
+    /// DynCfg only while its `config` method is available; health follows the host's setting.
+    #[test]
+    fn functions_health_and_dyncfg_follow_the_host() {
+        let attach = |host: &Host, capabilities: u32| {
+            let link = ReceiverLink { capabilities, ..ReceiverLink::default() };
+            let slot = Arc::new(ReceiverSlot::new(0, Default::default(), link, Box::new(|| {})));
+            assert_eq!(host.set_receiver(slot), Attach::Attached);
+        };
+        let config = MethodDesc {
+            name: CONFIG_METHOD,
+            help: b"",
+            tags: b"",
+            timeout_s: 10,
+            priority: 0,
+            version: 1,
+            access: access::ANONYMOUS_DATA,
+            sync: false,
+            source: Source::Stream,
+            handler: inert(),
+        };
+
+        let local = host(true);
+        assert_eq!(own(&local), ["1/true", "2/false", "2/true"]);
+        local.set_health_enabled(true);
+        assert_eq!(own(&local), ["1/true", "2/true", "2/true"]);
+
+        // a child without a receiver, then with one that negotiated everything but functions
+        let without = host(false);
+        assert_eq!(own(&without), ["0/false", "2/false", "2/false"]);
+        attach(&without, !caps::FUNCTIONS);
+        assert_eq!(own(&without), ["0/false", "2/false", "2/false"]);
+        // a child whose receiver negotiated functions
+        let child = host(false);
+        attach(&child, caps::FUNCTIONS);
+        assert_eq!(own(&child), ["1/true", "2/false", "2/false"]);
+        child.set_health_enabled(true);
+        assert_eq!(own(&child), ["1/true", "2/true", "2/false"]);
+        // its `config` method: there, then retired by the host's next epoch; another method does not count
+        child.functions().register("h", &MethodDesc { name: b"configuration", ..config.clone() }).unwrap();
+        assert_eq!(own(&child), ["1/true", "2/true", "2/false"]);
+        child.functions().register("h", &config).unwrap();
+        assert_eq!(own(&child), ["1/true", "2/true", "2/true"]);
+        child.functions().activate();
+        assert_eq!(own(&child), ["1/true", "2/true", "2/false"]);
     }
 }

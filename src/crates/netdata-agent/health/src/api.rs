@@ -19,6 +19,7 @@ use netdata_agent_text::units::format_value_and_unit;
 use crate::alert::{Alert, ExpressionText, Snapshot, Status, run_flags};
 use crate::alerts::HostAlerts;
 use crate::config::HealthConfig;
+use crate::pass::PassCounts;
 use crate::tables::ACTION_OPTION_NO_CLEAR_NOTIFICATION;
 
 /// `rrdset2json()`'s `alarms` members: the chart's alerts in link order, each with its published status.
@@ -53,19 +54,39 @@ pub struct StatusCounts {
     pub critical: u64,
 }
 
+/// The published status of each of the host's alerts whose chart was collected at least once: the walk that
+/// `web_client_api_request_v1_info_summary_alarm_statuses()` and `rrdhost_status_health_internal()` both make (C's
+/// also skip an alert without a chart; an alert here always has its chart).
+fn collected_statuses(alerts: Option<&HostAlerts>) -> impl Iterator<Item = Status> {
+    alerts
+        .map(HostAlerts::alerts)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|alert| alert.chart.collection().last_collected.0 != 0)
+        .map(|alert| alert.snapshot().status)
+}
+
 /// `web_client_api_request_v1_info_summary_alarm_statuses()`: the alerts whose chart was collected at least once,
 /// by published status. Every status that is not WARNING or CRITICAL counts as normal.
 pub fn status_counts(alerts: Option<&HostAlerts>) -> StatusCounts {
     let mut counts = StatusCounts::default();
-    for alert in alerts.map(HostAlerts::alerts).unwrap_or_default() {
-        if alert.chart.collection().last_collected.0 == 0 {
-            continue;
-        }
-        match alert.snapshot().status {
+    for status in collected_statuses(alerts) {
+        match status {
             Status::Warning => counts.warning += 1,
             Status::Critical => counts.critical += 1,
             _ => counts.normal += 1,
         }
+    }
+    counts
+}
+
+/// The alert counts of `rrdhost_status_health_internal()` (`rrdhost-status.c:323-361`), which a host's `health`
+/// object prints: the same alerts, counted as the request finds them, each under its own status; REMOVED and any
+/// other status count nowhere.
+pub fn alert_counts(alerts: Option<&HostAlerts>) -> PassCounts {
+    let mut counts = PassCounts::default();
+    for status in collected_statuses(alerts) {
+        counts.add(status);
     }
     counts
 }
@@ -571,6 +592,48 @@ mod tests {
         publish("hv.b", b"hv_same", Status::Critical);
         assert_eq!(counts(), StatusCounts { normal: 1, warning: 1, critical: 0 });
         assert!(alarms("hv.a").starts_with(r#"{"alarms":{"hv_same":{"id":"hv_same","status":"WARNING","#));
+    }
+
+    /// The count a host's `health` object prints (`rrdhost-status.c:323-361`): the alerts of the charts that were
+    /// collected, each under its own status as the request finds it; REMOVED and RAISED under none; nothing before
+    /// the host's first pass.
+    #[test]
+    fn the_five_way_count_follows_the_status() {
+        let health = health_with(&variables_case_rules());
+        let host = variables_case_host();
+        variables_case_collect(&host, NOW);
+        let counts = || alert_counts(health.host(&host).as_deref());
+        assert_eq!(counts(), PassCounts::default());
+
+        health.host_link(&host, &|| NOW, &|| true);
+        // hv.a was collected and has two alerts; hv.b's and the other charts' were not
+        assert_eq!(counts(), PassCounts { uninitialized: 2, ..PassCounts::default() });
+
+        let alerts = health.host(&host).expect("the host's alerts");
+        let publish = |chart_id: &str, name: &[u8], status: Status| {
+            let chart = host.charts().find(chart_id, true).expect("the chart");
+            let linked = alerts.chart_alerts(&chart);
+            let alert = linked.iter().find(|alert| alert.name() == name).expect("the alert");
+            let mut run = alert.run();
+            run.status = status;
+            alert.publish(&run, None);
+        };
+        let one = |status: Status| {
+            publish("hv.a", b"hv_one", status);
+            counts()
+        };
+        publish("hv.a", b"hv_same", Status::Warning);
+        let warning = PassCounts { warning: 1, ..PassCounts::default() };
+        assert_eq!(one(Status::Critical), PassCounts { critical: 1, ..warning });
+        assert_eq!(one(Status::Clear), PassCounts { clear: 1, ..warning });
+        assert_eq!(one(Status::Undefined), PassCounts { undefined: 1, ..warning });
+        assert_eq!(one(Status::Uninitialized), PassCounts { uninitialized: 1, ..warning });
+        assert_eq!(one(Status::Warning), PassCounts { warning: 2, ..PassCounts::default() });
+        assert_eq!(one(Status::Removed), warning);
+        assert_eq!(one(Status::Raised), warning);
+        // an alert of a chart that was never collected counts nowhere, whatever its status
+        publish("hv.b", b"hv_same", Status::Critical);
+        assert_eq!(counts(), warning);
     }
 
     /// The recorded case `tests/vectors/loop-api/flags/`: answers of the running C agent, two seconds into its

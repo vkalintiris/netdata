@@ -194,7 +194,6 @@ fn request_to_json(w: &mut JsonWriter, req: &Request, mode: u32) {
 fn render(shared: &Shared, req: &Request, mode: u32, wall_s: i64) -> Reply {
     let received = Instant::now();
     let hosts = shared.hosts.all();
-    let localhost = shared.hosts.localhost();
     let received_ut = startup::now_ut();
     let pattern = |v: &Option<Vec<u8>>| v.as_deref().and_then(SimplePattern::from_web);
     let (scope_nodes, nodes) = (pattern(&req.scope_nodes), pattern(&req.nodes));
@@ -279,7 +278,7 @@ fn render(shared: &Shared, req: &Request, mode: u32, wall_s: i64) -> Reply {
         let k = Keys::with_long(req.options & JSON_LONG_KEYS != 0);
         w.member_add_array(Some(b"nodes"));
         for (ni, host) in selected.iter().enumerate() {
-            node_to_json(&mut w, host, localhost, ni, k, req, mode);
+            node_to_json(&mut w, host, shared, ni, k, req, mode);
         }
         w.array_close();
     }
