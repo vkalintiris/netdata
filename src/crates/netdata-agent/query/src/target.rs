@@ -288,6 +288,8 @@ pub fn matches_retention(after: i64, before: i64, first: i64, last: i64, ue: i64
 
 struct Walk<'a> {
     req: &'a DataRequest,
+    /// The request's `scope_contexts` and `contexts` patterns, built once for every host's walk.
+    context_patterns: &'a (Option<SimplePattern>, Option<SimplePattern>),
     window: SelectionWindow,
     start_s: i64,
     match_ids: bool,
@@ -699,8 +701,7 @@ impl Walk<'_> {
                 self.context(node, &rc, queryable, Some(ri));
             }
         } else {
-            let req = self.req;
-            let (scope_sp, contexts_sp) = (pattern(&req.scope_contexts), pattern(&req.contexts));
+            let (req, (scope_sp, contexts_sp)) = (self.req, self.context_patterns);
             let _ = foreach_context(
                 host,
                 req.scope_contexts.as_deref(),
@@ -863,8 +864,10 @@ pub fn create(mut req: DataRequest, source: Source, now_s: i64) -> QueryTarget {
     }
     let needs_all_dimensions = req.options & options::PERCENTAGE != 0 || percentage_of_group;
     let label_array = |v: &Option<Vec<u8>>| pattern(v).map(|sp| label_pattern_array(&sp));
+    let context_patterns = (pattern(&req.scope_contexts), pattern(&req.contexts));
     let mut walk = Walk {
         req: &req,
+        context_patterns: &context_patterns,
         window,
         start_s: now_s,
         match_ids,

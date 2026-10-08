@@ -85,37 +85,15 @@ mod tests {
     use std::sync::Arc;
 
     use netdata_agent_rrd::chart::{Algorithm, ChartSpec, ChartType};
-    use netdata_agent_rrd::host::{Attach, Host, HostInfo, ReceiverLink, ReceiverSlot};
+    use netdata_agent_rrd::host::{Attach, Host, ReceiverLink, ReceiverSlot};
     use netdata_agent_rrd::mode::DbMode;
 
     use super::*;
+    use crate::testing::host_info as info;
 
     const LOCALHOST: &str = "5a1e0000-0000-4000-8000-0000000000aa";
     const CHILD: &str = "5a1e0000-0000-4000-8000-00000000c004";
     const NOW: i64 = 1_790_400_218;
-
-    fn info(hostname: &str) -> HostInfo {
-        HostInfo {
-            hostname: hostname.into(),
-            registry_hostname: hostname.into(),
-            os: "linux".into(),
-            timezone: "UTC".into(),
-            abbrev_timezone: "UTC".into(),
-            utc_offset: 0,
-            program_name: "netdata".into(),
-            program_version: "v0".into(),
-            update_every: 1,
-            db_mode: DbMode::Ram,
-            history_entries: 3600,
-            health_enabled: false,
-            system_info: Default::default(),
-            replication_enabled: false,
-            replication_period: 0,
-            replication_step: 0,
-            stream_send: None,
-            cache_dir: None,
-        }
-    }
 
     fn attach(host: &Host) -> Arc<ReceiverSlot> {
         let slot = Arc::new(ReceiverSlot::new(

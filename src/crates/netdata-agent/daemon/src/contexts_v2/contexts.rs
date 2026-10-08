@@ -3,7 +3,6 @@
 //! writer (`contexts_v2_contexts_to_json()`) and the categorized output of a long MCP answer
 //! (`rrdcontext_categorize_and_output()`). Decisions D231 and D232 in the status repository.
 
-use indexmap::map::Entry as Slot;
 use indexmap::{IndexMap, IndexSet};
 
 use netdata_agent_query::tables::contexts_options::{
@@ -138,11 +137,11 @@ impl Entry {
         }
         for ri in rc.instances() {
             let instance = ri.state();
-            let slack = i64::from(instance.update_every_s);
+            let update_every = i64::from(instance.update_every_s);
             let in_window = |collected: bool, first: i64, last: i64| match window.range {
                 None => true,
                 Some((after, before)) => {
-                    matches_retention(after, before, first, if collected { window.now } else { last }, slack)
+                    matches_retention(after, before, first, if collected { window.now } else { last }, update_every)
                 }
             };
             if !in_window(ri.flags.is_collected(), instance.first_time_s, instance.last_time_s) {
@@ -213,9 +212,9 @@ impl Entry {
     }
 }
 
-/// The request's cardinality limit as a count; 0 is none.
+/// The request's cardinality limit as a count (C's `size_t`); 0 is none.
 fn limit(req: &Request) -> usize {
-    usize::try_from(req.cardinality_limit).unwrap_or(usize::MAX)
+    req.cardinality_limit as usize
 }
 
 /// The category of a context id (`rrdcontext_categorize_and_output()`): the id up to its second dot, or up to its
@@ -234,7 +233,7 @@ fn category(id: &[u8]) -> &[u8] {
 
 /// `rrdcontext_categorize_and_output()`: the ids grouped by category, categories and ids in the order first seen,
 /// each category showing as many ids as the limit leaves it (the limit shared among the categories, three at the
-/// least) and then how many it has more.
+/// least); a category with more shows one fewer and then how many it has more.
 fn categorized_to_json<'a>(w: &mut JsonWriter, ids: impl Iterator<Item = &'a str>, limit: usize) {
     let mut categories: IndexMap<&[u8], Vec<&str>> = IndexMap::new();
     let mut total = 0;
@@ -277,15 +276,14 @@ impl ContextsDict {
     /// takes this host's lists, which are the contexts answer's alone.
     pub(super) fn add(&mut self, rc: &Context, state: ContextState, options: u64, window: Window) {
         let new = Entry::new(state, rc.flags.get());
-        let entry = match self.entries.entry(rc.id().to_owned()) {
-            Slot::Occupied(slot) => {
-                let entry = slot.into_mut();
-                entry.merge(&new, options);
-                entry
+        let at = match self.entries.get_index_of(rc.id()) {
+            Some(at) => {
+                self.entries[at].merge(&new, options);
+                at
             }
-            Slot::Vacant(slot) => slot.insert(new),
+            None => self.entries.insert_full(rc.id().to_owned(), new).0,
         };
-        entry.react(rc, options, window);
+        self.entries[at].react(rc, options, window);
     }
 
     /// `contexts_v2_contexts_to_json()`: the `contexts` member, and the `info` text an MCP caller gets after it.
@@ -524,6 +522,14 @@ mod tests {
             )
         );
 
+        // one list option alone prints that list alone; `rfc3339` prints the entries as texts
+        let only = |options: u64| printed(&dict(&[&h], options, NO_WINDOW), &request(options, 0), JsonOptions::MINIFY);
+        assert_eq!(only(INSTANCES), r#"{"contexts":{"q.ctx":{"instances":["q.q_a_name","q.two"]}}}"#);
+        assert_eq!(only(DIMENSIONS), r#"{"contexts":{"q.ctx":{"dimensions":["alpha","b","z","inc","h","a"]}}}"#);
+        let dated = only(RETENTION | RFC3339);
+        assert!(dated.starts_with(r#"{"contexts":{"q.ctx":{"first_entry":"2023-11-14T22:1"#), "{dated}");
+        assert!(dated.contains(r#","last_entry":"2023-11-14T22:14:27"#), "{dated}");
+
         // with a limit, as C printed them: a list of more items than the limit is cut after one fewer, and a
         // list within it is whole (`cardinality=1`, then `cardinality_limit=2`)
         let lists = |limit: u64| {
@@ -583,15 +589,22 @@ mod tests {
         };
         // C's answer for the parity fixture's two children, both collected: `[x] [x]`, `fam[x]`, `units`, 900
         assert_eq!(merged(kept(true), &other(true), all), text("[x] [x]", "fam[x]", 900, (50, 300), true));
-        // the kept one collected, the newcomer not: its texts and its priority stay; C printed these with the
-        // first child disconnected and the second, collected, as the newcomer... of the first's entry
+        // the kept one collected, the newcomer not: its texts and its priority stay
         assert_eq!(merged(kept(true), &other(false), all), text("title [x]", "fam", 1000, (50, 300), true));
-        // the kept one not collected, the newcomer collected: merged, not replaced, and collected from now on
+        // the kept one not collected, the newcomer collected: merged, not replaced, and collected from now on (C's
+        // answer with the first child disconnected and the second collected: `[x] [x]`, `fam[x]`, `units`, 900)
         assert_eq!(merged(kept(false), &other(true), all), text("[x] [x]", "fam[x]", 900, (50, 300), true));
         assert_eq!(merged(kept(false), &other(false), all), text("[x] [x]", "fam[x]", 900, (50, 300), false));
         // a higher priority never wins, equal texts stay as they are
         let higher = entry("title [x]", "fam", "units2", 1100, 100, 200, true);
         assert_eq!(merged(kept(true), &higher, all), text("title [x]", "fam", 1000, (100, 200), true));
+        // nor when the kept side is not collected and the newcomer is: the lower stays, the newcomer's is not taken
+        assert_eq!(merged(kept(false), &higher, all), text("title [x]", "fam", 1000, (100, 200), true));
+        // a third host merges into what the first two left
+        let mut three = kept(true);
+        three.merge(&other(true), all);
+        let third = entry("third [x]", "fam3", "units3", 950, 10, 400, false);
+        assert_eq!(merged(three, &third, all), text("[x] [x]", "fam[x]", 900, (10, 400), true));
         // an option that is off leaves its field the first host's
         assert_eq!(merged(kept(true), &other(true), RETENTION), text("title [x]", "fam", 1000, (50, 300), true));
         assert_eq!(merged(kept(true), &other(true), TITLES), text("[x] [x]", "fam", 1000, (100, 200), true));
@@ -655,8 +668,13 @@ mod tests {
     /// clock). An instance that is left out brings neither its dimensions nor its labels.
     #[test]
     fn a_window_filters_the_lists_with_the_instance_s_slack() {
-        // the child is gone: nothing is collected, and the retention ends at T whatever the walk's clock
         let h = host("guid-1", &[(&Q_A, T - 59), (&Q_TWO, T - 58)]);
+        // while the charts are collected their retention reaches the walk's clock: a window after the data's end
+        // still lists them
+        let live = Window { range: Some((T + 50, T + 90)), now: T + 100 };
+        let text = printed(&dict(&[&h], LISTS, live), &request(LISTS, 0), JsonOptions::MINIFY);
+        assert!(text.ends_with(r#""instances":["q.q_a_name","q.two"]}}}"#), "{text}");
+        // the child is gone: nothing is collected, and the retention ends at T whatever the walk's clock
         h.contexts().child_disconnected();
         h.contexts().worker_cycle();
         let lists = |after: i64, before: i64| {
@@ -813,6 +831,8 @@ mod tests {
                 .to_owned()
             )
         );
+        // a limit that does not divide evenly is rounded down: 18 over 4 gives 4, not 5
+        assert_eq!(grouped(&ids, 18).0, info(8, 4, 4));
         // exactly as many as the sample size are all shown
         assert_eq!(grouped(&["a.x", "a.y", "a.z"], 1), (info(3, 1, 3), r#""a":["a.x","a.y","a.z"]}"#.to_owned()));
         assert_eq!(

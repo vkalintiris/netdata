@@ -39,7 +39,9 @@ impl AggregatedLabels {
         for label in labels.iter() {
             match self.keys.get_mut(&label.name) {
                 Some(values) => {
-                    values.insert(label.value.clone());
+                    if !values.contains(&label.value) {
+                        values.insert(label.value.clone());
+                    }
                 }
                 None => {
                     self.keys.insert(label.name.clone(), IndexSet::from([label.value.clone()]));
