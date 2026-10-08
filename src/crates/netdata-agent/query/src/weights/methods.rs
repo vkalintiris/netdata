@@ -1,6 +1,6 @@
 //! The queries the weights methods make per metric (`src/web/api/queries/weights.c`): the series of one metric
-//! over a window (`rrd2rrdr_ks2()`, which the `ks2` and `volume` methods compare) and what a query adds to the
-//! request's statistics.
+//! over a window (`rrd2rrdr_ks2()`, which the `ks2` method compares between its two windows) and what a query adds
+//! to the request's statistics.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -349,6 +349,18 @@ impl Run<'_> {
     /// Returns how many metrics were looked at. Nothing is done unless the result has exactly one row and a
     /// column for every query metric; a query cut short by its timeout is not told apart.
     pub fn one_query(&mut self, hosts: Vec<Arc<Host>>, texts: &Texts, timeout_ms: i32) -> usize {
+        self.one_query_since(Instant::now(), hosts, texts, timeout_ms)
+    }
+
+    /// [`Self::one_query`] of a request whose query was received at `received`: C takes the query's time first
+    /// in `query_target_create()`, so building the target over every host counts against the timeout.
+    fn one_query_since(
+        &mut self,
+        received: Instant,
+        hosts: Vec<Arc<Host>>,
+        texts: &Texts,
+        timeout_ms: i32,
+    ) -> usize {
         let mut data = DataRequest::new(1, self.env.profile);
         data.scope_nodes = texts.scope_nodes.clone();
         data.scope_contexts = texts.scope_contexts.clone();
@@ -377,7 +389,7 @@ impl Run<'_> {
             let Some(mut window) = calculate(&qt, self.env.now_s) else {
                 return 0;
             };
-            run_v1(&mut qt, &mut window, &self.env.control())
+            run_v1(&mut qt, &mut window, &Control { received, ..self.env.control() })
         };
         if r.rows != 1 || r.columns == 0 || r.columns != qt.query.len() {
             return 0;
@@ -726,7 +738,7 @@ mod tests {
         for shifts in [0, 1] {
             let mut asked = run(&profile, Method::Ks2, 60, 120);
             asked.shifts = shifts;
-            let got = on(asked, &["step", "b", "z", "hid"]);
+            let got = on(asked, &["a", "step", "b", "z", "hid"]);
 
             // the same two series, asked for here
             let h = weights_host();
@@ -740,7 +752,7 @@ mod tests {
                 metric_series(&env(&profile, None), &h, &ri, &rm, &request, &mut stats)
             };
             let mut expected = Vec::new();
-            for dimension in ["step", "b"] {
+            for dimension in ["a", "step", "b"] {
                 let (high, high_sp) = series(dimension, (last - 60, last), 30).expect("a highlighted series");
                 let base_points = (high.len() as u64) << shifts;
                 let (base, base_sp) = series(dimension, (last - 180, last - 60), base_points).expect("a baseline series");
@@ -755,10 +767,15 @@ mod tests {
                 .collect();
             assert_eq!(registered, expected, "shifts {shifts}");
             // `b` never changes in either window: both are one distribution
-            assert_eq!(expected[1].1, 0.0);
-            // step and b: two queries each; z (zero all along) and hid (not queried): the highlighted one alone
-            assert_eq!(got.stats.db_queries, 6, "shifts {shifts}");
-            let largest = expected[0].1.max(expected[1].1);
+            assert_eq!(expected[2].1, 0.0);
+            // `a` rises by one a second. Without a shift a point of the baseline is twice as long as one of the
+            // highlighted window, so its changes are twice as large and the two distributions share nothing;
+            // with one shift the points are as long and the changes are the same
+            let rising = expected[0].1;
+            assert!(if shifts == 0 { rising > 0.99 } else { rising < 0.01 }, "shifts {shifts}: {rising}");
+            // a, step and b: two queries each; z (zero all along) and hid (not queried): the highlighted one alone
+            assert_eq!(got.stats.db_queries, 8, "shifts {shifts}");
+            let largest = expected.iter().map(|e| e.1).fold(0.0, f64::max);
             assert_eq!(got.stats.max_base_high_ratio, largest);
         }
 
@@ -827,6 +844,27 @@ mod tests {
         assert_eq!((named(&got).len(), examined, got.stats.db_queries), (2, 2, 2));
         let (got, examined) = asked(&texts(&|t| t.contexts = Some(b"nope".to_vec())), true);
         assert_eq!((got.results.len(), examined, got.stats), (0, 0, Stats::default()));
+    }
+
+    /// The one query's time counts from before its target is built: a request already past its timeout when
+    /// the query starts is cut at the query's first check, which comes after its first metric: at most that one
+    /// is a result.
+    #[test]
+    fn one_query_is_cut_by_a_timeout_that_ran_out_before_it() {
+        use crate::testing::weights_host_as;
+        let profile = Profile::default();
+        let hosts = vec![weights_host_as("guid-1", "one")];
+        let texts = Texts { contexts: Some(b"ctx.w".to_vec()), ..Texts::default() };
+        let asked = |received: Instant| {
+            let mut run = run(&profile, Method::Value, 60, 60);
+            run.register_zero = true;
+            run.one_query_since(received, hosts.clone(), &texts, 1000);
+            (run.results.len(), run.stats.db_queries)
+        };
+        assert_eq!(asked(Instant::now()), (4, 4));
+        let long_ago = Instant::now().checked_sub(std::time::Duration::from_secs(10)).expect("an uptime of 10 s");
+        let (results, queries) = asked(long_ago);
+        assert!(results <= 1 && queries <= 1, "{results} results of {queries} queries");
     }
 
     /// `merge_query_value_to_stats()`.

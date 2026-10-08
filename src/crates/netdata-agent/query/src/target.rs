@@ -500,6 +500,11 @@ impl Walk<'_> {
         {
             return false;
         }
+        // C marks the instance's chart as accessed at the query's start: the sweep of obsolete charts keeps a
+        // chart that is still queried
+        if let Some(chart) = ri.chart() {
+            chart.set_last_accessed_s(self.start_s);
+        }
         if db.first_time_s == 0 || first < db.first_time_s {
             db.first_time_s = first;
         }
@@ -1229,6 +1234,29 @@ mod tests {
             if seen == 2 { ControlFlow::Break("stop") } else { ControlFlow::Continue(()) }
         });
         assert_eq!((flow, seen), (ControlFlow::Break("stop"), 2));
+    }
+
+    /// A metric the target admits marks its instance's chart as accessed at the query's start
+    /// (`rrdset_set_last_accessed_time_s()` in C's metric add), which keeps an obsolete chart that is still
+    /// queried from the sweep. A window the metric's data do not reach admits nothing and marks nothing.
+    #[test]
+    fn an_admitted_metric_marks_its_chart_as_accessed() {
+        let h = host();
+        let chart = h.charts().find_by_id_or_name(b"t.a").expect("the fixture's chart");
+        let created = chart.last_accessed_s();
+        assert_ne!(created, T + 1);
+        let rc = h.contexts().get("ctx.a").expect("the fixture's context");
+        let ri = rc.instances().into_iter().next().expect("its instance");
+        let rm = ri.metric("d2").expect("the metric");
+        let target = |after: i64, before: i64| {
+            let mut req = DataRequest::new(1, &crate::request::Profile::default());
+            (req.after, req.before, req.points) = (after, before, 1);
+            create(req, Source::Metric { host: &h, instance: &ri, metric: &rm }, T + 1)
+        };
+        assert!(target(T - 100_000, T - 90_000).query.is_empty());
+        assert_eq!(chart.last_accessed_s(), created);
+        assert_eq!(target(T - 9, T).query.len(), 1);
+        assert_eq!(chart.last_accessed_s(), T + 1);
     }
 
     /// A request that names its metric (`qtr->rma`): that metric alone is looked at, as its instance's first, and

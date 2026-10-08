@@ -223,6 +223,23 @@ mod tests {
         assert!(refused((T - 100, T), (T - 200, T - 100), 15).is_ok());
         // flipped ends are swapped, not refused
         assert!(refused((T, T - 100), (T - 100, T - 200), 0).is_ok());
+        // volume needs its 15 points too
+        let volume = windows(Method::Volume, (T - 100, T), (T - 200, T - 100), 14, T + 10);
+        assert_eq!(volume, Err(WindowError::TooFewPoints));
+
+        // the multiple is rounded, not cut: a baseline of 250 s against 100 s is 2.5 times, rounded to 3, so 4
+        // times; 150 s is 1.5 times, rounded to 2; 40 s rounds to 0 times, which stays one time
+        let rounded = |baseline: i64| {
+            let w = windows(Method::Ks2, (T - 100, T), (T - 100 - baseline, T - 100), 0, T + 10).expect("windows");
+            (w.shifts, w.baseline_after)
+        };
+        assert_eq!(rounded(250), (2, T - 500));
+        assert_eq!(rounded(150), (1, T - 300));
+        assert_eq!(rounded(40), (0, T - 200));
+        // a baseline end counts from the highlighted window's start when it is not above the relative range,
+        // however far below it is
+        let far = windows(Method::Ks2, (T - 100, T), (-2400, -94_608_001), 0, T + 10).expect("windows");
+        assert_eq!(far.baseline_before, T - 100 - 94_608_001);
 
         // relative ends: the highlighted window counts back from the second before the wall clock, and a
         // baseline end inside the relative range counts from the highlighted window's start

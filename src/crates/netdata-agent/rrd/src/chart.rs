@@ -491,6 +491,11 @@ impl Chart {
             .store(now_realtime_s(), Ordering::Relaxed);
     }
 
+    /// `rrdset_set_last_accessed_time_s()`.
+    pub fn set_last_accessed_s(&self, at_s: i64) {
+        self.last_accessed_s.store(at_s, Ordering::Relaxed);
+    }
+
     /// `st->last_accessed_time_s`.
     pub fn last_accessed_s(&self) -> i64 {
         self.last_accessed_s.load(Ordering::Relaxed)

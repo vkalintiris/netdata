@@ -135,11 +135,20 @@ fn host_order(host: &Host) -> [u8; 16] {
 /// strongest is 0), the larger first otherwise; then by the host's bytes, the context's id, the instance's and
 /// the metric's.
 pub fn compare(a: &Registered, b: &Registered, normalized: bool) -> Ordering {
+    compare_keyed((a, &host_order(&a.host)), (b, &host_order(&b.host)), normalized)
+}
+
+/// A result with its host's bytes of [`host_order`].
+type Keyed<'a> = (&'a Registered, &'a [u8; 16]);
+
+/// [`compare`] with each host's bytes at hand: a sort takes them once per result, so that no comparison parses
+/// a GUID again or sees a node id change under it.
+fn compare_keyed((a, a_host): Keyed, (b, b_host): Keyed, normalized: bool) -> Ordering {
     if a.value != b.value {
         return if (a.value < b.value) == normalized { Ordering::Less } else { Ordering::Greater };
     }
-    host_order(&a.host)
-        .cmp(&host_order(&b.host))
+    a_host
+        .cmp(b_host)
         .then_with(|| a.context.id().as_bytes().cmp(b.context.id().as_bytes()))
         .then_with(|| a.instance.id().as_bytes().cmp(b.instance.id().as_bytes()))
         .then_with(|| a.metric.id().as_bytes().cmp(b.metric.id().as_bytes()))
@@ -155,8 +164,9 @@ pub fn select(results: &mut [Registered], limit: usize, normalized: bool) {
         }
         return;
     }
+    let hosts: Vec<[u8; 16]> = results.iter().map(|t| host_order(&t.host)).collect();
     let mut order: Vec<usize> = (0..results.len()).collect();
-    order.sort_by(|&a, &b| compare(&results[a], &results[b], normalized));
+    order.sort_by(|&a, &b| compare_keyed((&results[a], &hosts[a]), (&results[b], &hosts[b]), normalized));
     order.truncate(limit);
     let (mut nodes, mut contexts, mut instances) = (HashSet::new(), HashSet::new(), HashSet::new());
     for &i in &order {
@@ -219,6 +229,10 @@ mod tests {
         // four distinct values: quarters
         let four = [(0, "a", 3.0, 0), (0, "b", 1.0, 0), (0, "z", 4.0, 0), (0, "step", 2.0, 0)];
         assert_eq!(spread_of(&four).0, [0.25, 0.75, 0.0, 0.5]);
+        // five: C multiplies the slot by one slot's weight (0.2), it does not divide by the count: the middle
+        // value is one step of the last bit under 0.4
+        let five = [(0, "a", 5.0, 0), (0, "b", 1.0, 0), (0, "z", 4.0, 0), (0, "step", 2.0, 0), (0, "hid", 3.0, 0)];
+        assert_eq!(spread_of(&five).0, [0.0, 0.8, 0.19999999999999996, 0.6, 0.3999999999999999]);
         // a share of the time is scaled by the largest ratio before it is ranked: 0.5 * 4 passes the ratio 1.5
         let ratio = flags::BASE_HIGH_RATIO;
         let scaled = [(0, "a", 4.0, ratio), (0, "b", 1.5, ratio), (0, "z", 0.5, flags::PERCENTAGE_OF_TIME)];
@@ -248,6 +262,11 @@ mod tests {
         // raw values: 0.75 of the first host is the strongest
         assert_eq!(selected(1, false), [(n, n, n), (n, y, y), (n, y, y), (n, n, n), (y, y, y)]);
         assert_eq!(selected(2, false), [(n, n, n), (n, y, y), (y, y, y), (n, n, n), (y, y, y)]);
+        // a context is marked by identity, as an instance is: both hosts have a context of the same id, and
+        // only the second host's holds the one selected result
+        let (mut one, _) = results_of(&values);
+        select(&mut one, 1, true);
+        assert_eq!(one.iter().map(|t| t.context_selected).collect::<Vec<_>>(), [y, n, n, y, n]);
         // none, and a limit that covers all
         assert_eq!(selected(0, true), [(n, n, n); 5]);
         for limit in [5, 6, 100] {
