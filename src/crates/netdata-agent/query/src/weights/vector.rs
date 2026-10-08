@@ -3,7 +3,9 @@
 //! glibc picks its `exp`, `log`, `log1p` and `pow` by the CPU (FMA with AVX2, or not), and the variants' last bits
 //! differ, for C and for Rust alike. A vector's header names the glibc and the CPU class it was made on. On such a
 //! machine an answer must be C's bit for bit; elsewhere it must be within rounding of C's, and the test says that
-//! it compared no bits.
+//! it compared no bits. A passing test's output is not shown, so where the vectors are made a mismatch must not
+//! pass quietly (a glibc upgrade would do it): with `NETDATA_TEST_C_VECTOR_BITS=1` in the environment, which the
+//! effort's gates set, a machine of another class fails the test.
 
 use std::fmt::Arguments;
 use std::process::Command;
@@ -47,7 +49,13 @@ impl Vector {
         let header: Vec<String> = lines.by_ref().take(4).collect();
         let made_on = format!("{}, {}", &header[1][2..], &header[2][2..]);
         let here = format!("{}, cpu {}", glibc(), if fma_variants() { "fma+avx2" } else { "other" });
-        Vector { lines: lines.collect(), exact: made_on == here, made_on, here }
+        let exact = made_on == here;
+        let required = std::env::var_os("NETDATA_TEST_C_VECTOR_BITS").is_some_and(|value| value == "1");
+        assert!(
+            exact || !required,
+            "{name}: made on `{made_on}`, this machine is `{here}`: regenerate it with tests/oracle/gen-ks-vectors.sh"
+        );
+        Vector { lines: lines.collect(), exact, made_on, here }
     }
 
     /// `answer` against C's: the same bits on the vector's class of machine, within rounding elsewhere. Where C
@@ -58,7 +66,8 @@ impl Vector {
         } else if self.exact {
             assert_eq!(answer.to_bits(), expected.to_bits(), "{what} = {answer:e}, C's {expected:e}");
         } else {
-            let near = (answer - expected).abs() <= 1e-12 + 1e-9 * expected.abs();
+            // relative, so the far tail's small answers are judged too; the floor is for the subnormal ones
+            let near = (answer - expected).abs() <= 1e-300 + 1e-9 * expected.abs();
             assert!(near, "{what} = {answer:e}, C's {expected:e}");
         }
     }

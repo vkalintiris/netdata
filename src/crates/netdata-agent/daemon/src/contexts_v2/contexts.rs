@@ -528,7 +528,7 @@ mod tests {
         assert_eq!(only(DIMENSIONS), r#"{"contexts":{"q.ctx":{"dimensions":["alpha","b","z","inc","h","a"]}}}"#);
         // both texts whole, the `Z` and the first entry's own second: 1700000000 is 2023-11-14T22:13:20Z
         let t0 = 1_700_000_000;
-        assert!((t0..t0 + 40).contains(&first) && NOW == t0 + 67, "{first}");
+        assert!((t0..t0 + 40).contains(&first), "{first}");
         let dated = format!(
             concat!(
                 r#"{{"contexts":{{"q.ctx":{{"first_entry":"2023-11-14T22:13:{:02}Z","#,

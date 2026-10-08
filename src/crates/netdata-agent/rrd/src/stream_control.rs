@@ -20,6 +20,7 @@ pub fn backfill_runners() -> usize {
 }
 
 /// `stream_control_backfill_query_started()` and `_finished()`: a backfill counts while its guard lives.
+#[must_use = "the backfill counts only while its guard lives"]
 pub(crate) struct BackfillRunning;
 
 impl BackfillRunning {

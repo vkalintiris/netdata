@@ -3443,7 +3443,8 @@ mod tests {
             Arc::new(slot.with_health(true))
         };
         let first = slot();
-        host.set_health_enabled(true);
+        // off before the detach, so that the update inside it is seen to turn it on
+        host.set_health_enabled(false);
         assert_eq!(host.set_receiver(Arc::clone(&first)), Attach::Attached);
         host.clear_receiver(&first, -19);
         assert_eq!(*lock(&updated), [true], "the update ran inside the detach and left health on");

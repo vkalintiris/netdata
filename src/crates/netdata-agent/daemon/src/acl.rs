@@ -228,18 +228,19 @@ mod tests {
     /// a word allows only what it matches.
     #[test]
     fn an_access_list_without_a_word_allows_everyone() {
-        let list = |text: &[u8]| AclPattern {
+        let list = |text: &[u8], dns: bool| AclPattern {
             pattern: SimplePattern::new(text, Separators::Whitespace, SimplePatternMode::Exact, true),
-            dns: false,
+            dns,
         };
         let mut client =
             Client { ip: "192.0.2.7".into(), peer: "192.0.2.7".parse().ok(), host: String::new(), errno: 0 };
+        // with names allowed in the list: C answers before any lookup, so no name is asked for
         for text in [&b""[..], b" ", b"  \t", b"!"] {
-            assert!(connection_allowed(&mut client, &list(text), "connections"), "{text:?}");
+            assert!(connection_allowed(&mut client, &list(text, true), "connections"), "{text:?}");
             assert!(client.host.is_empty(), "{text:?}: a name was looked up");
         }
-        assert!(connection_allowed(&mut client, &list(b"192.0.2.*"), "connections"));
-        assert!(!connection_allowed(&mut client, &list(b"10.*"), "connections"));
+        assert!(connection_allowed(&mut client, &list(b"192.0.2.*", false), "connections"));
+        assert!(!connection_allowed(&mut client, &list(b"10.*", false), "connections"));
     }
 
     #[test]
