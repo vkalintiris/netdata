@@ -334,6 +334,44 @@ pub fn contexts_options_to_json_array(w: &mut JsonWriter, key: &[u8], bits: u64)
     names_to_json_array(w, key, names_of(&CONTEXTS_OPTIONS, bits));
 }
 
+/// `CONTEXTS_ALERT_STATUS` (`src/web/api/maps/contexts_alert_statuses.h`): the published statuses an alerts
+/// request keeps. No bit keeps every alert.
+pub mod alert_statuses {
+    pub const UNINITIALIZED: u64 = 1 << 6;
+    pub const UNDEFINED: u64 = 1 << 7;
+    pub const CLEAR: u64 = 1 << 8;
+    /// RAISED or above: WARNING and CRITICAL too.
+    pub const RAISED: u64 = 1 << 9;
+    pub const WARNING: u64 = 1 << 10;
+    pub const CRITICAL: u64 = 1 << 11;
+}
+
+/// `contexts_alert_status[]` in C's order: `active` is a second word for RAISED, and the first word of a bit is
+/// its echo.
+pub const ALERT_STATUSES: [(&str, u64); 7] = {
+    use alert_statuses::*;
+    [
+        ("uninitialized", UNINITIALIZED),
+        ("undefined", UNDEFINED),
+        ("clear", CLEAR),
+        ("raised", RAISED),
+        ("active", RAISED),
+        ("warning", WARNING),
+        ("critical", CRITICAL),
+    ]
+};
+
+/// `contexts_alert_status_str_to_id()`: the bits of the words of `o` (separators `,`, space and `|`; a word that
+/// is no status is ignored).
+pub fn parse_alert_statuses(o: &[u8]) -> u64 {
+    parse_names(&ALERT_STATUSES, o)
+}
+
+/// `contexts_alerts_status_to_buffer_json_array()`.
+pub fn alert_statuses_to_json_array(w: &mut JsonWriter, key: &[u8], bits: u64) {
+    names_to_json_array(w, key, names_of(&ALERT_STATUSES, bits));
+}
+
 /// `web_client_api_request_data_vX_options_to_string(buf, 100, options)`: comma-joined, at most 99 bytes, cut
 /// wherever the limit falls.
 pub fn options_to_id_string(bits: u64) -> String {
@@ -514,6 +552,48 @@ impl Aggregation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The status words of an alerts request (`contexts_alert_statuses.c:5-55`): each word its bit, `active` the
+    /// same bit as `raised`, split on `,`, space and `|`, a word that is no status ignored (so `status=bogus` keeps
+    /// every alert); the echo is the first word of each bit, once, in the table's order.
+    #[test]
+    fn alert_statuses_parse_and_echo() {
+        use alert_statuses::*;
+        let words: [(&[u8], u64); 14] = [
+            (b"uninitialized", UNINITIALIZED),
+            (b"undefined", UNDEFINED),
+            (b"clear", CLEAR),
+            (b"raised", RAISED),
+            (b"active", RAISED),
+            (b"warning", WARNING),
+            (b"critical", CRITICAL),
+            (b"", 0),
+            (b"bogus", 0),
+            (b"RAISED", 0),
+            (b"removed", 0),
+            (b"warning,critical", WARNING | CRITICAL),
+            (b"clear|bogus undefined,,active", CLEAR | UNDEFINED | RAISED),
+            (b" , |warning", WARNING),
+        ];
+        for (text, bits) in words {
+            assert_eq!(parse_alert_statuses(text), bits, "{}", String::from_utf8_lossy(text));
+        }
+        assert_eq!((UNINITIALIZED, CRITICAL), (1 << 6, 1 << 11));
+
+        let echo = |bits: u64| {
+            let mut w = JsonWriter::new(netdata_agent_text::json::JsonOptions::MINIFY);
+            alert_statuses_to_json_array(&mut w, b"status", bits);
+            w.finalize();
+            String::from_utf8(w.into_bytes()).unwrap()
+        };
+        assert_eq!(echo(0), r#"{"status":[]}"#);
+        assert_eq!(echo(RAISED), r#"{"status":["raised"]}"#);
+        let every = UNINITIALIZED | UNDEFINED | CLEAR | RAISED | WARNING | CRITICAL;
+        let all = r#"{"status":["uninitialized","undefined","clear","raised","warning","critical"]}"#;
+        assert_eq!(echo(every), all);
+        // a bit no word has prints nothing
+        assert_eq!(echo(CRITICAL | (1 << 20)), r#"{"status":["critical"]}"#);
+    }
 
     #[test]
     fn time_groupings_parse_and_echo() {

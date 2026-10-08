@@ -82,6 +82,10 @@ const SQL_LOAD_HEALTH_LOG: &str = "SELECT hld.unique_id, hld.alarm_id, hld.alarm
 const SQL_GET_EVENT_ID: &str = "SELECT MAX(alarm_event_id)+1 FROM health_log_detail WHERE health_log_id = \
      @health_log_id AND alarm_id = @alarm_id";
 
+const SQL_GET_ALARM_ID_FROM_TRANSITION_ID: &str = "SELECT hld.alarm_id, hl.host_id, hl.chart_context FROM \
+     health_log_detail hld, health_log hl WHERE hld.transition_id = @transition_id AND hld.health_log_id = \
+     hl.health_log_id";
+
 const SQL_GET_ALARM_ID: &str =
     "SELECT alarm_id, health_log_id FROM health_log WHERE host_id = @host_id AND chart = @chart AND name = @name";
 
@@ -343,6 +347,16 @@ fn uuid_column(row: &Row<'_>, i: usize) -> Uuid {
         Ok(ValueRef::Blob(b)) => b.try_into().map_or(Uuid::Invalid, Uuid::Valid),
         _ => Uuid::Invalid,
     }
+}
+
+/// A row of [`MetaDb::find_alert_transition`]: the host of the alert (its machine GUID's bytes), the context of
+/// the alert's chart as the log has it (none for a NULL; C's callback takes an empty one as none too), and the
+/// alert's id, read as C reads it, as an `int`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlertOfTransition {
+    pub host_id: [u8; 16],
+    pub context: Option<Vec<u8>>,
+    pub alarm_id: i32,
 }
 
 /// `SQLITE3_BIND_STRING_OR_NULL()`.
@@ -817,6 +831,32 @@ impl MetaDb {
         Some((alarm_id, next_event_id))
     }
 
+    /// `sql_find_alert_transition()`, after its parse of the id: the alert each log entry with this transition id
+    /// belongs to, as C hands it to its callback. C's answer is "a row called back", which is false for an empty
+    /// list; a statement that cannot be prepared gives the empty list too. A row whose host id is not a UUID is
+    /// reported and skipped, and does not count.
+    pub fn find_alert_transition(&self, transition: &[u8; 16]) -> Vec<AlertOfTransition> {
+        let c = self.lock();
+        let mut found = Vec::new();
+        let params: [&dyn ToSql; 1] = [&&transition[..]];
+        rows(&c, SQL_GET_ALARM_ID_FROM_TRANSITION_ID, "sql_find_alert_transition", &params, |row| {
+            match uuid_column(row, 1) {
+                Uuid::Valid(host_id) => found.push(AlertOfTransition {
+                    host_id,
+                    context: bytes_or_null(row, 2),
+                    // sqlite3_column_int(): the stored id cut to 32 bits
+                    alarm_id: int(row, 0) as i32,
+                }),
+                _ => {
+                    let what = "Got invalid machine guid while looking up alert transition";
+                    netdata_log_error!("HEALTH: {what}. Ignoring it.");
+                }
+            }
+            true
+        });
+        found
+    }
+
     /// `sql_health_get_last_executed_event()`: the status of the alarm's newest entry whose notification command
     /// was run (its row has the run mark), the entry `unique_id` aside. `None` when the statement cannot be
     /// prepared (C's -1), `Some(None)` without such an entry (C's 0). `health_thread` as for an entry's insert.
@@ -1248,6 +1288,52 @@ mod tests {
             out.push(values.join(" "));
         }
         out
+    }
+
+    /// `sql_find_alert_transition()` on a real table: the alert of every entry with the transition id, through the
+    /// entry's log row: the host, the chart's context (none for a NULL, the text for an empty one) and the alarm id
+    /// cut to 32 bits as C's `sqlite3_column_int()` cuts it. A row whose host id is not 16 bytes is reported and
+    /// left out, an id no entry has gives nothing, and so does an entry whose log row is gone.
+    #[test]
+    fn a_transition_finds_its_alerts() {
+        let (_dir, meta) = db();
+        let (wanted, other) = ([0x7a_u8; 16], [0x7b_u8; 16]);
+        let (host2, bad_host) = ([0x22_u8; 16], [0x33_u8; 5]);
+        {
+            let c = meta.lock();
+            let log = "INSERT INTO health_log (health_log_id, host_id, alarm_id, name, chart, chart_context) VALUES \
+                       (?1, ?2, ?3, 'a', 't.c', ?4)";
+            let detail = "INSERT INTO health_log_detail (health_log_id, unique_id, alarm_id, transition_id) VALUES \
+                          (?1, ?2, ?3, ?4)";
+            let none: Option<&str> = None;
+            c.execute(log, rusqlite::params![1, &HOST[..], 7, "ctx.a"]).unwrap();
+            c.execute(log, rusqlite::params![2, &host2[..], 8, none]).unwrap();
+            c.execute(log, rusqlite::params![3, &bad_host[..], 9, "ctx.bad"]).unwrap();
+            c.execute(log, rusqlite::params![4, &HOST[..], 10, ""]).unwrap();
+            // the detail's own alarm id is what is read; one beyond 32 bits is cut
+            c.execute(detail, rusqlite::params![1, 100, 7, &wanted[..]]).unwrap();
+            c.execute(detail, rusqlite::params![2, 101, 0x1_0000_0008_i64, &wanted[..]]).unwrap();
+            c.execute(detail, rusqlite::params![3, 102, 9, &wanted[..]]).unwrap();
+            c.execute(detail, rusqlite::params![4, 103, -1, &wanted[..]]).unwrap();
+            c.execute(detail, rusqlite::params![1, 104, 7, &other[..]]).unwrap();
+            // an entry whose log row does not exist
+            c.execute(detail, rusqlite::params![99, 105, 11, &[0x7c_u8; 16][..]]).unwrap();
+        }
+        let alert = |host_id: [u8; 16], context: Option<&str>, alarm_id: i32| AlertOfTransition {
+            host_id,
+            context: context.map(|c| c.as_bytes().to_vec()),
+            alarm_id,
+        };
+        // (the rows' order is the database's; C calls back in it)
+        let (mut found, records) = netdata_agent_log::capture(|| meta.find_alert_transition(&wanted));
+        found.sort_by_key(|alert| alert.alarm_id);
+        let expected = [alert(HOST, Some(""), -1), alert(HOST, Some("ctx.a"), 7), alert(host2, None, 8)];
+        assert_eq!(found, expected);
+        let messages: Vec<String> = records.into_iter().filter_map(|record| record.message).collect();
+        assert_eq!(messages, ["HEALTH: Got invalid machine guid while looking up alert transition. Ignoring it."]);
+        assert_eq!(meta.find_alert_transition(&other), [alert(HOST, Some("ctx.a"), 7)]);
+        assert!(meta.find_alert_transition(&[0x7c; 16]).is_empty());
+        assert!(meta.find_alert_transition(&[0; 16]).is_empty());
     }
 
     const DETAIL: &str = "SELECT health_log_id, unique_id, alarm_event_id, updated_by_id, updates_id, when_key, \
