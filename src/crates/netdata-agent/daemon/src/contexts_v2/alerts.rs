@@ -19,6 +19,7 @@ use netdata_agent_rrd::contexts::Context;
 use netdata_agent_rrd::host::Host;
 use netdata_agent_rrd::labels::{Labels, SRC_AUTO};
 use netdata_agent_text::json::JsonWriter;
+use netdata_agent_text::print::uuid_lower_text;
 use netdata_agent_text::simple_pattern::SimplePattern;
 
 /// `CONTEXTS_ALERT_STATUSES`: every status word's bit.
@@ -243,6 +244,8 @@ struct Row {
     ati: usize,
     /// The index its host gets in `nodes` (the host is listed after its contexts are walked).
     ni: usize,
+    /// The host's name, which the MCP form prints where the plain form prints `ni`.
+    hostname: String,
     global_id: u64,
     name: Vec<u8>,
     context: String,
@@ -308,6 +311,122 @@ impl Row {
             w.member_add_time_t_formatted(k.last_updated_timestamp(), self.last_updated, rfc3339);
         }
         w.object_close();
+    }
+}
+
+/// `contexts_v2_alerts_to_json_mcp()`'s header of a summary row.
+const ALL_ALERTS_HEADER: [&str; 14] = [
+    "Alert Name",
+    "Alert Summary",
+    "Metrics Contexts",
+    "Alert Classifications",
+    "Alert Components",
+    "Alert Types",
+    "Notification Recipients",
+    "# of Critical Instances",
+    "# of Warning Instances",
+    "# of Clear Instances",
+    "# of Error Instances",
+    "# of Instances Watched",
+    "# of Nodes Watched",
+    "# of Alert Configurations",
+];
+
+/// The header of an instance row with `mcp`, by the request's options.
+fn instances_header(options: u64) -> Vec<&'static str> {
+    let mut header = vec!["Alert Name", "Hostname"];
+    if options & INSTANCES != 0 {
+        header.push("Context");
+    }
+    header.push("Instance Name");
+    if options & INSTANCES != 0 {
+        header.extend([
+            "Status",
+            "Family",
+            "Info",
+            "Summary",
+            "Units",
+            "Last Transition ID",
+            "Last Transition Value",
+            "Last Transition Timestamp",
+            "Configuration Hash",
+            "Source",
+            "Recipients",
+            "Type",
+            "Component",
+            "Classification",
+        ]);
+    }
+    if options & VALUES != 0 {
+        header.extend(["Last Updated Value", "Last Updated Timestamp"]);
+    }
+    header
+}
+
+/// `rrdlabels_key_to_buffer_array_or_string_or_null()`: a set's names as one array item: null for none, the name
+/// for one, an array for more.
+fn names_to_item(w: &mut JsonWriter, set: &Labels) {
+    let mut names = set.iter().map(|label| label.name.as_slice());
+    match (names.next(), names.next()) {
+        (None, _) => w.add_array_item_null(),
+        (Some(only), None) => w.add_array_item_string(only),
+        (Some(first), Some(second)) => {
+            w.add_array_item_array();
+            w.add_array_item_string(first);
+            w.add_array_item_string(second);
+            for name in names {
+                w.add_array_item_string(name);
+            }
+            w.array_close();
+        }
+    }
+}
+
+/// `{status: "truncated", total_<what>, shown_<what>, cardinality_limit}`: what follows a list `mcp` cut.
+fn truncation_info(w: &mut JsonWriter, key: &str, what: &str, total: usize, shown: usize, limit: usize) {
+    w.member_add_object(key);
+    w.member_add_string("status", "truncated");
+    w.member_add_uint64(format!("total_{what}"), total as u64);
+    w.member_add_uint64(format!("shown_{what}"), shown as u64);
+    w.member_add_uint64("cardinality_limit", limit as u64);
+    w.object_close();
+}
+
+impl Row {
+    /// An instance with `mcp`: an array in the header's order, with the host's name where the plain form has its
+    /// index, and both UUIDs as their text (a nil one too, where the plain form prints null).
+    fn to_json_mcp(&self, w: &mut JsonWriter, options: u64) {
+        let (instances, rfc3339) = (options & INSTANCES != 0, options & RFC3339 != 0);
+        w.add_array_item_array();
+        w.add_array_item_string(&self.name);
+        w.add_array_item_string(&self.hostname);
+        if instances {
+            w.add_array_item_string(&self.context);
+        }
+        w.add_array_item_string(&self.chart_name);
+        if instances {
+            w.add_array_item_string(self.status.name());
+            w.add_array_item_string(&self.family);
+            w.add_array_item_string(&self.info);
+            w.add_array_item_string(&self.summary);
+            w.add_array_item_string(&self.units);
+            let (uuid, len) = uuid_lower_text(&self.last_transition_id, false);
+            w.add_array_item_string(&uuid[..len]);
+            w.add_array_item_double(self.last_status_change_value);
+            w.add_array_item_time_t_formatted(self.last_status_change, rfc3339);
+            let (uuid, len) = uuid_lower_text(&self.config_hash_id, false);
+            w.add_array_item_string(&uuid[..len]);
+            w.add_array_item_string(&self.source);
+            w.add_array_item_string(&self.recipient);
+            w.add_array_item_string(&self.r#type);
+            w.add_array_item_string(&self.component);
+            w.add_array_item_string(&self.classification);
+        }
+        if options & VALUES != 0 {
+            w.add_array_item_double(self.value);
+            w.add_array_item_time_t_formatted(self.last_updated, rfc3339);
+        }
+        w.array_close();
     }
 }
 
@@ -390,6 +509,7 @@ impl Collector {
                     rows.push(Row {
                         ati,
                         ni,
+                        hostname: host.hostname(),
                         global_id: state.global_id,
                         name: name.to_vec(),
                         context: meta.context.clone(),
@@ -488,6 +608,60 @@ impl Collector {
                 row.to_json(w, options, k);
             }
             w.array_close();
+        }
+    }
+}
+
+impl Collector {
+    /// `contexts_v2_alerts_to_json_mcp()`: with `summary`, a header and one row per name, at most `limit` of them
+    /// (0 for all), and what was cut; with `instances` or `values` the same for the instances. No groupings.
+    pub(super) fn to_json_mcp(&self, w: &mut JsonWriter, options: u64, limit: u64) {
+        let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+        let shown = |total: usize| if limit != 0 { total.min(limit) } else { total };
+        if let Some(summary) = &self.summary {
+            w.member_add_array(Some(b"all_alerts_header"));
+            for column in ALL_ALERTS_HEADER {
+                w.add_array_item_string(column);
+            }
+            w.array_close();
+            let total = summary.by_name.len();
+            w.member_add_array(Some(b"all_alerts"));
+            for (name, entry) in summary.by_name.iter().take(shown(total)) {
+                w.add_array_item_array();
+                w.add_array_item_string(name);
+                w.add_array_item_string(&entry.summary);
+                let sets =
+                    [&entry.contexts, &entry.classifications, &entry.components, &entry.types, &entry.recipients];
+                for set in sets {
+                    names_to_item(w, set);
+                }
+                let counts = entry.counts;
+                for count in [counts.critical, counts.warning, counts.clear, counts.error, entry.instances] {
+                    w.add_array_item_uint64(count);
+                }
+                w.add_array_item_uint64(entry.nodes.len() as u64);
+                w.add_array_item_uint64(entry.configs.len() as u64);
+                w.array_close();
+            }
+            w.array_close();
+            if limit != 0 && total > limit {
+                truncation_info(w, "__all_alerts_info__", "alerts", total, shown(total), limit);
+            }
+        }
+        if let Some(rows) = &self.rows {
+            w.member_add_array(Some(b"alert_instances_header"));
+            for column in instances_header(options) {
+                w.add_array_item_string(column);
+            }
+            w.array_close();
+            w.member_add_array(Some(b"alert_instances"));
+            for row in rows.iter().take(shown(rows.len())) {
+                row.to_json_mcp(w, options);
+            }
+            w.array_close();
+            if limit != 0 && rows.len() > limit {
+                truncation_info(w, "__alert_instances_info__", "instances", rows.len(), shown(rows.len()), limit);
+            }
         }
     }
 }
@@ -672,10 +846,86 @@ mod tests {
         assert!(collector.summary.is_none());
     }
 
+    /// The MCP form: the summary as a header and a row per name, each set as null, one name or an array of names;
+    /// a limit cuts the rows and says what it cut, and a limit that cuts nothing says nothing; the instances the
+    /// same way, their header and their rows by the options, with the host's name and both UUIDs as text, a nil
+    /// one too.
+    #[test]
+    fn the_mcp_form_is_headers_and_rows() {
+        let printed = |collector: &Collector, options: u64, limit: u64| {
+            let mut w = JsonWriter::new(JsonOptions::MINIFY);
+            collector.to_json_mcp(&mut w, options, limit);
+            w.finalize();
+            String::from_utf8(w.into_bytes()).unwrap()
+        };
+        let mut collector = Collector::new(SUMMARY);
+        let summary = collector.summary.as_mut().unwrap();
+        let texts = ["System", "CPU", "Utilization", "sysadmin"];
+        summary.add(&kept("cpu_high", texts, &HASH_A, "system.cpu", "stat", "guid-1", Status::Warning, 91.0));
+        let other = ["Net", "CPU", "", ""];
+        summary.add(&kept("cpu_high", other, &HASH_B, "cpu.cpu", "stat", "guid-2", Status::Clear, 1.0));
+        summary.add(&kept("ram_low", [""; 4], &HASH_B, "system.ram", "meminfo", "guid-1", Status::Critical, 3.0));
+        let header = concat!(
+            r#"{"all_alerts_header":["Alert Name","Alert Summary","Metrics Contexts","Alert Classifications","#,
+            r##""Alert Components","Alert Types","Notification Recipients","# of Critical Instances","##,
+            r##""# of Warning Instances","# of Clear Instances","# of Error Instances","##,
+            r##""# of Instances Watched","# of Nodes Watched","# of Alert Configurations"],"##,
+        );
+        let cpu = concat!(
+            r#"["cpu_high","the summary of ${name}",["system.cpu","cpu.cpu"],"Utilization","CPU",["System","Net"],"#,
+            r#""sysadmin",0,1,1,0,2,2,2]"#
+        );
+        let ram = r#"["ram_low","the summary of ${name}","system.ram",null,null,null,null,1,0,0,0,1,1,1]"#;
+        for limit in [0, 2, 3] {
+            assert_eq!(printed(&collector, SUMMARY, limit), format!(r#"{header}"all_alerts":[{cpu},{ram}]}}"#));
+        }
+        let info = concat!(
+            r#""__all_alerts_info__":{"status":"truncated","total_alerts":2,"shown_alerts":1,"#,
+            r#""cardinality_limit":1}"#
+        );
+        assert_eq!(printed(&collector, SUMMARY, 1), format!(r#"{header}"all_alerts":[{cpu}],{info}}}"#));
+
+        let nil = Row { last_transition_id: [0; 16], last_status_change_value: f64::NAN, ..row() };
+        let rows = Collector { summary: None, rows: Some(vec![row(), nil]) };
+        let values = concat!(
+            r#"{"alert_instances_header":["Alert Name","Hostname","Instance Name","Last Updated Value","#,
+            r#""Last Updated Timestamp"],"alert_instances":[["cpu_high","box","system.cpu_name",92.25,1700000010],"#,
+            r#"["cpu_high","box","system.cpu_name",92.25,1700000010]]}"#
+        );
+        assert_eq!(printed(&rows, VALUES, 0), values);
+        let cut = printed(&rows, VALUES, 1);
+        let info = concat!(
+            r#""alert_instances":[["cpu_high","box","system.cpu_name",92.25,1700000010]],"#,
+            r#""__alert_instances_info__":{"status":"truncated","total_instances":2,"shown_instances":1,"#,
+            r#""cardinality_limit":1}}"#
+        );
+        assert!(cut.ends_with(info), "{cut}");
+        let all = printed(&rows, INSTANCES | VALUES, 0);
+        let header = concat!(
+            r#"{"alert_instances_header":["Alert Name","Hostname","Context","Instance Name","Status","Family","#,
+            r#""Info","Summary","Units","Last Transition ID","Last Transition Value","Last Transition Timestamp","#,
+            r#""Configuration Hash","Source","Recipients","Type","Component","Classification","#,
+            r#""Last Updated Value","Last Updated Timestamp"],"alert_instances":[["#
+        );
+        assert!(all.starts_with(header), "{all}");
+        let first = concat!(
+            r#"["cpu_high","box","system.cpu","system.cpu_name","WARNING","cpu","the info of ${name}","#,
+            r#""the summary of cpu_high","%","5a5a5a5a-5a5a-5a5a-5a5a-5a5a5a5a5a5a",91.5,1700000000,"#,
+            r#""a1a1a1a1-a1a1-a1a1-a1a1-a1a1a1a1a1a1","line=3,file=/etc/netdata/health.d/cpu.conf","sysadmin","#,
+            r#""System","CPU","Utilization",92.25,1700000010],"#
+        );
+        assert!(all.contains(first), "{all}");
+        // the nil transition id as its text, its value null
+        assert!(all.contains(r#""%","00000000-0000-0000-0000-000000000000",null,1700000000,"a1a1"#), "{all}");
+        // a request without summary, instances and values prints nothing
+        assert_eq!(printed(&Collector::new(0), 0, 5), "{}");
+    }
+
     fn row() -> Row {
         Row {
             ati: 2,
             ni: 1,
+            hostname: "box".into(),
             global_id: 77,
             name: b"cpu_high".to_vec(),
             context: "system.cpu".into(),

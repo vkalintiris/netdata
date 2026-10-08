@@ -2,8 +2,8 @@
 //! `rrdcontext_to_json_v2()` and its host walk (`src/database/contexts/api_v2_contexts.c`, `query_scope.c`) for the
 //! modes the agent serves so far: `/api/v3/stream_path`, `/api/v2/info` (`/api/v3/info`), `/api/v2/functions`
 //! (`/api/v3/functions`), `/api/v2/versions` (`/api/v3/versions`), `/api/v2/nodes` (`/api/v3/nodes`) and
-//! `/api/v2/contexts` (`/api/v3/contexts`), and `/api/v2/alerts` (`/api/v3/alerts`) without `transition=` and
-//! `options=mcp` yet. Decisions D51, D92, D160, D231 and D234 in the status repository.
+//! `/api/v2/contexts` (`/api/v3/contexts`) and `/api/v2/alerts` (`/api/v3/alerts`). Decisions D51, D92, D160, D231
+//! and D234 in the status repository.
 
 use std::ops::ControlFlow;
 use std::sync::Arc;
@@ -25,7 +25,8 @@ use netdata_agent_query::target::{Versions, foreach_context, foreach_host, match
 use netdata_agent_rrd::clock::now_realtime_s;
 use netdata_agent_rrd::contexts::{Context, ContextState};
 use netdata_agent_text::json::{JsonOptions, JsonWriter};
-use netdata_agent_text::parse::{str2l, str2ul};
+use netdata_agent_text::parse::{str2l, str2ul, uuid_parse_flexi};
+use netdata_agent_text::print::uuid_lower_text;
 use netdata_agent_text::simple_pattern::SimplePattern;
 use netdata_agent_text::time_window::relative_window_to_absolute_query;
 use netdata_agent_web::content_type::ContentType;
@@ -207,11 +208,39 @@ fn render(shared: &Shared, req: &Request, mode: u32, wall_s: i64) -> Reply {
     let hosts = shared.hosts.all();
     let received_ut = startup::now_ut();
     let pattern = |v: &Option<Vec<u8>>| v.as_deref().and_then(SimplePattern::from_web);
-    let (scope_nodes, nodes) = (pattern(&req.scope_nodes), pattern(&req.nodes));
-    let (contexts, scope_contexts) = (pattern(&req.contexts), pattern(&req.scope_contexts));
-    // the alerts an alerts request keeps: by a pattern on their names and by their status
+    let (mut scope_nodes, mut nodes) = (pattern(&req.scope_nodes), pattern(&req.nodes));
+    let (mut contexts, mut scope_contexts) = (pattern(&req.contexts), pattern(&req.scope_contexts));
+    // rrdcontexts_v2_init_alert_dictionaries(): `transition=` names one transition of the alert log. The host and
+    // the context of its alert replace the request's two scopes and drop its two selectors, and its alarm id
+    // becomes a filter (the request's own `scope_contexts` text stays, and the walk still tries it as an exact
+    // id). A text that is no UUID, a database that cannot be asked and an id no entry has answer 404, with nothing.
+    let mut alarm_id = 0;
+    if mode & mode::ALERTS != 0
+        && let Some(transition) = &req.transition
+    {
+        let meta = shared.meta.as_ref().and_then(std::sync::Weak::upgrade);
+        let found = uuid_parse_flexi(transition)
+            .zip(meta)
+            .map(|(id, meta)| meta.find_alert_transition(&id))
+            .unwrap_or_default();
+        if found.is_empty() {
+            return Reply { code: status::NOT_FOUND, ..Reply::default() };
+        }
+        // rrdcontext_v2_set_transition_filter(), once per entry with the id: the last one's values stay
+        for alert in found {
+            let (guid, len) = uuid_lower_text(&alert.host_id, false);
+            scope_nodes = SimplePattern::from_web(&guid[..len]);
+            nodes = None;
+            if let Some(context) = alert.context.filter(|context| !context.is_empty()) {
+                scope_contexts = SimplePattern::from_web(&context);
+                contexts = None;
+            }
+            alarm_id = i64::from(alert.alarm_id);
+        }
+    }
+    // the alerts an alerts request keeps: by a pattern on their names, by their status, by the transition's alarm
     let alert_name = pattern(&req.alert);
-    let filters = alerts::Filters { name: alert_name.as_ref(), alarm_id: 0, status: req.status };
+    let filters = alerts::Filters { name: alert_name.as_ref(), alarm_id, status: req.status };
     let mut alerts = (mode & mode::ALERTS != 0).then(|| alerts::Collector::new(req.options));
     let window = if req.after != 0 || req.before != 0 {
         let (after, before, _) = relative_window_to_absolute_query(req.after, req.before, wall_s);
@@ -343,10 +372,14 @@ fn render(shared: &Shared, req: &Request, mode: u32, wall_s: i64) -> Reply {
         dict.to_json(&mut w, req, window.now);
     }
     if let Some(alerts) = &mut alerts {
-        // contexts_v2_alerts_to_json(): a summary's hosts are printed as their indexes in `nodes`
-        let node_index = |guid: &str| selected.iter().position(|host| host.machine_guid() == guid);
-        alerts.count_prototypes(&shared.health.prototypes());
-        alerts.to_json(&mut w, req.options, node_index);
+        if mcp {
+            alerts.to_json_mcp(&mut w, req.options, req.cardinality_limit);
+        } else {
+            // contexts_v2_alerts_to_json(): a summary's hosts are printed as their indexes in `nodes`
+            let node_index = |guid: &str| selected.iter().position(|host| host.machine_guid() == guid);
+            alerts.count_prototypes(&shared.health.prototypes());
+            alerts.to_json(&mut w, req.options, node_index);
+        }
     }
     if mode & mode::VERSIONS != 0 {
         // the host index's version as the answer is written
@@ -390,7 +423,8 @@ pub fn info(route: &Route<'_>, query: &[u8]) -> Reply {
 /// `api_v2_alerts()` (`/api/v2/alerts`, `/api/v3/alerts`): the alerts of the hosts in scope that the request's
 /// name pattern and status words keep, between the nodes and the timings: with `options=summary` summarised by
 /// name and counted by type, component, classification, recipient and collecting module, with `instances` or
-/// `values` listed one by one. No versions and no agents. The host in the URL does not matter.
+/// `values` listed one by one; with `options=mcp` as headers and rows. `transition=` narrows the request to the
+/// alert of one transition of the alert log. No versions and no agents. The host in the URL does not matter.
 pub fn alerts(route: &Route<'_>, query: &[u8]) -> Reply {
     let alerts_mode = mode::ALERTS | mode::NODES;
     let mut req = parse(query, alerts_mode, 0);

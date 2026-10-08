@@ -4,8 +4,8 @@
 //!
 //! Not ported yet: `/mcp` and `/sse`, and the API commands other than `info`, `chart`, `charts`, `context`,
 //! `contexts`, `registry`, `data`, `dbengine_stats`, `function`, `functions`, `manage`, `me`, `nodes`, `progress`,
-//! `stream_info`, `stream_path`, `versions`, `alerts` (without `transition=` and `options=mcp` yet) and health's
-//! (`alarms`, `alarm_log` and the others of its block of the table, and `badge.svg`).
+//! `stream_info`, `stream_path`, `versions`, `alerts` and health's (`alarms`, `alarm_log` and the others of its
+//! block of the table, and `badge.svg`).
 //! `/netdata.conf` shows only the keys of the subsystems ported so far.
 
 use std::sync::Arc;
@@ -1173,6 +1173,51 @@ mod tests {
         assert!(body.contains(r#"{"name":"health","version":2,"enabled":true}"#), "{body}");
     }
 
+    /// Health on for localhost, with the chart `t.c` of `t.ctx` and three rules: `a_first` (of type `System`) and
+    /// `a_second` are linked on the chart, `a_third` (of type `System` too) is on a context no chart has. Returns the
+    /// directory of the rules' file, the chart, and its two alerts in link order.
+    fn two_alerts(
+        s: &Shared,
+    ) -> (tempfile::TempDir, Arc<netdata_agent_rrd::chart::Chart>, Vec<Arc<netdata_agent_health::alert::Alert>>) {
+        use netdata_agent_rrd::chart::{Algorithm, ChartSpec, ChartType};
+        let host = s.hosts.localhost();
+        host.set_health_enabled(true);
+        let (chart, _) = host.charts().create(&ChartSpec {
+            type_: "t",
+            id: "c",
+            name: None,
+            family: Some("f"),
+            context: Some("t.ctx"),
+            title: "T",
+            units: "u",
+            plugin: "p",
+            module: None,
+            priority: 1000,
+            update_every: 1,
+            chart_type: ChartType::Line,
+            mode: netdata_agent_rrd::mode::DbMode::Ram,
+            history_entries: 5,
+            page_size: 4096,
+        });
+        chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+        chart.update_collection(|collection| collection.last_collected = (5, 0));
+        let dir = tempfile::tempdir().unwrap();
+        let rules = dir.path().join("a.conf");
+        let text_of_rules = concat!(
+            "template: a_first\n on: t.ctx\n type: System\n every: 10s\n calc: 1\n\n",
+            "template: a_second\n on: t.ctx\n every: 10s\n calc: 1\n\n",
+            "template: a_third\n on: other.ctx\n type: System\n every: 10s\n calc: 1\n",
+        );
+        std::fs::write(&rules, text_of_rules).unwrap();
+        {
+            use std::os::unix::ffi::OsStrExt;
+            assert!(netdata_agent_health::readfile::health_readfile(&s.health, rules.as_os_str().as_bytes(), false));
+        }
+        s.health.host_link(host, &|| 1_700_000_000, &|| true);
+        let linked = s.health.host(host).unwrap().chart_alerts(&chart);
+        (dir, chart, linked)
+    }
+
     /// `/api/v2/alerts` and `/api/v3/alerts` (`api_v2_alerts()`): the nodes, then what the options ask of the alerts,
     /// then the timings; no versions and no agents. Both rows ask the client for the alerts feature, and for that
     /// alone. With health off there is no alert and no rule: the arrays a request asks for are empty and the host is
@@ -1183,7 +1228,6 @@ mod tests {
     #[test]
     fn alerts_are_routed_in_v2_and_v3() {
         use netdata_agent_health::alert::Status;
-        use netdata_agent_rrd::chart::{Algorithm, ChartSpec, ChartType};
         let s = shared();
         let all = acl::bits::ALL_LISTENER_FEATURES;
         let text = |path: &[u8], query: &[u8]| {
@@ -1235,41 +1279,7 @@ mod tests {
         assert!(echo.contains(alerts), "{echo}");
 
         // health on: two rules on one chart, and one more that no chart takes
-        let host = s.hosts.localhost();
-        host.set_health_enabled(true);
-        let (chart, _) = host.charts().create(&ChartSpec {
-            type_: "t",
-            id: "c",
-            name: None,
-            family: Some("f"),
-            context: Some("t.ctx"),
-            title: "T",
-            units: "u",
-            plugin: "p",
-            module: None,
-            priority: 1000,
-            update_every: 1,
-            chart_type: ChartType::Line,
-            mode: netdata_agent_rrd::mode::DbMode::Ram,
-            history_entries: 5,
-            page_size: 4096,
-        });
-        chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
-        chart.update_collection(|collection| collection.last_collected = (5, 0));
-        let dir = tempfile::tempdir().unwrap();
-        let rules = dir.path().join("a.conf");
-        let text_of_rules = concat!(
-            "template: a_first\n on: t.ctx\n type: System\n every: 10s\n calc: 1\n\n",
-            "template: a_second\n on: t.ctx\n every: 10s\n calc: 1\n\n",
-            "template: a_third\n on: other.ctx\n type: System\n every: 10s\n calc: 1\n",
-        );
-        std::fs::write(&rules, text_of_rules).unwrap();
-        {
-            use std::os::unix::ffi::OsStrExt;
-            assert!(netdata_agent_health::readfile::health_readfile(&s.health, rules.as_os_str().as_bytes(), false));
-        }
-        s.health.host_link(host, &|| 1_700_000_000, &|| true);
-        let linked = s.health.host(host).unwrap().chart_alerts(&chart);
+        let (_rules, _chart, linked) = two_alerts(&s);
         let names: Vec<String> = linked.iter().map(|a| String::from_utf8_lossy(a.name()).into_owned()).collect();
         assert_eq!(names.len(), 2, "{names:?}");
         assert!(names.contains(&"a_first".to_owned()) && names.contains(&"a_second".to_owned()), "{names:?}");
@@ -1343,6 +1353,99 @@ mod tests {
         assert!(instance.starts_with(r#""alert_instances":[{"ati":0,"ni":0,"gi":"#), "{instance}");
         let tail = r#""nm":"a_first","ctx":"t.ctx","ch":"t.c","ch_n":"t.c","st":"WARNING","fami":"f","#;
         assert!(instance.ends_with(tail), "{instance}");
+
+        // `options=mcp`: neither `api` nor `timings`; headers and rows, an instance with its host's name, and a
+        // limit that cuts the rows says so
+        let mcp = ["nodes", "all_alerts_header", "all_alerts", "alert_instances_header", "alert_instances"];
+        assert_eq!(members(&text(b"/api/v3/alerts", b"options=mcp,summary,values")), mcp);
+        let body = text(b"/api/v3/alerts", b"options=mcp,minify,summary,values&status=warning");
+        assert!(body.contains(r#""all_alerts":[["a_first","#), "{body}");
+        assert!(body.contains(r#""alert_instances":[["a_first","box","t.c","#), "{body}");
+        let body = text(b"/api/v3/alerts", b"options=mcp,minify,summary&cardinality=1");
+        let cut = concat!(
+            r#""__all_alerts_info__":{"status":"truncated","total_alerts":2,"shown_alerts":1,"#,
+            r#""cardinality_limit":1}"#
+        );
+        assert!(body.contains(cut), "{body}");
+
+        // `transition=`: a text that is no UUID, and an agent without a database, answer 404 with nothing
+        for query in [&b"transition=x&options=summary"[..], b"transition=7a7a7a7a-7a7a-7a7a-7a7a-7a7a7a7a7a7a"] {
+            let r = asked(&s, b"/api/v3/alerts", query, all);
+            let shown = String::from_utf8_lossy(query).into_owned();
+            let nothing = (status::NOT_FOUND, ContentType::TextPlain, 0);
+            assert_eq!((r.code, r.content_type, r.body.len()), nothing, "{shown}");
+        }
+    }
+
+    /// `transition=` on the alerts routes (`rrdcontexts_v2_init_alert_dictionaries()`): the id of one transition of
+    /// the alert log narrows the request to the alert it belongs to: its host becomes the node scope, its chart's
+    /// context the context scope, its alarm id a filter. An id no entry has answers 404. An entry of an alarm that
+    /// is gone, or on a context the host no longer has, keeps nothing, and then lists no host: the context scope is
+    /// a pattern, so a host counts only for a kept alert. The id may come without its dashes.
+    #[test]
+    fn a_transition_narrows_an_alerts_request() {
+        use netdata_agent_health::alert::Status;
+        use netdata_agent_metadata::open::MetaDb;
+        let dir = tempfile::tempdir().unwrap();
+        let meta = Arc::new(MetaDb::open(dir.path(), &Default::default()).unwrap());
+        let s = Shared { meta: Some(Arc::downgrade(&meta)), ..shared() };
+        let all = acl::bits::ALL_LISTENER_FEATURES;
+        let (_rules, _chart, linked) = two_alerts(&s);
+        for alert in &linked {
+            let mut run = alert.run();
+            run.status = Status::Warning;
+            alert.publish(&run, None);
+        }
+        let id_of = |name: &[u8]| linked.iter().find(|alert| alert.name() == name).expect("the alert").id;
+        let host_id = crate::meta_store::host_id(s.hosts.localhost()).unwrap();
+        let hex = |bytes: &[u8]| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        {
+            // the log's rows, as health writes them: the transition 7a.. is of `a_second` on its chart's context,
+            // 7b.. of an alarm that no longer exists, 7c.. of `a_first` on a context the host does not have
+            let c = meta.lock();
+            let entries = [
+                (1, id_of(b"a_second"), "t.ctx", 0x7a_u8),
+                (2, 4000, "t.ctx", 0x7b),
+                (3, id_of(b"a_first"), "gone.ctx", 0x7c),
+            ];
+            for (log_id, alarm_id, context, byte) in entries {
+                let log = format!(
+                    "INSERT INTO health_log (health_log_id, host_id, alarm_id, name, chart, chart_context) VALUES \
+                     ({log_id}, X'{}', {alarm_id}, 'a', 't.c', '{context}')",
+                    hex(&host_id)
+                );
+                c.execute(&log, ()).unwrap();
+                let detail = format!(
+                    "INSERT INTO health_log_detail (health_log_id, unique_id, alarm_id, transition_id) VALUES \
+                     ({log_id}, {log_id}, {alarm_id}, X'{}')",
+                    hex(&[byte; 16])
+                );
+                c.execute(&detail, ()).unwrap();
+            }
+        }
+        let asked_for = |transition: &str| {
+            let query = format!("options=minify,summary&transition={transition}");
+            let r = asked(&s, b"/api/v3/alerts", query.as_bytes(), all);
+            (r.code, String::from_utf8(r.body).unwrap())
+        };
+        let node = r#""nodes":[{"mg":"0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e","nm":"box","ni":0}]"#;
+        // the alert of the transition alone, though both alerts of the chart would be kept without it
+        for transition in ["7a7a7a7a-7a7a-7a7a-7a7a-7a7a7a7a7a7a", "7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a"] {
+            let (code, body) = asked_for(transition);
+            assert_eq!(code, status::OK, "{transition}: {body}");
+            let head = format!(r#"{{"api":2,{node},"alerts":[{{"ati":0,"ni":[0],"nm":"a_second","#);
+            assert!(body.starts_with(&head), "{transition}: {body}");
+            assert!(!body.contains(r#""nm":"a_first""#), "{transition}: {body}");
+        }
+        // an id no entry has
+        let (code, body) = asked_for("7d7d7d7d-7d7d-7d7d-7d7d-7d7d7d7d7d7d");
+        assert_eq!((code, body.as_str()), (status::NOT_FOUND, ""));
+        // an alarm that is gone, and a context the host does not have: found, and nothing kept, so no host either
+        for transition in ["7b7b7b7b-7b7b-7b7b-7b7b-7b7b7b7b7b7b", "7c7c7c7c-7c7c-7c7c-7c7c-7c7c7c7c7c7c"] {
+            let (code, body) = asked_for(transition);
+            assert_eq!(code, status::OK, "{transition}: {body}");
+            assert!(body.starts_with(r#"{"api":2,"nodes":[],"alerts":[],"alerts_by_type":["#), "{transition}: {body}");
+        }
     }
 
     /// `/api/v2/contexts` and `/api/v3/contexts` (`api_v2_contexts()`): the nodes, the contexts, the versions and the
