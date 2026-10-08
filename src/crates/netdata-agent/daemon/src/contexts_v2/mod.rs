@@ -1,8 +1,8 @@
 //! The contexts v2 engine, ported from `api_v2_contexts_internal()` (`src/web/api/v2/api_v2_contexts.c`),
 //! `rrdcontext_to_json_v2()` and its host walk (`src/database/contexts/api_v2_contexts.c`, `query_scope.c`) for the
 //! modes the agent serves so far: `/api/v3/stream_path`, `/api/v2/info` (`/api/v3/info`), `/api/v2/functions`
-//! (`/api/v3/functions`), `/api/v2/versions` (`/api/v3/versions`) and `/api/v2/nodes` (`/api/v3/nodes`). Decisions
-//! D51, D92, D160 and D231 in the status repository.
+//! (`/api/v3/functions`), `/api/v2/versions` (`/api/v3/versions`), `/api/v2/nodes` (`/api/v3/nodes`) and
+//! `/api/v2/contexts` (`/api/v3/contexts`). Decisions D51, D92, D160 and D231 in the status repository.
 
 use std::ops::ControlFlow;
 use std::sync::Arc;
@@ -14,14 +14,16 @@ use netdata_agent_query::jsonwrap_v2::{cloud_timings, version_hashes_v2};
 use netdata_agent_query::keys::Keys;
 use netdata_agent_query::request::pairs;
 use netdata_agent_query::tables::{
-    contexts_options::{DEBUG, JSON_LONG_KEYS, MCP, MINIFY, RFC3339},
+    contexts_options::{
+        DEBUG, FAMILY, JSON_LONG_KEYS, LIVENESS, MCP, MINIFY, PRIORITIES, RETENTION, RFC3339, UNITS,
+    },
     contexts_options_to_json_array, parse_contexts_options,
 };
 use netdata_agent_query::target::{Versions, foreach_context, foreach_host, matches_retention};
 use netdata_agent_rrd::clock::now_realtime_s;
-use netdata_agent_rrd::contexts::Context;
+use netdata_agent_rrd::contexts::{Context, ContextState};
 use netdata_agent_text::json::{JsonOptions, JsonWriter};
-use netdata_agent_text::parse::str2l;
+use netdata_agent_text::parse::{str2l, str2ul};
 use netdata_agent_text::simple_pattern::SimplePattern;
 use netdata_agent_text::time_window::relative_window_to_absolute_query;
 use netdata_agent_web::content_type::ContentType;
@@ -32,10 +34,13 @@ use crate::server::{Reply, Shared};
 use crate::startup;
 
 mod agents;
+mod contexts;
 mod functions;
+mod labels;
 mod nodes;
 
 use agents::agents;
+use contexts::ContextsDict;
 use functions::Functions;
 use nodes::node_to_json;
 
@@ -81,6 +86,9 @@ struct Request {
     after: i64,
     before: i64,
     timeout_ms: i64,
+    /// `cardinality` or `cardinality_limit`: how many contexts, and items of each of their lists, are printed; 0 for
+    /// all.
+    cardinality_limit: u64,
 }
 
 /// `api_v2_contexts_internal()`'s parameter loop: the last occurrence of a value wins, options accumulate.
@@ -103,6 +111,7 @@ fn parse(query: &[u8], mode: u32, options: u64) -> Request {
             b"after" => req.after = str2l(value),
             b"before" => req.before = str2l(value),
             b"timeout" => req.timeout_ms = str2l(value),
+            b"cardinality" | b"cardinality_limit" => req.cardinality_limit = str2ul(value),
             _ => {}
         }
     }
@@ -124,11 +133,10 @@ struct Window {
 
 /// `rrdcontext_to_json_v2_add_context()`'s first test: with a window, a context counts only when its retention meets
 /// it, a collected context's reaching the walk's clock.
-fn context_in_window(rc: &Context, window: Window) -> bool {
+fn context_in_window(rc: &Context, state: &ContextState, window: Window) -> bool {
     let Some((after, before)) = window.range else {
         return true;
     };
-    let state = rc.state();
     let last = if rc.flags.is_collected() {
         window.now
     } else {
@@ -193,6 +201,8 @@ fn render(shared: &Shared, req: &Request, mode: u32, wall_s: i64) -> Reply {
     // query_scope_foreach_host() with rrdcontext_to_json_v2_add_host()
     let mut selected = Vec::new();
     let mut functions = Functions::default();
+    // C makes the dictionary for the search too (commit 6)
+    let mut dict = (mode & mode::CONTEXTS != 0).then(ContextsDict::default);
     let mut versions = Versions::default();
     let walked = foreach_host(&hosts, scope_nodes.as_ref(), nodes.as_ref(), &mut versions, |host, queryable| {
         if !queryable {
@@ -214,20 +224,35 @@ fn render(shared: &Shared, req: &Request, mode: u32, wall_s: i64) -> Reply {
             && window.range.is_none();
         if mode & (mode::CONTEXTS | mode::SEARCH | mode::ALERTS) != 0 || patterns {
             // query_scope_foreach_context() with rrdcontext_to_json_v2_add_context(): a host with a context that
-            // counts is matched. The `contexts` selector does not filter here (C ignores whether a context is
-            // queryable), so it only keeps a host without any context out.
-            let counted = foreach_context(
+            // counts is matched, and the contexts answer collects each one that does. The `contexts` selector
+            // does not filter here (C ignores whether a context is queryable), so it only keeps a host without any
+            // context out. Where nothing is collected, the first context that counts settles the host.
+            let mut counted = false;
+            let first = foreach_context(
                 host,
                 req.scope_contexts.as_deref(),
                 scope_contexts.as_ref(),
                 contexts.as_ref(),
                 true,
-                |rc, _| match context_in_window(rc, window) {
-                    true => ControlFlow::Break(()),
-                    false => ControlFlow::Continue(()),
+                |rc, _| {
+                    if dict.is_none() && window.range.is_none() {
+                        return ControlFlow::Break(());
+                    }
+                    let state = rc.state();
+                    if !context_in_window(rc, &state, window) {
+                        return ControlFlow::Continue(());
+                    }
+                    match dict.as_mut() {
+                        Some(dict) => {
+                            dict.add(rc, state, req.options, window);
+                            counted = true;
+                            ControlFlow::Continue(())
+                        }
+                        None => ControlFlow::Break(()),
+                    }
                 },
             );
-            matched |= counted.is_break();
+            matched |= counted || first.is_break();
         } else if window.range.is_some() {
             // C checks the host's retention against the window again: it passed above
             matched = true;
@@ -274,6 +299,9 @@ fn render(shared: &Shared, req: &Request, mode: u32, wall_s: i64) -> Reply {
     if mode & mode::FUNCTIONS != 0 {
         functions.to_json(&mut w, mcp);
     }
+    if let Some(dict) = &dict {
+        dict.to_json(&mut w, req, window.now);
+    }
     if mode & mode::VERSIONS != 0 {
         // the host index's version as the answer is written
         versions.nodes_hard_hash = u64::from(shared.hosts.version());
@@ -311,6 +339,15 @@ pub fn info(route: &Route<'_>, query: &[u8]) -> Reply {
     let info_mode = mode::AGENTS | mode::AGENTS_INFO;
     let req = parse(query, info_mode, 0);
     render(route.shared, &req, info_mode, now_realtime_s())
+}
+
+/// `api_v2_contexts()` (`/api/v2/contexts`, `/api/v3/contexts`): the contexts of the hosts in scope, merged by id,
+/// with the nodes that have one, the versions and the agent; the dashboard's chart menu. `options` adds to the
+/// route's defaults, so a request cannot remove one. The host in the URL does not matter.
+pub fn contexts(route: &Route<'_>, query: &[u8]) -> Reply {
+    let contexts_mode = mode::CONTEXTS | mode::NODES | mode::AGENTS | mode::VERSIONS;
+    let req = parse(query, contexts_mode, PRIORITIES | RETENTION | LIVENESS | FAMILY | UNITS);
+    render(route.shared, &req, contexts_mode, now_realtime_s())
 }
 
 /// `api_v2_nodes()` (`/api/v2/nodes`, `/api/v3/nodes`): the hosts in scope, each with its version, labels, system

@@ -53,6 +53,8 @@ mod status_file;
 mod stream_info;
 mod system;
 mod system_info;
+#[cfg(test)]
+mod testing;
 mod timezone;
 mod v1_charts;
 mod v1_contexts;

@@ -79,33 +79,14 @@ mod tests {
 
     use netdata_agent_nrpc::testing::inert;
     use netdata_agent_nrpc::{MethodDesc, Source, access};
-    use netdata_agent_rrd::host::{Attach, HostInfo, ReceiverLink, ReceiverSlot};
+    use netdata_agent_rrd::host::{Attach, ReceiverLink, ReceiverSlot};
     use netdata_agent_text::json::JsonOptions;
 
     use super::*;
+    use crate::testing::host_info;
 
     fn host(local: bool) -> Host {
-        let info = HostInfo {
-            hostname: "box".into(),
-            registry_hostname: "box".into(),
-            os: "linux".into(),
-            timezone: "UTC".into(),
-            abbrev_timezone: "UTC".into(),
-            utc_offset: 0,
-            program_name: "netdata".into(),
-            program_version: "v0".into(),
-            update_every: 1,
-            db_mode: netdata_agent_rrd::mode::DbMode::Ram,
-            history_entries: 3600,
-            health_enabled: false,
-            system_info: Default::default(),
-            replication_enabled: false,
-            replication_period: 0,
-            replication_step: 0,
-            stream_send: None,
-            cache_dir: None,
-        };
-        Host::new("0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e", local, info)
+        Host::new("0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e", local, host_info("box"))
     }
 
     fn rendered(host: &Host) -> String {

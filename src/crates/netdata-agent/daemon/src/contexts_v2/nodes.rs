@@ -109,37 +109,17 @@ pub(super) fn health_to_json(w: &mut JsonWriter, key: &[u8], host: &Host, alerts
 
 #[cfg(test)]
 mod tests {
-    use netdata_agent_rrd::host::HostInfo;
     use netdata_agent_text::json::JsonOptions;
 
     use super::*;
+    use crate::testing::host_info;
 
     /// A host says `disabled` without health and prints no count; with health it says `initializing` while one of
     /// its charts waits for its alerts and `online` after, each with the five counts in the writer's order
     /// (`rrdhost_health_to_json_v2()`; the status texts are `rrdhost-status.c:57-62`).
     #[test]
     fn the_health_object_follows_the_host_s_health() {
-        let info = HostInfo {
-            hostname: "box".into(),
-            registry_hostname: "box".into(),
-            os: "linux".into(),
-            timezone: "UTC".into(),
-            abbrev_timezone: "UTC".into(),
-            utc_offset: 0,
-            program_name: "netdata".into(),
-            program_version: "v0".into(),
-            update_every: 1,
-            db_mode: netdata_agent_rrd::mode::DbMode::Ram,
-            history_entries: 3600,
-            health_enabled: false,
-            system_info: Default::default(),
-            replication_enabled: false,
-            replication_period: 0,
-            replication_step: 0,
-            stream_send: None,
-            cache_dir: None,
-        };
-        let host = Host::new("0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e", true, info);
+        let host = Host::new("0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e", true, host_info("box"));
         let rendered = || {
             let mut w = JsonWriter::new(JsonOptions::MINIFY);
             health_to_json(&mut w, b"health", &host, None);

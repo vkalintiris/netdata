@@ -232,6 +232,13 @@ const API_V2: &[Command] = &[
         callback: |route, _, query| data::v23(route, query, 2),
     },
     Command {
+        name: "contexts",
+        acl: acl::bits::METRICS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: |route, _, query| contexts_v2::contexts(route, query),
+    },
+    Command {
         name: "alert_config",
         acl: acl::bits::ALERTS,
         access: access::ANONYMOUS_DATA,
@@ -340,6 +347,13 @@ const API_V3: &[Command] = &[
         access: access::ANONYMOUS_DATA,
         allow_subpaths: false,
         callback: |_, host, query| v1_contexts::context(host, query),
+    },
+    Command {
+        name: "contexts",
+        acl: acl::bits::METRICS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: |route, _, query| contexts_v2::contexts(route, query),
     },
     Command {
         name: "info",
@@ -1140,6 +1154,101 @@ mod tests {
         assert_eq!(health(), counted("initializing", [0, 0, 0, 0, 0]));
         let body = text(b"/api/v3/nodes", b"options=minify");
         assert!(body.contains(r#"{"name":"health","version":2,"enabled":true}"#), "{body}");
+    }
+
+    /// `/api/v2/contexts` and `/api/v3/contexts` (`api_v2_contexts()`): the nodes, the contexts, the versions and the
+    /// agent between `api` and `timings`; with `options=mcp` neither of those two, and an `info` text after the
+    /// contexts. Both rows ask the client for the metrics feature, and for that alone. A host without a context is
+    /// listed while nothing selects contexts. A scope selects contexts, `contexts=` filters none, a limit cuts
+    /// them by both of its names, and a window lists a context only when the context's own retention meets it: a
+    /// context that is no longer collected is left out of a later window though its host is online.
+    #[test]
+    fn contexts_are_routed_in_v2_and_v3() {
+        use netdata_agent_rrd::chart::{Algorithm, ChartSpec, ChartType};
+        let s = shared();
+        let all = acl::bits::ALL_LISTENER_FEATURES;
+        let text = |path: &[u8], query: &[u8]| {
+            let r = asked(&s, path, query, all);
+            let shown = String::from_utf8_lossy(path).into_owned();
+            assert_eq!((r.code, r.content_type), (status::OK, ContentType::ApplicationJson), "{shown}");
+            assert!(r.no_cacheable, "{shown}");
+            String::from_utf8(r.body).unwrap()
+        };
+        let node = concat!(
+            r#""nodes":[{"mg":"0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e","nm":"box","ni":0,"#,
+            r#""st":{"ai":0,"code":200,"msg":""}}]"#
+        );
+        for path in [&b"/api/v2/contexts"[..], b"/api/v3/contexts"] {
+            let shown = String::from_utf8_lossy(path).into_owned();
+            let top = ["api", "nodes", "contexts", "versions", "agents", "timings"];
+            assert_eq!(members(&text(path, b"")), top, "{shown}");
+            let body = text(path, b"options=minify");
+            assert!(body.starts_with(&format!(r#"{{"api":2,{node},"contexts":{{}},"versions":{{"#)), "{shown}: {body}");
+            let mcp = ["nodes", "contexts", "info", "versions", "agents"];
+            assert_eq!(members(&text(path, b"options=mcp")), mcp, "{shown}");
+
+            let denied = server::permission_denied_acl();
+            let r = asked(&s, path, b"", all & !acl::bits::METRICS);
+            assert_eq!((r.code, &r.body), (denied.code, &denied.body), "{shown}");
+            assert_eq!(asked(&s, path, b"", acl::bits::METRICS).code, status::OK, "{shown}");
+        }
+
+        // two contexts whose data ended 50 seconds ago and that nothing collects any more (as after a child's
+        // disconnect: the worker's next cycle finds them not collected)
+        let host = s.hosts.localhost();
+        let now = netdata_agent_rrd::clock::now_realtime_s();
+        for (id, context) in [("c", "t.ctx"), ("d", "u.ctx")] {
+            let (chart, _) = host.charts().create(&ChartSpec {
+                type_: "t",
+                id,
+                name: None,
+                family: Some("f"),
+                context: Some(context),
+                title: "T",
+                units: "u",
+                plugin: "p",
+                module: None,
+                priority: 1000,
+                update_every: 1,
+                chart_type: ChartType::Line,
+                mode: netdata_agent_rrd::mode::DbMode::Ram,
+                history_entries: 3600,
+                page_size: 4096,
+            });
+            let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+            for t in now - 100..=now - 50 {
+                dim.store_metric(t as u64 * 1_000_000, 1.0, 0);
+            }
+        }
+        host.contexts().process_queued();
+        host.contexts().child_disconnected();
+        host.contexts().worker_cycle();
+        let contexts = |query: &str| {
+            let body = text(b"/api/v2/contexts", format!("options=minify&{query}").as_bytes());
+            let (at, end) = (body.find(r#""nodes":"#).unwrap(), body.find(r#","versions""#).unwrap());
+            body[at..end].to_owned()
+        };
+        let one = |id: &str| {
+            let state = host.contexts().get(id).expect("the context").state();
+            assert!(state.first_time_s <= now - 99 && state.last_time_s == now - 50, "{state:?}");
+            format!(
+                r#""{id}":{{"family":"f","units":"u","priority":1000,"first_entry":{},"last_entry":{},"live":false}}"#,
+                state.first_time_s, state.last_time_s
+            )
+        };
+        let both = format!(r#"{node},"contexts":{{{},{}}}"#, one("t.ctx"), one("u.ctx"));
+        assert_eq!(contexts(""), both);
+        for limit in ["cardinality=1", "cardinality_limit=1"] {
+            let cut = r#""__truncated__":{"total_contexts":2,"returned":1,"remaining":1}"#;
+            assert_eq!(contexts(limit), format!(r#"{node},"contexts":{{{},{cut}}}"#, one("t.ctx")), "{limit}");
+        }
+        assert_eq!(contexts("contexts=nomatch"), both);
+        assert_eq!(contexts("scope_contexts=u.ctx"), format!(r#"{node},"contexts":{{{}}}"#, one("u.ctx")));
+        assert_eq!(contexts("scope_contexts=u.*"), format!(r#"{node},"contexts":{{{}}}"#, one("u.ctx")));
+        let nothing = r#""nodes":[],"contexts":{}"#;
+        assert_eq!(contexts("scope_contexts=nomatch"), nothing);
+        assert_eq!(contexts(&format!("after={}&before={}", now - 80, now - 60)), both);
+        assert_eq!(contexts(&format!("after={}&before={}", now - 10, now)), nothing);
     }
 
     /// `/api/v1/alarm_variables`, `/api/v1/variable` and `/api/v3/variable`, and the alert members of the chart JSON,
