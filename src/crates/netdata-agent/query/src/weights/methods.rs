@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use netdata_agent_log::netdata_log_error;
+use netdata_agent_log::{netdata_log_error, netdata_log_info};
 use netdata_agent_rrd::contexts::{Instance, Metric};
 use netdata_agent_rrd::host::Host;
 use netdata_agent_rrd::pulse::{Queries, QuerySource};
@@ -13,13 +13,17 @@ use netdata_agent_rrd::stream_control::UserWeightsQuery;
 use netdata_agent_storage::dbengine::RRD_STORAGE_TIERS;
 use netdata_agent_storage::dbengine::engine::query::Priority;
 use netdata_agent_storage::storage_point::StoragePoint;
+use netdata_agent_text::print::print_fixed;
 
+use super::Method;
+use super::ks2::kstwo;
+use super::results::{Found, Of, Registered, flags, register};
 use crate::execute::{Control, run_v1};
 use crate::grouping::Windows;
 use crate::request::{DataRequest, Profile};
-use crate::tables::TimeGrouping;
+use crate::tables::{TimeGrouping, options};
 use crate::target::{Source, create, metric_status};
-use crate::value::QueryValue;
+use crate::value::{MetricValueRequest, QueryValue, metric_value};
 use crate::window::calculate;
 
 /// `WEIGHTS_STATS`: what the queries of one weights request read and made.
@@ -142,11 +146,188 @@ pub fn metric_series(
     Some((r.v[..r.rows].to_vec(), qt.query[0].query_points))
 }
 
+/// One weights request at work on its metrics (`struct query_weights_data` and its request, as
+/// `weights_for_rrdmetric()` reads them): what the prelude settled, the statistics and the results so far.
+pub struct Run<'a> {
+    pub env: QueryEnv<'a>,
+    pub method: Method,
+    /// The highlighted window and, for `ks2` and `volume`, the baseline it is compared with.
+    pub after: i64,
+    pub before: i64,
+    pub baseline_after: i64,
+    pub baseline_before: i64,
+    /// The points asked of the highlighted window (`ks2`).
+    pub points: u64,
+    /// The request's options, without `nonzero`.
+    pub options: u64,
+    pub time_group: TimeGrouping,
+    pub time_group_options: Option<Vec<u8>>,
+    pub tier: u64,
+    /// The baseline is asked for the highlighted window's rows times two to this power (`ks2`).
+    pub shifts: u32,
+    /// Zeros are results too (the request had no `nonzero`).
+    pub register_zero: bool,
+    pub stats: Stats,
+    pub results: Vec<Registered>,
+}
+
+impl Run<'_> {
+    /// The request's method on one metric (the switch of `weights_for_rrdmetric()`).
+    pub fn metric(&mut self, of: &Of) {
+        match self.method {
+            Method::Value | Method::AnomalyRate => self.value(of),
+            Method::Volume => self.volume(of),
+            Method::Ks2 => self.ks2(of),
+        }
+    }
+
+    /// One value of the metric over a window, as the methods ask for it: no timeout, the weights' priority.
+    fn query_value(
+        &self,
+        of: &Of,
+        (after, before): (i64, i64),
+        options: u64,
+        time_group: TimeGrouping,
+        time_group_options: Option<&[u8]>,
+    ) -> QueryValue {
+        let request = MetricValueRequest {
+            after,
+            before,
+            options,
+            time_group,
+            time_group_options: time_group_options.map(<[u8]>::to_vec),
+            tier: self.tier,
+            timeout_ms: 0,
+            priority: Priority::SynchronousFirst,
+        };
+        let (env, control) = (&self.env, self.env.control());
+        metric_value(of.host, of.instance, of.metric, &request, env.profile, &control, env.now_s)
+    }
+
+    /// `rrdset_weights_value()`, the methods `value` and `anomaly-rate`: the metric's value over the highlighted
+    /// window, when it is a number. The query counts whether it is or not.
+    fn value(&mut self, of: &Of) {
+        let options = self.options | options::MATCH_IDS | options::NATURAL_POINTS;
+        let group = self.time_group_options.as_deref();
+        let qv = self.query_value(of, (self.after, self.before), options, self.time_group, group);
+        self.stats.add_value(&qv, 1);
+        if qv.value.is_finite() {
+            let (highlighted, duration_us) = (Some(qv.sp), qv.duration_us);
+            let found = Found { value: qv.value, flags: 0, highlighted, baseline: None, duration_us };
+            register(&mut self.results, &mut self.stats, self.register_zero, of, found);
+        }
+    }
+
+    /// `rrdset_metric_correlations_volume()`: how far the highlighted window's average is from the baseline's, as
+    /// a ratio of the baseline's, times the share of the highlighted window spent on that side of the baseline's
+    /// average; that share alone when the baseline's average is zero (or the baseline has no data).
+    fn volume(&mut self, of: &Of) {
+        let options = self.options | options::MATCH_IDS | options::ABSOLUTE | options::NATURAL_POINTS;
+        let group = self.time_group_options.as_deref();
+        let mut baseline =
+            self.query_value(of, (self.baseline_after, self.baseline_before), options, self.time_group, group);
+        self.stats.add_value(&baseline, 1);
+        if !baseline.value.is_finite() {
+            // no data in the baseline window: the highlighted one may have some
+            baseline.value = 0.0;
+        }
+        let highlight = self.query_value(of, (self.after, self.before), options, self.time_group, group);
+        self.stats.add_value(&highlight, 1);
+        if !highlight.value.is_finite() || baseline.value == highlight.value {
+            return;
+        }
+        // on anomaly bits, only a rise of the anomaly rate counts
+        if options & options::ANOMALY_BIT != 0 && highlight.value < baseline.value {
+            return;
+        }
+        // "%s%0.7f" into C's buffer, which holds 49 bytes of it
+        let mut condition = vec![if highlight.value < baseline.value { b'<' } else { b'>' }];
+        print_fixed(&mut condition, baseline.value, 7);
+        condition.truncate(49);
+        let countif =
+            self.query_value(of, (self.after, self.before), options, TimeGrouping::Countif, Some(&condition));
+        self.stats.add_value(&countif, 1);
+        if !countif.value.is_finite() {
+            netdata_log_info!("WEIGHTS: highlighted countif query failed, but highlighted average worked - strange...");
+            return;
+        }
+        // countif gives 0 to 100
+        let share = countif.value / 100.0;
+        // C's `isgreater(b, 0.0) || isless(b, 0.0)`: the baseline's average is a number here
+        let (flags, value) = if baseline.value != 0.0 {
+            (flags::BASE_HIGH_RATIO, (highlight.value - baseline.value) / baseline.value * share)
+        } else {
+            (flags::PERCENTAGE_OF_TIME, share)
+        };
+        let found = Found {
+            value,
+            flags,
+            highlighted: Some(highlight.sp),
+            baseline: Some(baseline.sp),
+            duration_us: baseline.duration_us + highlight.duration_us + countif.duration_us,
+        };
+        register(&mut self.results, &mut self.stats, self.register_zero, of, found);
+    }
+
+    /// `rrdset_metric_correlations_ks2()`: the two-sample Kolmogorov-Smirnov test of the metric's changes in the
+    /// baseline against its changes in the highlighted window; the result is one minus the probability that both
+    /// come from one distribution. The baseline is asked for the highlighted window's rows times two to the
+    /// power of `shifts`, and only when the highlighted window gave a series.
+    fn ks2(&mut self, of: &Of) {
+        let options = self.options | options::NATURAL_POINTS;
+        let started = Instant::now();
+        let request = |after, before, points| SeriesRequest {
+            after,
+            before,
+            points,
+            options,
+            time_group: self.time_group,
+            time_group_options: self.time_group_options.clone(),
+            tier: self.tier,
+        };
+        let highlighted = request(self.after, self.before, self.points);
+        let Some((highlight, highlighted_sp)) =
+            metric_series(&self.env, of.host, of.instance, of.metric, &highlighted, &mut self.stats)
+        else {
+            return;
+        };
+        let base_points = (highlight.len() as u64).checked_shl(self.shifts).unwrap_or(0);
+        let baseline = request(self.baseline_after, self.baseline_before, base_points);
+        let Some((baseline, baseline_sp)) =
+            metric_series(&self.env, of.host, of.instance, of.metric, &baseline, &mut self.stats)
+        else {
+            return;
+        };
+        let mut prob = kstwo(&baseline, &highlight, self.shifts);
+        if !prob.is_finite() {
+            return;
+        }
+        // C: "these conditions should never happen, but still let's check"
+        if prob < 0.0 {
+            netdata_log_error!("Metric correlations: kstwo() returned a negative number: {prob:.6}");
+            prob = -prob;
+        }
+        if prob > 1.0 {
+            netdata_log_error!("Metric correlations: kstwo() returned a number above 1.0: {prob:.6}");
+            prob = 1.0;
+        }
+        let duration_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        // 0 is the least correlated and 1 the most, so the probability is flipped
+        let found = Found {
+            value: 1.0 - prob,
+            flags: flags::BASE_HIGH_RATIO,
+            highlighted: Some(highlighted_sp),
+            baseline: Some(baseline_sp),
+            duration_us,
+        };
+        register(&mut self.results, &mut self.stats, self.register_zero, of, found);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::rrdr::Rrdr;
-    use crate::tables::options;
     use crate::target::QueryTarget;
     use crate::testing::{T0, W_NOW, W_POINTS, weights_host};
 
@@ -268,6 +449,227 @@ mod tests {
         assert!(got.is_none());
         assert_eq!(stats.db_queries, 1);
         assert!(stats.db_points >= 240, "{stats:?}");
+    }
+
+    /// The two options the request's parser always adds: without `unaligned` the windows would move to a
+    /// multiple of their length.
+    const BASE: u64 = options::NOT_ALIGNED | options::NULL2ZERO;
+
+    /// A run of `method` over the fixture: the highlighted window is the last `high` seconds, the baseline the
+    /// `base` seconds before it; both absolute, as the engine's prelude leaves them.
+    fn run(profile: &Profile, method: Method, high: i64, base: i64) -> Run<'_> {
+        let last = T0 + W_POINTS;
+        Run {
+            env: env(profile, None),
+            method,
+            after: last - high,
+            before: last,
+            baseline_after: last - high - base,
+            baseline_before: last - high,
+            points: 30,
+            options: BASE,
+            time_group: TimeGrouping::Average,
+            time_group_options: None,
+            tier: 0,
+            shifts: 0,
+            register_zero: true,
+            stats: Stats::default(),
+            results: Vec::new(),
+        }
+    }
+
+    /// The method of `run` on each of `dimensions` of the fixture, in order: the run as the method leaves it.
+    fn on<'a>(mut run: Run<'a>, dimensions: &[&str]) -> Run<'a> {
+        let h = weights_host();
+        let rc = h.contexts().get("ctx.w").expect("the fixture's context");
+        let ri = rc.instances().into_iter().next().expect("its instance");
+        for dimension in dimensions {
+            let rm = ri.metric(dimension).expect("the metric");
+            run.metric(&Of { host: &h, hostname: "weights", context: &rc, instance: &ri, metric: &rm });
+        }
+        run
+    }
+
+    type Group<'a> = (TimeGrouping, Option<&'a [u8]>);
+
+    /// The value the port's own query of one metric gives for a window, with the options a method adds.
+    fn reference(dimension: &str, window: (i64, i64), options: u64, group: Group) -> QueryValue {
+        let profile = Profile::default();
+        let probe = run(&profile, Method::Value, 1, 1);
+        let h = weights_host();
+        let rc = h.contexts().get("ctx.w").expect("the fixture's context");
+        let ri = rc.instances().into_iter().next().expect("its instance");
+        let rm = ri.metric(dimension).expect("the metric");
+        let of = Of { host: &h, hostname: "weights", context: &rc, instance: &ri, metric: &rm };
+        probe.query_value(&of, window, options, group.0, group.1)
+    }
+
+    fn values(run: &Run) -> Vec<(String, f64, u32)> {
+        run.results.iter().map(|t| (t.metric.id().to_string(), t.value, t.flags)).collect()
+    }
+
+    /// `rrdset_weights_value()`: the value of the highlighted window with the two options the method adds, kept
+    /// when it is a number; every query counts, the hidden metric's too; a zero is kept only when zeros count;
+    /// `anomaly-rate` is the same method (the engine adds the anomaly bit to the options).
+    #[test]
+    fn the_value_method_registers_the_highlighted_window_s_value() {
+        let profile = Profile::default();
+        let window = (T0 + W_POINTS - 60, T0 + W_POINTS);
+        let added = BASE | options::MATCH_IDS | options::NATURAL_POINTS;
+        let average: Group = (TimeGrouping::Average, None);
+        let a = reference("a", window, added, average);
+        assert!(a.value > 200.0 && a.value < 220.0, "{a:?}");
+
+        let got = on(run(&profile, Method::Value, 60, 60), &["a", "b", "z", "hid"]);
+        let kept = [("a".to_string(), a.value, 0), ("b".to_string(), 5.0, 0), ("z".to_string(), 0.0, 0)];
+        assert_eq!(values(&got), kept);
+        assert_eq!(got.stats.db_queries, 4);
+        let first = &got.results[0];
+        assert_eq!((first.highlighted, first.baseline), (a.sp, StoragePoint::default()));
+        assert_eq!((first.hostname.as_str(), first.instance.id(), first.context.id()), ("weights", "t.w", "ctx.w"));
+        // the statistics are the sums of what each value's query read
+        let (b, z) = (reference("b", window, added, average), reference("z", window, added, average));
+        let mut summed = Stats::default();
+        for qv in [&a, &b, &z, &reference("hid", window, added, average)] {
+            summed.add_value(qv, 1);
+        }
+        assert_eq!(got.stats, summed);
+        assert!(got.stats.db_points > 0 && got.stats.result_points == 3, "{:?}", got.stats);
+
+        let mut nonzero = run(&profile, Method::Value, 60, 60);
+        nonzero.register_zero = false;
+        let got = on(nonzero, &["z", "b"]);
+        assert_eq!((values(&got), got.stats.db_queries), (vec![("b".to_string(), 5.0, 0)], 2));
+
+        // the anomaly rate: the same method over the anomaly bit; the last 60 points are anomalous
+        let mut rate = run(&profile, Method::AnomalyRate, 30, 60);
+        rate.options = BASE | options::ANOMALY_BIT;
+        assert_eq!(values(&on(rate, &["a"])), [("a".to_string(), 100.0, 0)]);
+        let mut calm = run(&profile, Method::AnomalyRate, 30, 60);
+        (calm.after, calm.before, calm.options) = (T0 + 10, T0 + 40, BASE | options::ANOMALY_BIT);
+        assert_eq!(values(&on(calm, &["a"])), [("a".to_string(), 0.0, 0)]);
+    }
+
+    /// `rrdset_metric_correlations_volume()`: three queries (the baseline's average, the highlighted window's,
+    /// the share of the highlighted window on its side of the baseline's average), each counted; the ratio and
+    /// its flag; the share alone when the baseline's average is zero or the baseline has no data; nothing when
+    /// the averages are equal, when the highlighted window has no value, or when an anomaly rate fell.
+    #[test]
+    fn the_volume_method_weighs_the_change_by_its_share_of_the_time() {
+        let profile = Profile::default();
+        let added = BASE | options::MATCH_IDS | options::ABSOLUTE | options::NATURAL_POINTS;
+        let average: Group = (TimeGrouping::Average, None);
+        let last = T0 + W_POINTS;
+        let (high, base) = ((last - 60, last), (last - 180, last - 60));
+
+        // `a` rises: the whole highlighted window is above the baseline's average
+        let (b, h) = (reference("a", base, added, average), reference("a", high, added, average));
+        let condition = format!(">{:.7}", b.value);
+        let c = reference("a", high, added, (TimeGrouping::Countif, Some(condition.as_bytes())));
+        assert!(b.value > 100.0 && h.value > b.value && c.value == 100.0, "{b:?} {h:?} {c:?}");
+        let got = on(run(&profile, Method::Volume, 60, 120), &["a"]);
+        let ratio = (h.value - b.value) / b.value * (c.value / 100.0);
+        assert_eq!(values(&got), [("a".to_string(), ratio, flags::BASE_HIGH_RATIO)]);
+        assert_eq!((got.results[0].highlighted, got.results[0].baseline), (h.sp, b.sp));
+        assert_eq!((got.stats.db_queries, got.stats.max_base_high_ratio), (3, ratio));
+        let mut summed = Stats::default();
+        for qv in [&b, &h, &c] {
+            summed.add_value(qv, 1);
+        }
+        assert_eq!((got.stats.db_points, got.stats.result_points), (summed.db_points, summed.result_points));
+
+        // a fall: the windows swapped. The value keeps no sign; the share is of the time below
+        let mut fall = run(&profile, Method::Volume, 60, 120);
+        (fall.after, fall.before, fall.baseline_after, fall.baseline_before) = (base.0, base.1, high.0, high.1);
+        let below = format!("<{:.7}", h.value);
+        let share = reference("a", base, added, (TimeGrouping::Countif, Some(below.as_bytes()))).value / 100.0;
+        let fallen = (b.value - h.value) / h.value * share;
+        assert!(fallen < 0.0 && share == 1.0, "{fallen} {share}");
+        assert_eq!(values(&on(fall, &["a"])), [("a".to_string(), -fallen, flags::BASE_HIGH_RATIO)]);
+
+        // `step`: zero all through a baseline in the fixture's first half, 10 all through the highlighted window:
+        // the share alone
+        let mut early = run(&profile, Method::Volume, 60, 60);
+        (early.baseline_after, early.baseline_before) = (T0 + 30, T0 + 90);
+        let got = on(early, &["step", "b", "z", "hid"]);
+        assert_eq!(values(&got), [("step".to_string(), 1.0, flags::PERCENTAGE_OF_TIME)]);
+        // step: three queries; b and z: equal averages after two; hid: no highlighted value after two
+        assert_eq!((got.stats.db_queries, got.stats.max_base_high_ratio), (9, 0.0));
+
+        // no data in the baseline window (it is outside the ring): its average counts as zero
+        let mut no_baseline = run(&profile, Method::Volume, 60, 60);
+        (no_baseline.baseline_after, no_baseline.baseline_before) = (T0 - 100_000, T0 - 90_000);
+        assert_eq!(values(&on(no_baseline, &["b"])), [("b".to_string(), 1.0, flags::PERCENTAGE_OF_TIME)]);
+
+        // on anomaly bits a fall is nothing: `a` is anomalous in its last 60 points alone
+        let mut calmer = run(&profile, Method::Volume, 60, 60);
+        (calmer.after, calmer.before) = (T0 + 10, T0 + 40);
+        (calmer.baseline_after, calmer.baseline_before) = (last - 30, last);
+        calmer.options = BASE | options::ANOMALY_BIT;
+        let got = on(calmer, &["a"]);
+        assert_eq!((values(&got), got.stats.db_queries), (vec![], 2));
+        let mut wilder = run(&profile, Method::Volume, 30, 60);
+        (wilder.baseline_after, wilder.baseline_before) = (T0 + 10, T0 + 40);
+        wilder.options = BASE | options::ANOMALY_BIT;
+        assert_eq!(values(&on(wilder, &["a"])), [("a".to_string(), 1.0, flags::PERCENTAGE_OF_TIME)]);
+    }
+
+    /// `rrdset_metric_correlations_ks2()`: the highlighted window's series, then the baseline's with as many
+    /// points as the highlighted window gave rows, times two to the power of the shifts; the result is one minus
+    /// the test's probability, with both windows' points. A metric without a highlighted series costs one query
+    /// and the baseline is not asked; one without a baseline series costs two.
+    #[test]
+    fn the_ks2_method_tests_the_two_windows_changes() {
+        let profile = Profile::default();
+        let last = T0 + W_POINTS;
+        for shifts in [0, 1] {
+            let mut asked = run(&profile, Method::Ks2, 60, 120);
+            asked.shifts = shifts;
+            let got = on(asked, &["step", "b", "z", "hid"]);
+
+            // the same two series, asked for here
+            let h = weights_host();
+            let rc = h.contexts().get("ctx.w").expect("the fixture's context");
+            let ri = rc.instances().into_iter().next().expect("its instance");
+            let mut stats = Stats::default();
+            let mut series = |dimension: &str, (after, before): (i64, i64), points: u64| {
+                let rm = ri.metric(dimension).expect("the metric");
+                let options = BASE | options::NATURAL_POINTS;
+                let request = SeriesRequest { after, before, points, options, ..request(1) };
+                metric_series(&env(&profile, None), &h, &ri, &rm, &request, &mut stats)
+            };
+            let mut expected = Vec::new();
+            for dimension in ["step", "b"] {
+                let (high, high_sp) = series(dimension, (last - 60, last), 30).expect("a highlighted series");
+                let base_points = (high.len() as u64) << shifts;
+                let (base, base_sp) = series(dimension, (last - 180, last - 60), base_points).expect("a baseline series");
+                let prob = kstwo(&base, &high, shifts);
+                assert!((0.0..=1.0).contains(&prob), "{dimension} {prob}");
+                expected.push((dimension.to_string(), 1.0 - prob, flags::BASE_HIGH_RATIO, high_sp, base_sp));
+            }
+            let registered: Vec<_> = got
+                .results
+                .iter()
+                .map(|t| (t.metric.id().to_string(), t.value, t.flags, t.highlighted, t.baseline))
+                .collect();
+            assert_eq!(registered, expected, "shifts {shifts}");
+            // `b` never changes in either window: both are one distribution
+            assert_eq!(expected[1].1, 0.0);
+            // step and b: two queries each; z (zero all along) and hid (not queried): the highlighted one alone
+            assert_eq!(got.stats.db_queries, 6, "shifts {shifts}");
+            let largest = expected[0].1.max(expected[1].1);
+            assert_eq!(got.stats.max_base_high_ratio, largest);
+        }
+
+        // no baseline series (the baseline is outside the ring): two queries, no result
+        let mut no_baseline = run(&profile, Method::Ks2, 60, 120);
+        (no_baseline.baseline_after, no_baseline.baseline_before) = (T0 - 100_000, T0 - 90_000);
+        let got = on(no_baseline, &["b"]);
+        assert_eq!((got.results.len(), got.stats.db_queries), (0, 2));
+        // zeros do not count: `b`'s zero is dropped
+        let mut nonzero = run(&profile, Method::Ks2, 60, 120);
+        nonzero.register_zero = false;
+        assert!(on(nonzero, &["b"]).results.is_empty());
     }
 
     /// `merge_query_value_to_stats()`.

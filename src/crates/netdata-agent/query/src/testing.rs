@@ -84,7 +84,7 @@ pub const W_NOW: i64 = T0 + W_POINTS + 1;
 
 /// A host for the queries the weights endpoints make per metric: chart `t.w` of `ctx.w` in ram mode, a point a
 /// second at `T0+1..=T0+240`, the last 60 of them anomalous. `a` rises by one from 1; `b` stays at 5; `z` stays
-/// at zero; `hid` is hidden and stays at 3.
+/// at zero; `hid` is hidden and stays at 3; `step` is zero for the first 120 points and 10 after.
 pub fn weights_host() -> Arc<Host> {
     let h = Arc::new(Host::new("guid-w", false, info("weights", 1, DbMode::Ram)));
     let (chart, _) = h.charts().create(&ChartSpec {
@@ -92,7 +92,7 @@ pub fn weights_host() -> Arc<Host> {
         context: Some("ctx.w"),
         ..ram_chart(3600)
     });
-    for id in ["a", "b", "z", "hid"] {
+    for id in ["a", "b", "z", "hid", "step"] {
         chart.dim_add(id, None, 1, 1, Algorithm::Absolute);
     }
     let dim = |id: &str| chart.dim(id).expect("a dimension of the fixture");
@@ -100,7 +100,8 @@ pub fn weights_host() -> Arc<Host> {
     for i in 1..=W_POINTS {
         let at = (T0 + i) as u64 * 1_000_000;
         let flags = if i > W_POINTS - 60 { 0 } else { SN_FLAG_NOT_ANOMALOUS };
-        for (id, value) in [("a", i as f64), ("b", 5.0), ("z", 0.0), ("hid", 3.0)] {
+        let step = if i > W_POINTS / 2 { 10.0 } else { 0.0 };
+        for (id, value) in [("a", i as f64), ("b", 5.0), ("z", 0.0), ("hid", 3.0), ("step", step)] {
             dim(id).store_metric(at, value, flags);
         }
     }
