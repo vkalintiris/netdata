@@ -98,6 +98,7 @@ mod tests {
                 kind: IngestType::Localhost,
                 status: IngestStatus::Initializing,
                 since_s: 1_791_312_184,
+                reason: 0,
                 metrics: 0,
                 instances: 0,
                 contexts: 0,

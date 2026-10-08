@@ -143,4 +143,12 @@ mod tests {
             assert_eq!(TABLE.iter().filter(|&&(v, ..)| v == r).count(), 1, "{r}");
         }
     }
+
+    /// The two codes the host itself stops a receiver with (in `rrd`, which has no table) are this table's.
+    #[test]
+    fn the_host_s_stop_reasons_are_the_table_s() {
+        use netdata_agent_rrd::host::stop_reason;
+        assert_eq!(stop_reason::HOST_CLEANUP, Reason::SND_DISCONNECT_HOST_CLEANUP.0);
+        assert_eq!(stop_reason::LOCAL_VNODE_CLAIMED, Reason::RCV_DISCONNECT_LOCAL_VNODE_CLAIMED.0);
+    }
 }

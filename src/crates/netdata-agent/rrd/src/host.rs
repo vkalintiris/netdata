@@ -1,7 +1,7 @@
 //! Hosts, ported from `src/database/rrdhost.c`: localhost plus one host per child that ever streamed here, indexed
 //! by machine GUID and kept in creation order (localhost first).
 
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, Weak};
 
 use netdata_agent_log::{Priority, REDACTED, Source, nd_log, netdata_log_error};
@@ -240,6 +240,8 @@ pub struct ReceiverSlot {
     detaching: AtomicBool,
     /// `rpt->config.health.enabled`: health was on for this receiver's host, so its detach tells health.
     health: bool,
+    /// `rpt->exit.reason`: why the receiver ends, a `STREAM_HANDSHAKE` code; 0 until someone says.
+    exit_reason: AtomicI32,
 }
 
 impl std::fmt::Debug for ReceiverSlot {
@@ -268,6 +270,7 @@ impl ReceiverSlot {
             waker: OnceLock::new(),
             detaching: AtomicBool::new(false),
             health: false,
+            exit_reason: AtomicI32::new(0),
         }
     }
 
@@ -328,7 +331,27 @@ impl ReceiverSlot {
         lock(&self.to_child)
     }
 
-    /// The first half of `stream_receiver_signal_to_stop_and_wait()`: flag it and shut the socket down, once.
+    /// `receiver_set_exit_reason()`: the first reason given stays, unless a later one is forced (a stopper's, the
+    /// stream thread's shutdown); what is stored after the call. The host keeps it when the receiver detaches.
+    pub fn set_exit_reason(&self, reason: i32, force: bool) -> i32 {
+        if force {
+            self.exit_reason.store(reason, Ordering::Release);
+            return reason;
+        }
+        match self.exit_reason.compare_exchange(0, reason, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => reason,
+            Err(stored) => stored,
+        }
+    }
+
+    /// `rpt->exit.reason`.
+    pub fn exit_reason(&self) -> i32 {
+        self.exit_reason.load(Ordering::Acquire)
+    }
+
+    /// The first half of `stream_receiver_signal_to_stop_and_wait()` after its reason: flag it and shut the socket
+    /// down, once. [`Host::stop_receiver_and_wait`] is the stopper: it forces its reason first, under the host's
+    /// receiver lock.
     pub fn stop(&self) {
         if !self
             .stop_requested
@@ -438,6 +461,9 @@ pub struct Host {
     /// lock: when the attached receiver came (0 without one), when the last one left (0 while one is attached).
     receiver_last_connected_s: AtomicI64,
     receiver_last_disconnected_s: AtomicI64,
+    /// `host->stream.rcv.status.reason`, written under the receiver lock: the attached receiver's capabilities (a
+    /// positive number, which reads `CONNECTED`); after a detach, that receiver's exit reason; 0 before any.
+    receiver_reason: AtomicI32,
     /// `host->health.evloop_iteration`: the HEALTH loop's pass when a receiver last attached or left; the host is
     /// archived only after more than 10 more.
     health_last_iteration: AtomicU64,
@@ -632,6 +658,7 @@ impl Host {
             receiver_connections: AtomicU32::new(0),
             receiver_last_connected_s: AtomicI64::new(0),
             receiver_last_disconnected_s: AtomicI64::new(0),
+            receiver_reason: AtomicI32::new(0),
             health_last_iteration: AtomicU64::new(0),
             health_delay_up_to: AtomicI64::new(0),
             health_log_retention_s: AtomicU32::new(0),
@@ -1275,6 +1302,8 @@ impl Host {
         }
         // object_state_activate_if_not_activated(): what an earlier connection registered is no longer available
         self.functions.activate();
+        // host->stream.rcv.status.reason = rpt->capabilities
+        self.receiver_reason.store(slot.link.capabilities as i32, Ordering::Relaxed);
         *receiver = Some(slot);
         if let Some(count) = self.receivers_connected.get() {
             count.fetch_add(1, Ordering::Relaxed);
@@ -1310,7 +1339,7 @@ impl Host {
     pub fn claim_as_local_vnode(&self) -> Claim {
         match self.receiver() {
             None => Claim::Free,
-            Some(slot) if self.stop_receiver_and_wait(&slot) => Claim::Evicted,
+            Some(slot) if self.stop_receiver_and_wait(&slot, stop_reason::LOCAL_VNODE_CLAIMED) => Claim::Evicted,
             Some(_) => Claim::Stuck,
         }
     }
@@ -1368,7 +1397,7 @@ impl Host {
     /// freed, its stream path, variables and functions gone; archived and orphan, with C's record.
     pub fn cleanup_data_collection(&self) {
         if let Some(slot) = self.receiver() {
-            self.stop_receiver_and_wait(&slot);
+            self.stop_receiver_and_wait(&slot, stop_reason::HOST_CLEANUP);
         }
         // rrdcalc_delete_all(), before the charts go; the alert index and the alert log after them
         self.storage().health_event(HealthEvent::HostCleanup(self));
@@ -1385,8 +1414,18 @@ impl Host {
     }
 
     /// `stream_receiver_signal_to_stop_and_wait()`: true when the receiver let go within 2 s, else C's error record.
-    pub fn stop_receiver_and_wait(&self, slot: &Arc<ReceiverSlot>) -> bool {
-        slot.stop();
+    /// `reason` is the stopper's (a `STREAM_HANDSHAKE` code): forced on the receiver, which is then flagged and
+    /// its socket shut down, only when no stop was asked of it before. All under the receiver lock, as in C: the
+    /// reason is there before the flag (the receiver's own "signaled to stop" never takes its place), and a second
+    /// stopper does not rename the first's.
+    pub fn stop_receiver_and_wait(&self, slot: &Arc<ReceiverSlot>, reason: i32) -> bool {
+        {
+            let _receiver = lock(&self.receiver);
+            if !slot.stop_requested.load(Ordering::Acquire) {
+                slot.set_exit_reason(reason, true);
+                slot.stop();
+            }
+        }
         let attached = || self.receiver().is_some_and(|r| Arc::ptr_eq(&r, slot));
         for _ in 0..2000 {
             if !attached() {
@@ -1781,6 +1820,7 @@ impl Host {
             connections: self.receiver_connections.load(Ordering::Relaxed),
             last_connected_s: self.receiver_last_connected_s.load(Ordering::Relaxed),
             last_disconnected_s: self.receiver_last_disconnected_s.load(Ordering::Relaxed),
+            reason: self.receiver_reason.load(Ordering::Relaxed),
         }
     }
 
@@ -1823,8 +1863,9 @@ impl Host {
     }
 
     /// `rrdhost_clear_receiver()`: detaches `slot` if it is still the attached one; then, the receiver lock released
-    /// as C releases it, the host's sender is told the receiver left and its parents reset, with the receiver's
-    /// `reason` (a `STREAM_HANDSHAKE` code); then, with the lock taken again, replication is reset, the host's
+    /// as C releases it, the host's sender is told the receiver left and its parents reset, with the detach's
+    /// `reason` (a `STREAM_HANDSHAKE` code; what the host keeps is the slot's own exit reason, which may be
+    /// another); then, with the lock taken again, replication is reset, the host's
     /// connection times, health and orphan flag are set, and the slot empties last, as C sets `host->receiver = NULL`
     /// last (`stream-receiver.c:1495-1507`), so whoever waits for it (a stale receiver's replacement, a free) waits
     /// for those steps too. Until then a reader still sees the host's health as it was: a node list asked during
@@ -1865,6 +1906,8 @@ impl Host {
         let mut receiver = lock(&self.receiver);
         if receiver.as_ref().is_some_and(|r| Arc::ptr_eq(r, slot)) {
             self.replication_reset();
+            // the receiver's own exit reason, not this detach's `reason` (`stream-receiver.c:1498`)
+            self.receiver_reason.store(slot.exit_reason(), Ordering::Relaxed);
             self.receiver_last_connected_s.store(0, Ordering::Relaxed);
             self.receiver_last_disconnected_s
                 .store(now_realtime_s(), Ordering::Relaxed);
@@ -1895,6 +1938,18 @@ pub struct ReceiverStatus {
     /// When the last receiver left; 0 while one is attached, and for a host none attached to (but an ephemeral one,
     /// which counts as disconnected at its load).
     pub last_disconnected_s: i64,
+    /// A `STREAM_HANDSHAKE` code: the attached receiver's capabilities (positive: `CONNECTED`); after a detach, why
+    /// that receiver ended, by its own account (0 when it never said); 0 for a host no receiver attached to.
+    pub reason: i32,
+}
+
+/// The `STREAM_HANDSHAKE` codes the host itself stops a receiver with. The table of the codes and their texts is
+/// the streaming crate's (`reason.rs`), which holds these two equal to its own.
+pub mod stop_reason {
+    /// `STREAM_HANDSHAKE_SND_DISCONNECT_HOST_CLEANUP`.
+    pub const HOST_CLEANUP: i32 = -16;
+    /// `STREAM_HANDSHAKE_RCV_DISCONNECT_LOCAL_VNODE_CLAIMED`.
+    pub const LOCAL_VNODE_CLAIMED: i32 = -40;
 }
 
 /// Why `rrdhost_find_or_create()` returned NULL: the receiver answers busy.
@@ -3138,6 +3193,8 @@ mod tests {
     /// waited for quietly, one still attached after 2000 waits of 1 ms given up on with C's record.
     #[test]
     fn a_receiver_still_attached_after_two_seconds_is_given_up_on() {
+        // STREAM_HANDSHAKE_RCV_DISCONNECT_STALE_RECEIVER, as the receiver that finds a stale one stops it
+        const STALE_RECEIVER: i32 = -14;
         let host = Host::new("guid-w", false, info("w"));
         let slot = |shutdowns: &Arc<AtomicU64>| {
             let shutdowns = Arc::clone(shutdowns);
@@ -3154,7 +3211,7 @@ mod tests {
         let stuck = slot(&shutdowns);
         assert_eq!(host.set_receiver(Arc::clone(&stuck)), Attach::Attached);
         let started = std::time::Instant::now();
-        let (stopped, records) = netdata_agent_log::capture(|| host.stop_receiver_and_wait(&stuck));
+        let (stopped, records) = netdata_agent_log::capture(|| host.stop_receiver_and_wait(&stuck, STALE_RECEIVER));
         assert!(started.elapsed() >= std::time::Duration::from_secs(2));
         assert_eq!(
             (stopped, texts(&records)),
@@ -3181,10 +3238,97 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(20));
                 host.clear_receiver(&released, 0);
             });
-            netdata_agent_log::capture(|| host.stop_receiver_and_wait(&released))
+            netdata_agent_log::capture(|| host.stop_receiver_and_wait(&released, STALE_RECEIVER))
         });
         assert_eq!((stopped, texts(&records)), (true, vec![]));
         assert_eq!(shutdowns.load(Ordering::Relaxed), 2);
+    }
+
+    /// What the host keeps of why its receiver ended (`host->stream.rcv.status.reason`): at an attach the
+    /// receiver's capabilities (`stream-receiver.c:1413`); at a detach the receiver's own exit reason (`:1498`),
+    /// which is the first one given (`receiver_set_exit_reason()`, `:334-338`) unless a later one was forced, and
+    /// never the detach's own argument; 0 when the receiver never said (the detaches before its first response,
+    /// `stream-receiver-connection.c:325`). A host no receiver attached to has 0.
+    #[test]
+    fn the_host_keeps_why_its_receiver_ended() {
+        let host = Host::new("guid-c", false, info("c"));
+        assert_eq!(host.receiver_status().reason, 0);
+        let slot = |capabilities: u32| {
+            let link = ReceiverLink { capabilities, ..ReceiverLink::default() };
+            Arc::new(ReceiverSlot::new(1, Default::default(), link, Box::new(|| {})))
+        };
+
+        // the first reason given stays; a forced one replaces it; the detach stores what the slot holds
+        let first = slot(0x1234);
+        assert_eq!(host.set_receiver(Arc::clone(&first)), Attach::Attached);
+        assert_eq!((host.receiver_status().reason, first.exit_reason()), (0x1234, 0));
+        assert_eq!(first.set_exit_reason(-21, false), -21);
+        assert_eq!(first.set_exit_reason(-5, false), -21);
+        assert_eq!(first.exit_reason(), -21);
+        // still the capabilities while it is attached
+        assert_eq!(host.receiver_status().reason, 0x1234);
+        host.clear_receiver(&first, -9);
+        assert_eq!(host.receiver_status().reason, -21);
+
+        let forced = slot(7);
+        assert_eq!(host.set_receiver(Arc::clone(&forced)), Attach::Attached);
+        assert_eq!(host.receiver_status().reason, 7);
+        assert_eq!(forced.set_exit_reason(-21, false), -21);
+        assert_eq!(forced.set_exit_reason(-22, true), -22);
+        host.clear_receiver(&forced, -21);
+        assert_eq!(host.receiver_status().reason, -22);
+
+        // a receiver that never said why: 0, whatever the detach was called with
+        let silent = slot(7);
+        assert_eq!(host.set_receiver(Arc::clone(&silent)), Attach::Attached);
+        assert_eq!(silent.set_exit_reason(0, false), 0);
+        host.clear_receiver(&silent, -9);
+        assert_eq!(host.receiver_status().reason, 0);
+        // a detach of a slot that is not the attached one changes nothing
+        let attached = slot(9);
+        assert_eq!(host.set_receiver(Arc::clone(&attached)), Attach::Attached);
+        silent.set_exit_reason(-3, true);
+        host.clear_receiver(&silent, -3);
+        assert_eq!(host.receiver_status().reason, 9);
+    }
+
+    /// `stream_receiver_signal_to_stop_and_wait()` (`stream-receiver.c:1524-1530`): the stopper's reason is forced
+    /// on the receiver, over one it gave itself, and the receiver is flagged and its socket shut down. The
+    /// receiver's own "signaled to stop", which is not forced, does not replace the stopper's, and the detach
+    /// stores the stopper's in the host. A second stopper finds the stop asked and changes nothing, its reason
+    /// included.
+    #[test]
+    fn the_stopper_s_reason_is_forced_only_on_the_first_stop() {
+        let host = Host::new("guid-c", false, info("c"));
+        let shutdowns = Arc::new(AtomicU64::new(0));
+        let slot = {
+            let shutdowns = Arc::clone(&shutdowns);
+            let shutdown = Box::new(move || {
+                shutdowns.fetch_add(1, Ordering::Relaxed);
+            });
+            Arc::new(ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), shutdown))
+        };
+        assert_eq!(host.set_receiver(Arc::clone(&slot)), Attach::Attached);
+        // what the receiver said before anyone stopped it
+        assert_eq!(slot.set_exit_reason(-7, false), -7);
+        let stopped = std::thread::scope(|s| {
+            // the receiver's thread: it sees the flag, says so unforced, and detaches
+            s.spawn(|| {
+                while !slot.stop_requested.load(Ordering::Acquire) {
+                    std::thread::yield_now();
+                }
+                assert_eq!(slot.set_exit_reason(-21, false), stop_reason::HOST_CLEANUP);
+                host.clear_receiver(&slot, -21);
+            });
+            host.stop_receiver_and_wait(&slot, stop_reason::HOST_CLEANUP)
+        });
+        assert!(stopped);
+        assert_eq!((shutdowns.load(Ordering::Relaxed), slot.exit_reason()), (1, stop_reason::HOST_CLEANUP));
+        assert_eq!(host.receiver_status().reason, stop_reason::HOST_CLEANUP);
+
+        // a second stopper (the slot is detached, so it does not wait): no second shutdown, its reason not taken
+        assert!(host.stop_receiver_and_wait(&slot, stop_reason::LOCAL_VNODE_CLAIMED));
+        assert_eq!((shutdowns.load(Ordering::Relaxed), slot.exit_reason()), (1, stop_reason::HOST_CLEANUP));
     }
 
     /// `rrdhost_clear_receiver()`'s bookkeeping: the host orphaned, its replication counters zeroed, last connected 0

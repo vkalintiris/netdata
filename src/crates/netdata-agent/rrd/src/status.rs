@@ -25,7 +25,7 @@ pub enum DbLiveness {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IngestType {
     Localhost,
-    /// A vnode's (none exists here yet); parents report it in `stream_info`.
+    /// A vnode a plugin of this agent collects.
     Virtual,
     Child,
     Archived,
@@ -220,6 +220,9 @@ pub struct Ingest {
     /// Since when the host is in this state: its last attach or detach; the agent's start for a local host that
     /// ingests and for a host no receiver touched; the end of its data for an archived one.
     pub since_s: i64,
+    /// `host->stream.rcv.status.reason`, a `STREAM_HANDSHAKE` code: the attached receiver's capabilities (positive,
+    /// which reads `CONNECTED`), or why the last receiver ended; 0 for a host none attached to.
+    pub reason: i32,
     /// The items of the tree that are collected now (`host->collected.*_count`).
     pub metrics: u64,
     pub instances: u64,
@@ -257,9 +260,15 @@ impl Host {
     /// `rrdhost_status(host, now, &s, RRDHOST_STATUS_BASIC)`: a host that is not online is archived when no receiver
     /// attached to it since the agent started (one loaded from the metadata database), else offline.
     pub fn status_basic(&self, now: i64) -> HostStatus {
+        let flags = self.local_flags();
         let contexts = self.contexts();
-        let connections = self.receiver_connections();
-        self.status_decided(now, connections, || contexts.any_metric(), || contexts.any_metric_collected())
+        self.status_decided(
+            flags,
+            now,
+            || self.receiver_connections(),
+            || contexts.any_metric(),
+            || contexts.any_metric_collected(),
+        )
     }
 
     /// `rrdhost_status(host, now, &s, RRDHOST_STATUS_ALL)`, without the parts the module's note names. The host's
@@ -271,11 +280,16 @@ impl Host {
 
     /// [`Host::status`] of an agent that started at `start_s` (C's `netdata_start_time`, one value per process).
     fn status_started(&self, now: i64, start_s: i64) -> Status {
+        // C's order (`rrdhost_status()`): the flags, the database's counts, then the receiver's values in one hold.
+        // An attach writes its count and its time before it sets the collector online, all in one hold: with the
+        // flags read first, a child that reads online never has the count and the time of the connection before
+        let flags = self.local_flags();
         let counts = self.contexts().counts(|_| {});
         let receiver = self.receiver_status();
         let basic = self.status_decided(
+            flags,
             now,
-            receiver.connections,
+            || receiver.connections,
             || counts.metrics.available > 0,
             || counts.metrics.collected > 0,
         );
@@ -307,6 +321,7 @@ impl Host {
                 kind: basic.ingest_type,
                 status: basic.ingest_status,
                 since_s: if since_s == 0 { start_s } else { since_s },
+                reason: receiver.reason,
                 metrics: counts.metrics.collected,
                 instances: counts.instances.collected,
                 contexts: counts.contexts.collected,
@@ -325,19 +340,20 @@ impl Host {
     }
 
     /// What both statuses decide alike (`rrdhost_status_db()` and `rrdhost_status_ingest()`): the retention, the
-    /// database's status and liveness, the ingestion's type and status. `connections` is the host's count of
-    /// attached receivers; the two questions about its contexts tree are asked at most once each, where C loads its
-    /// counters, so the basic status can answer them without walking the tree whole.
+    /// database's status and liveness, the ingestion's type and status. `flags` is the caller's one load of the
+    /// local flags, taken before anything else it reads of the host (C's `flags` snapshot). `connections` is the
+    /// host's count of attached receivers; it and the two questions about the contexts tree are asked at most once
+    /// each, where C loads its counters, so the basic status answers without walking the tree whole.
     fn status_decided(
         &self,
+        flags: u8,
         now: i64,
-        connections: u32,
+        connections: impl Fn() -> u32,
         has_metric: impl Fn() -> bool,
         has_collected_metric: impl Fn() -> bool,
     ) -> HostStatus {
-        // one load of the local flags, as C's `flags` snapshot: the type and the online state agree while a vnode's
-        // run ends (ORPHAN, a word of its own here, is read apart)
-        let flags = self.local_flags();
+        // with one load the type and the online state agree while a vnode's run ends (ORPHAN, a word of its own
+        // here, is read apart)
         let is_virtual = flags & local_flags::VIRTUAL != 0;
         let is_local = self.is_localhost() || is_virtual;
         let collector_online = flags & local_flags::COLLECTOR_ONLINE != 0;
@@ -354,7 +370,7 @@ impl Host {
             DbStatus::Queryable
         };
         let ingest_status = if !online {
-            if connections == 0 {
+            if connections() == 0 {
                 IngestStatus::Archived
             } else {
                 IngestStatus::Offline
@@ -414,7 +430,13 @@ mod tests {
     }
 
     fn slot() -> Arc<ReceiverSlot> {
-        Arc::new(ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {})))
+        slot_with(0)
+    }
+
+    /// A receiver's slot whose connection negotiated `capabilities`.
+    fn slot_with(capabilities: u32) -> Arc<ReceiverSlot> {
+        let link = ReceiverLink { capabilities, ..ReceiverLink::default() };
+        Arc::new(ReceiverSlot::new(1, Default::default(), link, Box::new(|| {})))
     }
 
     /// The six fields of the basic status, taken from the full one.
@@ -473,6 +495,7 @@ mod tests {
                 kind: IngestType::Localhost,
                 status: IngestStatus::Initializing,
                 since_s: START,
+                reason: 0,
                 metrics: 0,
                 instances: 0,
                 contexts: 0,
@@ -526,13 +549,25 @@ mod tests {
         let gone = slot();
         assert_eq!(former.set_receiver(Arc::clone(&gone)), Attach::Attached);
         former.clear_receiver(&gone, 0);
-        assert!(former.receiver_last_disconnected_s() > START);
+        let left = former.receiver_last_disconnected_s();
+        assert!(left > START);
         former.set_virtual();
         former.set_collector_online();
+        // while its database initializes it is not yet "online", and C leaves it since its receiver's times
+        let s = full(&former, T0 + 50);
+        assert_eq!((s.ingest.kind, s.ingest.status), (IngestType::Virtual, IngestStatus::Initializing));
+        assert_eq!((s.ingest.id, s.ingest.since_s), (1, left));
         collect(&former);
         let s = full(&former, T0 + 50);
         assert_eq!((s.ingest.kind, s.ingest.status), (IngestType::Virtual, IngestStatus::Online));
         assert_eq!((s.ingest.id, s.ingest.since_s), (1, START));
+
+        // a vnode its plugin stopped collecting is no vnode any more: archived, since the end of its data
+        vnode.virtual_offline();
+        let s = full(&vnode, T0 + 50);
+        assert_eq!((s.ingest.kind, s.ingest.status), (IngestType::Archived, IngestStatus::Archived));
+        assert!(s.db.last_time_s >= T0 && s.db.last_time_s != T0 + 50, "{s:?}");
+        assert_eq!(s.ingest.since_s, s.db.last_time_s);
     }
 
     /// A host loaded from the metadata database that no receiver attached to is archived, since the end of its
@@ -547,6 +582,10 @@ mod tests {
         assert_eq!((s.ingest.kind, s.ingest.status), (IngestType::Archived, IngestStatus::Archived));
         assert_eq!((s.db.status, s.db.last_time_s), (DbStatus::Initializing, 0));
         assert_eq!((s.ingest.since_s, s.ingest.id), (START, 0));
+        // an ephemeral host counts as disconnected at its load; archived, it still reads since its data's end
+        empty.set_receiver_last_disconnected_s(T0 + 7);
+        let s = full(&empty, T0 + 50);
+        assert_eq!((s.ingest.status, s.ingest.since_s, s.ingest.reason), (IngestStatus::Archived, START, 0));
 
         let stored = hosts.add_archived("guid-a", info("a"), |_| {});
         collect(&stored);
@@ -566,13 +605,16 @@ mod tests {
     fn a_child_s_status_follows_its_receiver() {
         let hosts = Hosts::new(Host::new("guid-l", true, info("l")));
         let child = hosts.find_or_create("guid-c", DbMode::Ram, || info("c"), |_| {}).expect("created");
-        let attached = slot();
+        assert_eq!(full(&child, T0).ingest.reason, 0);
+        let attached = slot_with(0x41);
         assert_eq!(child.set_receiver(Arc::clone(&attached)), Attach::Attached);
         let connected = child.receiver_last_connected_s();
         assert!(connected > START);
         let s = full(&child, connected + 5);
         assert_eq!((s.ingest.kind, s.ingest.status), (IngestType::Child, IngestStatus::Initializing));
         assert_eq!((s.ingest.id, s.ingest.since_s, s.dyncfg), (1, connected, DyncfgStatus::Unavailable));
+        // the stored reason of an attached receiver is its capabilities
+        assert_eq!(s.ingest.reason, 0x41);
 
         collect(&child);
         let s = full(&child, connected + 5);
@@ -580,22 +622,46 @@ mod tests {
         assert_eq!((s.db.liveness, s.db.last_time_s, s.ingest.since_s), (DbLiveness::Live, connected + 5, connected));
         assert_eq!((s.db.metrics, s.ingest.metrics), (1, 1));
 
+        // the receiver says why it ends; the detach's own argument is not what the host keeps
+        attached.set_exit_reason(-6, false);
         child.clear_receiver(&attached, 0);
         child.contexts().worker_cycle();
         let disconnected = child.receiver_last_disconnected_s();
         assert!(disconnected >= connected);
         let s = full(&child, disconnected + 5);
         assert_eq!((s.ingest.kind, s.ingest.status), (IngestType::Archived, IngestStatus::Offline));
+        assert_eq!(s.ingest.reason, -6);
         assert_eq!((s.ingest.id, s.ingest.since_s, s.db.liveness), (1, disconnected, DbLiveness::Stale));
         assert_eq!((s.db.metrics, s.db.instances, s.db.contexts), (1, 1, 1));
         assert_eq!((s.ingest.metrics, s.ingest.instances, s.ingest.contexts), (0, 0, 0));
 
-        // it returns: its metrics are there and none is collected yet, so it replicates (`:181-184`), in the full
-        // status as in the basic one, with a second connection to its count
-        assert_eq!(child.set_receiver(slot()), Attach::Attached);
+        // it returns: its metrics are there and none is collected yet, so it replicates (`:179-182`), in the full
+        // status as in the basic one, with a second connection to its count and its new capabilities as the reason
+        assert_eq!(child.set_receiver(slot_with(0x43)), Attach::Attached);
         let s = full(&child, disconnected + 5);
         assert_eq!((s.ingest.kind, s.ingest.status, s.ingest.id), (IngestType::Child, IngestStatus::Replicating, 2));
         assert_eq!((s.db.status, s.db.liveness), (DbStatus::Queryable, DbLiveness::Stale));
-        assert_eq!((s.db.metrics, s.ingest.metrics), (1, 0));
+        assert_eq!((s.db.metrics, s.ingest.metrics, s.ingest.reason), (1, 0, 0x43));
+    }
+
+    /// A child that left and was then cleaned up to archive (`rrdhost_cleanup_data_collection_and_health()`,
+    /// `rrdhost.c:975-1031`): archived by type and offline by status still (the count of its connections is never
+    /// reset), since its disconnection, with the reason it left with. Its function registry is gone, so an
+    /// instance of it prints no `functions`, and so is its sender.
+    #[test]
+    fn a_child_cleaned_up_to_archive_keeps_its_count() {
+        let hosts = Hosts::new(Host::new("guid-l", true, info("l")));
+        let child = hosts.find_or_create("guid-c", DbMode::Ram, || info("c"), |_| {}).expect("created");
+        let gone = slot_with(0x41);
+        assert_eq!(child.set_receiver(Arc::clone(&gone)), Attach::Attached);
+        gone.set_exit_reason(-6, false);
+        child.clear_receiver(&gone, 0);
+        let disconnected = child.receiver_last_disconnected_s();
+        assert!(child.functions().exists());
+        child.cleanup_data_collection();
+        let s = full(&child, disconnected + 5);
+        assert_eq!((s.ingest.kind, s.ingest.status), (IngestType::Archived, IngestStatus::Offline));
+        assert_eq!((s.ingest.id, s.ingest.since_s, s.ingest.reason), (1, disconnected, -6));
+        assert!(!child.functions().exists() && child.upstream().is_none());
     }
 }

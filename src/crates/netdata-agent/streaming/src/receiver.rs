@@ -549,7 +549,7 @@ impl Receivers {
             }
         }
         if let (Some(slot), Some(host)) = (&stale, &existing) {
-            if host.stop_receiver_and_wait(slot) {
+            if host.stop_receiver_and_wait(slot, Reason::RCV_DISCONNECT_STALE_RECEIVER.0) {
                 stale = None;
                 nd_log!(
                     Source::Daemon,
