@@ -278,6 +278,11 @@ impl Alert {
         self.snapshot.read().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
+    /// What the API reads, read in place: for a reader that wants a part of it without a copy of its texts.
+    pub fn with_snapshot<T>(&self, read: impl FnOnce(&Snapshot) -> T) -> T {
+        read(&self.snapshot.read().unwrap_or_else(PoisonError::into_inner))
+    }
+
     /// The alert's expressions, for the health loop. Taken before the host's store and before any alert's live
     /// fields, never after them.
     pub(crate) fn expressions(&self) -> MutexGuard<'_, Expressions> {

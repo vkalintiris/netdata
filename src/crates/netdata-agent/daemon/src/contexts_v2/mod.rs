@@ -21,7 +21,7 @@ use netdata_agent_query::tables::{
     alert_statuses_to_json_array,
     contexts_options::{
         CONFIGURATIONS, DEBUG, DIMENSIONS, FAMILY, INSTANCES, JSON_LONG_KEYS, LABELS, LIVENESS, MCP, MINIFY,
-        PRIORITIES, RETENTION, RFC3339, TITLES, UNITS,
+        PRIORITIES, RETENTION, RFC3339, SUMMARY, TITLES, UNITS,
     },
     contexts_options_to_json_array, parse_alert_statuses, parse_contexts_options,
 };
@@ -410,7 +410,7 @@ fn render(shared: &Shared, req: &Request, mode: u32, wall_s: i64) -> Reply {
                     }
                     if let Some(alerts) = alerts.as_mut() {
                         // rrdcontext_matches_alert(): an instance's `ni` is the index the host is about to get
-                        if !alerts.context(rc, host, host_alerts.as_deref(), ni, &filters) {
+                        if !alerts.context(rc, host_alerts.as_deref(), ni, &filters) {
                             return ControlFlow::Continue(());
                         }
                     }
@@ -485,12 +485,15 @@ fn render(shared: &Shared, req: &Request, mode: u32, wall_s: i64) -> Reply {
     }
     if let Some(alerts) = &mut alerts {
         if mcp {
-            alerts.to_json_mcp(&mut w, req.options, req.cardinality_limit);
+            // an instance names its host, which is listed at the index the instance took
+            let hostname = |ni: usize| selected.get(ni).map(|host| host.hostname()).unwrap_or_default();
+            alerts.to_json_mcp(&mut w, req.options, req.cardinality_limit, hostname);
         } else {
-            // contexts_v2_alerts_to_json(): a summary's hosts are printed as their indexes in `nodes`
-            let node_index = |guid: &str| selected.iter().position(|host| host.machine_guid() == guid);
-            alerts.count_prototypes(&shared.health.prototypes());
-            alerts.to_json(&mut w, req.options, node_index);
+            // the rules' names count under their texts in a summary's groupings alone
+            if req.options & SUMMARY != 0 {
+                alerts.count_prototypes(&shared.health.prototypes());
+            }
+            alerts.to_json(&mut w, req.options);
         }
     }
     if mode & mode::SEARCH != 0 {
@@ -631,6 +634,15 @@ mod tests {
         );
         // scope_contexts and contexts are read only by the modes that have them
         assert_eq!(parse(b"contexts=x", mode::VERSIONS, 0).contexts, None);
+        // the alerts' own: the last `status` replaces the first, a word that is no status adds nothing, and the
+        // modes that are no alert mode read none of the three
+        let alerts_mode = mode::ALERTS | mode::NODES;
+        let req = parse(b"alert=a*&transition=t&status=clear,warning&status=critical|bogus", alerts_mode, 0);
+        let critical = netdata_agent_query::tables::alert_statuses::CRITICAL;
+        assert_eq!((req.alert, req.transition, req.status), (Some(b"a*".to_vec()), Some(b"t".to_vec()), critical));
+        assert_eq!(parse(b"status=bogus", alerts_mode, 0).status, 0);
+        let other = parse(b"alert=a&transition=t&status=clear", mode::CONTEXTS | mode::NODES, 0);
+        assert_eq!((other.alert, other.transition, other.status), (None, None, 0));
         // `q` is the search's alone; its last value counts
         assert_eq!(parse(b"q=a&q=b|c", mode::SEARCH | mode::NODES, 0).q, Some(b"b|c".to_vec()));
         assert_eq!(parse(b"q=a", mode::CONTEXTS | mode::NODES, 0).q, None);

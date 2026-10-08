@@ -1202,7 +1202,8 @@ mod tests {
     }
 
     /// Health on for localhost, with the chart `t.c` of `t.ctx` and three rules: `a_first` (of type `System`) and
-    /// `a_second` are linked on the chart, `a_third` (of type `System` too) is on a context no chart has. Returns the
+    /// `a_second` are linked on the chart, `a_third` (of type `System` too, and alone with a component, a class and a
+    /// recipient) is on a context no chart has. Returns the
     /// directory of the rules' file, the chart, and its two alerts in link order.
     fn two_alerts(
         s: &Shared,
@@ -1234,7 +1235,8 @@ mod tests {
         let text_of_rules = concat!(
             "template: a_first\n on: t.ctx\n type: System\n every: 10s\n calc: 1\n\n",
             "template: a_second\n on: t.ctx\n every: 10s\n calc: 1\n\n",
-            "template: a_third\n on: other.ctx\n type: System\n every: 10s\n calc: 1\n",
+            "template: a_third\n on: other.ctx\n type: System\n component: Comp3\n class: Class3\n to: third-role\n",
+            " every: 10s\n calc: 1\n",
         );
         std::fs::write(&rules, text_of_rules).unwrap();
         {
@@ -1309,8 +1311,8 @@ mod tests {
         // health on: two rules on one chart, and one more that no chart takes
         let (_rules, _chart, linked) = two_alerts(&s);
         let names: Vec<String> = linked.iter().map(|a| String::from_utf8_lossy(a.name()).into_owned()).collect();
-        assert_eq!(names.len(), 2, "{names:?}");
-        assert!(names.contains(&"a_first".to_owned()) && names.contains(&"a_second".to_owned()), "{names:?}");
+        // a chart's alerts are in the order their rules were read
+        assert_eq!(names, ["a_first", "a_second"]);
         for alert in &linked {
             let mut run = alert.run();
             run.status = if alert.name() == b"a_first" { Status::Warning } else { Status::Clear };
@@ -1324,7 +1326,11 @@ mod tests {
         let kept = |query: &[u8]| {
             let body = text(b"/api/v3/alerts", query);
             let alerts = between(&body, r#""alerts":["#, r#","alerts_by_type""#);
-            names.iter().filter(|name| alerts.contains(&format!(r#""nm":"{name}""#))).cloned().collect::<Vec<_>>()
+            // the names in the order the answer has them
+            let at = |name: &String| alerts.find(&format!(r#""nm":"{name}""#)).map(|at| (at, name.clone()));
+            let mut found: Vec<(usize, String)> = names.iter().filter_map(at).collect();
+            found.sort();
+            found.into_iter().map(|(_, name)| name).collect::<Vec<_>>()
         };
         // every alert, in link order; then by status and by name
         assert_eq!(kept(b"options=minify,summary"), names);
@@ -1352,6 +1358,19 @@ mod tests {
             r#""available":2}]"#
         );
         assert_eq!(by_type, system);
+        // the rule no chart takes is the one with a component, a class and a recipient: each is available once.
+        // The two rules on the chart name no recipient, so they run, and are available, under the default one
+        let of_rules = between(&body, r#""alerts_by_component":"#, r#","alerts_by_module""#);
+        let zeros = r#""cr":0,"wr":0,"cl":0,"er":0,"running":0,"running_silent":0,"available":1"#;
+        let alone = |name: &str| format!(r#"{{"name":"{name}",{zeros}}}"#);
+        let root = r#"{"name":"root","cr":0,"wr":1,"cl":1,"er":0,"running":2,"running_silent":0,"available":2}"#;
+        let third = [
+            format!(r#""alerts_by_component":[{}]"#, alone("Comp3")),
+            format!(r#""alerts_by_classification":[{}]"#, alone("Class3")),
+            format!(r#""alerts_by_recipient":[{root},{}]"#, alone("third-role")),
+        ]
+        .join(",");
+        assert_eq!(of_rules, third);
         let by_module = between(&body, r#""alerts_by_module":"#, r#","timings""#);
         let module = concat!(
             r#""alerts_by_module":[{"name":"[none]","cr":0,"wr":1,"cl":1,"er":0,"running":2,"#,
@@ -1436,6 +1455,21 @@ mod tests {
                 (2, 4000, "t.ctx", 0x7b),
                 (3, id_of(b"a_first"), "gone.ctx", 0x7c),
             ];
+            // 7e.. is of an alarm of a host this agent does not have, on no context
+            let ghost = format!(
+                "INSERT INTO health_log (health_log_id, host_id, alarm_id, name, chart) VALUES (4, X'{}', {}, 'a', \
+                 't.c')",
+                hex(&[0x99; 16]),
+                id_of(b"a_first")
+            );
+            c.execute(&ghost, ()).unwrap();
+            let detail = format!(
+                "INSERT INTO health_log_detail (health_log_id, unique_id, alarm_id, transition_id) VALUES (4, 4, {}, \
+                 X'{}')",
+                id_of(b"a_first"),
+                hex(&[0x7e; 16])
+            );
+            c.execute(&detail, ()).unwrap();
             for (log_id, alarm_id, context, byte) in entries {
                 let log = format!(
                     "INSERT INTO health_log (health_log_id, host_id, alarm_id, name, chart, chart_context) VALUES \
@@ -1468,6 +1502,11 @@ mod tests {
         // an id no entry has
         let (code, body) = asked_for("7d7d7d7d-7d7d-7d7d-7d7d-7d7d7d7d7d7d");
         assert_eq!((code, body.as_str()), (status::NOT_FOUND, ""));
+        // the entry's host becomes the node scope: an alert of that id on localhost is not asked for, and without a
+        // context in the entry no context pattern exists that could be what leaves localhost out
+        let (code, body) = asked_for("7e7e7e7e-7e7e-7e7e-7e7e-7e7e7e7e7e7e");
+        assert_eq!(code, status::OK, "{body}");
+        assert!(body.starts_with(r#"{"api":2,"nodes":[],"alerts":[],"alerts_by_type":["#), "{body}");
         // an alarm that is gone, and a context the host does not have: found, and nothing kept, so no host either
         for transition in ["7b7b7b7b-7b7b-7b7b-7b7b-7b7b7b7b7b7b", "7c7c7c7c-7c7c-7c7c-7c7c-7c7c7c7c7c7c"] {
             let (code, body) = asked_for(transition);

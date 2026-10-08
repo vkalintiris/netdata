@@ -15,8 +15,8 @@ use netdata_agent_health::prototype::Prototypes;
 use netdata_agent_query::keys::Keys;
 use netdata_agent_query::tables::alert_statuses::{CLEAR, CRITICAL, RAISED, UNDEFINED, UNINITIALIZED, WARNING};
 use netdata_agent_query::tables::contexts_options::{INSTANCES, JSON_LONG_KEYS, RFC3339, SUMMARY, VALUES};
+use netdata_agent_rrd::chart::Chart;
 use netdata_agent_rrd::contexts::Context;
-use netdata_agent_rrd::host::Host;
 use netdata_agent_rrd::labels::{Labels, SRC_AUTO};
 use netdata_agent_text::json::JsonWriter;
 use netdata_agent_text::print::uuid_lower_text;
@@ -112,7 +112,8 @@ struct Kept<'a> {
     context: &'a [u8],
     /// The chart's `_collect_module` label value, at most 127 bytes; `[unset]` for a chart without one.
     module: &'a [u8],
-    machine_guid: &'a str,
+    /// The index its host gets in `nodes`.
+    ni: usize,
     status: Status,
     value: f64,
 }
@@ -128,8 +129,8 @@ struct SummaryEntry {
     types: Labels,
     counts: Counts,
     instances: u64,
-    /// The machine GUIDs of the hosts with an alert of the name.
-    nodes: IndexSet<String>,
+    /// The hosts with an alert of the name, as their indexes in `nodes`.
+    nodes: IndexSet<usize>,
     /// The hashes of the rules its alerts come from.
     configs: IndexSet<[u8; 16]>,
 }
@@ -226,7 +227,7 @@ impl Summary {
         }
         entry.instances += 1;
         entry.counts.add(alert.status, alert.value);
-        entry.nodes.insert(alert.machine_guid.to_owned());
+        entry.nodes.insert(alert.ni);
         entry.configs.insert(*alert.hash);
 
         self.by_type.bump(alert.r#type, Some(alert));
@@ -244,8 +245,6 @@ struct Row {
     ati: usize,
     /// The index its host gets in `nodes` (the host is listed after its contexts are walked).
     ni: usize,
-    /// The host's name, which the MCP form prints where the plain form prints `ni`.
-    hostname: String,
     global_id: u64,
     name: Vec<u8>,
     context: String,
@@ -392,14 +391,52 @@ fn truncation_info(w: &mut JsonWriter, key: &str, what: &str, total: usize, show
     w.object_close();
 }
 
+/// What a kept alert takes from its chart: the context, the name (the id for a chart without one), the family, and
+/// the `_collect_module` label's value as the module grouping reads it: at most 127 bytes of it, `[unset]` for a
+/// chart without the label or with an empty one.
+struct ChartTexts {
+    context: String,
+    name: String,
+    family: String,
+    module: Vec<u8>,
+}
+
+impl ChartTexts {
+    fn of(chart: &Chart) -> Self {
+        chart.with_meta(|meta| {
+            let module = meta.labels.get(b"_collect_module").unwrap_or_default();
+            let module = if module.is_empty() { &b"[unset]"[..] } else { &module[..module.len().min(127)] };
+            ChartTexts {
+                context: meta.context.clone(),
+                name: meta.name.clone().unwrap_or_else(|| chart.id().to_owned()),
+                family: meta.family.clone(),
+                module: module.to_vec(),
+            }
+        })
+    }
+}
+
+/// What a kept alert takes from its published state, in one read.
+struct Live {
+    status: Status,
+    value: f64,
+    global_id: u64,
+    last_transition_id: [u8; 16],
+    last_status_change_value: f64,
+    last_status_change: i64,
+    last_updated: i64,
+    /// The alert's summary, its variables replaced; empty when no instance row is made.
+    summary: Vec<u8>,
+}
+
 impl Row {
     /// An instance with `mcp`: an array in the header's order, with the host's name where the plain form has its
     /// index, and both UUIDs as their text (a nil one too, where the plain form prints null).
-    fn to_json_mcp(&self, w: &mut JsonWriter, options: u64) {
+    fn to_json_mcp(&self, w: &mut JsonWriter, options: u64, hostname: &str) {
         let (instances, rfc3339) = (options & INSTANCES != 0, options & RFC3339 != 0);
         w.add_array_item_array();
         w.add_array_item_string(&self.name);
-        w.add_array_item_string(&self.hostname);
+        w.add_array_item_string(hostname);
         if instances {
             w.add_array_item_string(&self.context);
         }
@@ -459,7 +496,6 @@ impl Collector {
     pub(super) fn context(
         &mut self,
         rc: &Context,
-        host: &Host,
         alerts: Option<&HostAlerts>,
         ni: usize,
         filters: &Filters<'_>,
@@ -472,9 +508,9 @@ impl Collector {
             let Some(chart) = ri.chart() else {
                 continue;
             };
-            let meta = chart.meta();
-            let module = meta.labels.get(b"_collect_module").unwrap_or_default();
-            let module = if module.is_empty() { &b"[unset]"[..] } else { &module[..module.len().min(127)] };
+            // the chart's own texts are read once, for its first kept alert
+            let mut texts = None;
+            let wants_rows = self.rows.is_some();
             for alert in alerts.chart_alerts(&chart) {
                 let config = &alert.config;
                 let name = text(&config.name);
@@ -484,11 +520,24 @@ impl Collector {
                 if filters.alarm_id != 0 && filters.alarm_id != i64::from(alert.id) {
                     continue;
                 }
-                let state = alert.snapshot();
-                if !status_kept(filters.status, state.status) {
+                // one read of what the alert published; its summary is copied for an instance row alone
+                let live = alert.with_snapshot(|live| {
+                    status_kept(filters.status, live.status).then(|| Live {
+                        status: live.status,
+                        value: live.value,
+                        global_id: live.global_id,
+                        last_transition_id: live.last_transition_id,
+                        last_status_change_value: live.last_status_change_value,
+                        last_status_change: live.last_status_change,
+                        last_updated: live.last_updated,
+                        summary: live.summary.as_ref().filter(|_| wants_rows).cloned().unwrap_or_default(),
+                    })
+                });
+                let Some(live) = live else {
                     continue;
-                }
+                };
                 kept = true;
+                let of_chart = texts.get_or_insert_with(|| ChartTexts::of(&chart));
                 let ati = self.summary.as_mut().map_or(0, |summary| {
                     summary.add(&Kept {
                         name,
@@ -498,39 +547,38 @@ impl Collector {
                         component: text(&config.component),
                         r#type: text(&config.r#type),
                         hash: &config.hash_id,
-                        context: meta.context.as_bytes(),
-                        module,
-                        machine_guid: host.machine_guid(),
-                        status: state.status,
-                        value: state.value,
+                        context: of_chart.context.as_bytes(),
+                        module: &of_chart.module,
+                        ni,
+                        status: live.status,
+                        value: live.value,
                     })
                 });
                 if let Some(rows) = &mut self.rows {
                     rows.push(Row {
                         ati,
                         ni,
-                        hostname: host.hostname(),
-                        global_id: state.global_id,
+                        global_id: live.global_id,
                         name: name.to_vec(),
-                        context: meta.context.clone(),
+                        context: of_chart.context.clone(),
                         chart_id: chart.id().to_owned(),
-                        chart_name: meta.name.clone().unwrap_or_else(|| chart.id().to_owned()),
-                        status: state.status,
-                        family: meta.family.clone(),
+                        chart_name: of_chart.name.clone(),
+                        status: live.status,
+                        family: of_chart.family.clone(),
                         info: text(&config.info).to_vec(),
-                        summary: state.summary.unwrap_or_default(),
+                        summary: live.summary,
                         units: text(&config.units).to_vec(),
-                        last_transition_id: state.last_transition_id,
-                        last_status_change_value: state.last_status_change_value,
-                        last_status_change: state.last_status_change,
+                        last_transition_id: live.last_transition_id,
+                        last_status_change_value: live.last_status_change_value,
+                        last_status_change: live.last_status_change,
                         config_hash_id: config.hash_id,
                         source: text(&config.source).to_vec(),
                         recipient: text(&config.recipient).to_vec(),
                         r#type: text(&config.r#type).to_vec(),
                         component: text(&config.component).to_vec(),
                         classification: text(&config.classification).to_vec(),
-                        value: state.value,
-                        last_updated: state.last_updated,
+                        value: live.value,
+                        last_updated: live.last_updated,
                     });
                 }
             }
@@ -559,8 +607,8 @@ impl Collector {
     }
 
     /// `contexts_v2_alerts_to_json()`, without `mcp`: with `summary` the alerts by name and the five groupings,
-    /// with `instances` or `values` the instances. `node_index` gives the index of a listed host by its GUID.
-    pub(super) fn to_json(&self, w: &mut JsonWriter, options: u64, node_index: impl Fn(&str) -> Option<usize>) {
+    /// with `instances` or `values` the instances.
+    pub(super) fn to_json(&self, w: &mut JsonWriter, options: u64) {
         let k = Keys::with_long(options & JSON_LONG_KEYS != 0);
         if let Some(summary) = &self.summary {
             w.member_add_array(Some(b"alerts"));
@@ -568,7 +616,7 @@ impl Collector {
                 w.add_array_item_object();
                 w.member_add_uint64(k.alerts_index_id(), ati as u64);
                 w.member_add_array(Some(k.node_index().as_bytes()));
-                for ni in entry.nodes.iter().filter_map(|guid| node_index(guid)) {
+                for &ni in &entry.nodes {
                     w.add_array_item_int64(ni as i64);
                 }
                 w.array_close();
@@ -615,7 +663,14 @@ impl Collector {
 impl Collector {
     /// `contexts_v2_alerts_to_json_mcp()`: with `summary`, a header and one row per name, at most `limit` of them
     /// (0 for all), and what was cut; with `instances` or `values` the same for the instances. No groupings.
-    pub(super) fn to_json_mcp(&self, w: &mut JsonWriter, options: u64, limit: u64) {
+    /// `hostname` names a listed host by its index.
+    pub(super) fn to_json_mcp(
+        &self,
+        w: &mut JsonWriter,
+        options: u64,
+        limit: u64,
+        hostname: impl Fn(usize) -> String,
+    ) {
         let limit = usize::try_from(limit).unwrap_or(usize::MAX);
         let shown = |total: usize| if limit != 0 { total.min(limit) } else { total };
         if let Some(summary) = &self.summary {
@@ -656,7 +711,7 @@ impl Collector {
             w.array_close();
             w.member_add_array(Some(b"alert_instances"));
             for row in rows.iter().take(shown(rows.len())) {
-                row.to_json_mcp(w, options);
+                row.to_json_mcp(w, options, &hostname(row.ni));
             }
             w.array_close();
             if limit != 0 && rows.len() > limit {
@@ -747,7 +802,7 @@ mod tests {
     const HASH_B: [u8; 16] = [0xb2; 16];
 
     /// A kept alert of the rule `name` with these texts, on a chart of `context` collected by `module`, on the host
-    /// `guid`.
+    /// listed at `ni`.
     #[allow(clippy::too_many_arguments)]
     fn kept<'a>(
         name: &'a str,
@@ -755,7 +810,7 @@ mod tests {
         hash: &'a [u8; 16],
         context: &'a str,
         module: &'a str,
-        guid: &'a str,
+        ni: usize,
         status: Status,
         value: f64,
     ) -> Kept<'a> {
@@ -770,16 +825,15 @@ mod tests {
             hash,
             context: context.as_bytes(),
             module: module.as_bytes(),
-            machine_guid: guid,
+            ni,
             status,
             value,
         }
     }
 
-    fn printed(collector: &Collector, options: u64, nodes: &[&str]) -> String {
+    fn printed(collector: &Collector, options: u64) -> String {
         let mut w = JsonWriter::new(JsonOptions::MINIFY);
-        let index = |guid: &str| nodes.iter().position(|node| *node == guid);
-        collector.to_json(&mut w, options, index);
+        collector.to_json(&mut w, options);
         w.finalize();
         String::from_utf8(w.into_bytes()).unwrap()
     }
@@ -796,16 +850,18 @@ mod tests {
         let (bare, other) = ([""; 4], ["Sys tem", "CPU", "Errors", "silent"]);
         let (nan, undefined) = (f64::NAN, Status::Undefined);
         let atis = [
-            summary.add(&kept("cpu_high", texts, &HASH_A, "system.cpu", "stat", "guid-1", Status::Warning, 91.0)),
-            summary.add(&kept("ram_low", bare, &HASH_B, "system.ram", "meminfo", "guid-1", Status::Clear, 3.0)),
-            summary.add(&kept("cpu_high", texts, &HASH_A, "system.cpu", "stat", "guid-2", Status::Critical, 99.0)),
-            summary.add(&kept("cpu_high", other, &HASH_B, "cpu.cpu", "stat", "guid-2", undefined, nan)),
+            summary.add(&kept("cpu_high", texts, &HASH_A, "system.cpu", "stat", 1, Status::Warning, 91.0)),
+            summary.add(&kept("ram_low", bare, &HASH_B, "system.ram", "meminfo", 1, Status::Clear, 3.0)),
+            summary.add(&kept("cpu_high", texts, &HASH_A, "system.cpu", "stat", 2, Status::Critical, 99.0)),
+            summary.add(&kept("cpu_high", other, &HASH_B, "cpu.cpu", "stat", 2, undefined, nan)),
+            // a second warning, on a third host, of the first rule: a counter above 1, and more hosts than rules
+            summary.add(&kept("cpu_high", texts, &HASH_A, "system.cpu", "stat", 3, Status::Warning, 92.0)),
         ];
-        assert_eq!(atis, [0, 1, 0, 0]);
-        let text = printed(&collector, SUMMARY, &["guid-0", "guid-1", "guid-2"]);
+        assert_eq!(atis, [0, 1, 0, 0, 0]);
+        let text = printed(&collector, SUMMARY);
         let alerts = concat!(
-            r#"{"alerts":[{"ati":0,"ni":[1,2],"nm":"cpu_high","sum":"the summary of ${name}","cr":1,"wr":1,"#,
-            r#""cl":0,"er":1,"in":3,"nd":2,"cfg":2,"ctx":["system.cpu","cpu.cpu"],"cls":["Utilization","Errors"],"#,
+            r#"{"alerts":[{"ati":0,"ni":[1,2,3],"nm":"cpu_high","sum":"the summary of ${name}","cr":1,"wr":2,"#,
+            r#""cl":0,"er":1,"in":4,"nd":3,"cfg":2,"ctx":["system.cpu","cpu.cpu"],"cls":["Utilization","Errors"],"#,
             r#""cp":["CPU"],"#,
             r#""ty":["System","Sys_tem"],"to":["sysadmin","silent"]},"#,
             r#"{"ati":1,"ni":[1],"nm":"ram_low","sum":"the summary of ${name}","cr":0,"wr":0,"cl":1,"er":0,"#,
@@ -814,33 +870,49 @@ mod tests {
         assert!(text.starts_with(alerts), "{text}");
         // the groupings: an empty key is refused, a recipient that is exactly `silent` counts as silent
         let groupings = concat!(
-            r#""alerts_by_type":[{"name":"System","cr":1,"wr":1,"cl":0,"er":0,"running":2,"running_silent":0},"#,
+            r#""alerts_by_type":[{"name":"System","cr":1,"wr":2,"cl":0,"er":0,"running":3,"running_silent":0},"#,
             r#"{"name":"Sys tem","cr":0,"wr":0,"cl":0,"er":1,"running":1,"running_silent":1}],"#,
-            r#""alerts_by_component":[{"name":"CPU","cr":1,"wr":1,"cl":0,"er":1,"running":3,"running_silent":1}],"#,
+            r#""alerts_by_component":[{"name":"CPU","cr":1,"wr":2,"cl":0,"er":1,"running":4,"running_silent":1}],"#,
             r#""alerts_by_classification":["#,
-            r#"{"name":"Utilization","cr":1,"wr":1,"cl":0,"er":0,"running":2,"running_silent":0},"#,
+            r#"{"name":"Utilization","cr":1,"wr":2,"cl":0,"er":0,"running":3,"running_silent":0},"#,
             r#"{"name":"Errors","cr":0,"wr":0,"cl":0,"er":1,"running":1,"running_silent":1}],"#,
-            r#""alerts_by_recipient":[{"name":"sysadmin","cr":1,"wr":1,"cl":0,"er":0,"running":2,"running_silent":0},"#,
+            r#""alerts_by_recipient":[{"name":"sysadmin","cr":1,"wr":2,"cl":0,"er":0,"running":3,"running_silent":0},"#,
             r#"{"name":"silent","cr":0,"wr":0,"cl":0,"er":1,"running":1,"running_silent":1}],"#,
-            r#""alerts_by_module":[{"name":"stat","cr":1,"wr":1,"cl":0,"er":1,"running":3,"running_silent":1},"#,
+            r#""alerts_by_module":[{"name":"stat","cr":1,"wr":2,"cl":0,"er":1,"running":4,"running_silent":1},"#,
             r#"{"name":"meminfo","cr":0,"wr":0,"cl":1,"er":0,"running":1,"running_silent":0}]}"#,
         );
         assert_eq!(&text[alerts.len()..], groupings);
+        // the long keys of an entry and of a grouping
+        let long = printed(&collector, SUMMARY | JSON_LONG_KEYS);
+        let entry = concat!(
+            r#"{"alerts":[{"alerts_array_index_id":0,"nodes_array_index":[1,2,3],"alert":"cpu_high","#,
+            r#""summary":"the summary of ${name}","critical":1,"warning":2,"clear":0,"error":1,"instances_count":4,"#,
+            r#""nodes_count":3,"configurations_count":2,"contexts":["system.cpu","cpu.cpu"],"#,
+            r#""classifications":["Utilization","Errors"],"components":["CPU"],"types":["System","Sys_tem"],"#,
+            r#""recipients":["sysadmin","silent"]},"#,
+            r#"{"alerts_array_index_id":1,"nodes_array_index":[1],"alert":"ram_low","#
+        );
+        assert!(long.starts_with(entry), "{long}");
+        let grouping = concat!(
+            r#""alerts_by_type":[{"name":"System","critical":1,"warning":2,"clear":0,"error":0,"running":3,"#,
+            r#""running_silent":0},"#
+        );
+        assert!(long.contains(grouping), "{long}");
         // no summary asked: nothing is collected and nothing printed
         let none = Collector::new(0);
         assert!(none.summary.is_none() && none.rows.is_none());
-        assert_eq!(printed(&none, 0, &[]), "{}");
+        assert_eq!(printed(&none, 0), "{}");
         // asked and empty: the six arrays, empty
         let empty = concat!(
             r#"{"alerts":[],"alerts_by_type":[],"alerts_by_component":[],"alerts_by_classification":[],"#,
             r#""alerts_by_recipient":[],"alerts_by_module":[],"alert_instances":[]}"#
         );
-        assert_eq!(printed(&Collector::new(SUMMARY | VALUES), SUMMARY | VALUES, &[]), empty);
-        assert_eq!(printed(&Collector::new(INSTANCES), INSTANCES, &[]), r#"{"alert_instances":[]}"#);
+        assert_eq!(printed(&Collector::new(SUMMARY | VALUES), SUMMARY | VALUES), empty);
+        assert_eq!(printed(&Collector::new(INSTANCES), INSTANCES), r#"{"alert_instances":[]}"#);
         // a rule's name counts as available under its texts; without a summary nothing is counted
         let mut collector = Collector::new(SUMMARY);
         collector.count_prototypes(&Prototypes::default());
-        assert_eq!(printed(&collector, SUMMARY, &[]), empty.replace(r#","alert_instances":[]"#, ""));
+        assert_eq!(printed(&collector, SUMMARY), empty.replace(r#","alert_instances":[]"#, ""));
         let mut collector = Collector::new(VALUES);
         collector.count_prototypes(&Prototypes::default());
         assert!(collector.summary.is_none());
@@ -854,17 +926,25 @@ mod tests {
     fn the_mcp_form_is_headers_and_rows() {
         let printed = |collector: &Collector, options: u64, limit: u64| {
             let mut w = JsonWriter::new(JsonOptions::MINIFY);
-            collector.to_json_mcp(&mut w, options, limit);
+            collector.to_json_mcp(&mut w, options, limit, |ni| ["zero", "box"][ni].to_owned());
             w.finalize();
             String::from_utf8(w.into_bytes()).unwrap()
         };
         let mut collector = Collector::new(SUMMARY);
         let summary = collector.summary.as_mut().unwrap();
         let texts = ["System", "CPU", "Utilization", "sysadmin"];
-        summary.add(&kept("cpu_high", texts, &HASH_A, "system.cpu", "stat", "guid-1", Status::Warning, 91.0));
+        summary.add(&kept("cpu_high", texts, &HASH_A, "system.cpu", "stat", 1, Status::Warning, 91.0));
         let other = ["Net", "CPU", "", ""];
-        summary.add(&kept("cpu_high", other, &HASH_B, "cpu.cpu", "stat", "guid-2", Status::Clear, 1.0));
-        summary.add(&kept("ram_low", [""; 4], &HASH_B, "system.ram", "meminfo", "guid-1", Status::Critical, 3.0));
+        summary.add(&kept("cpu_high", other, &HASH_B, "cpu.cpu", "stat", 2, Status::Clear, 1.0));
+        // four more of the name, so that its seven numbers all differ: 1 critical, 3 warning, 2 clear, no error,
+        // of 6 alerts on 4 hosts from 5 rules
+        let rules: [[u8; 16]; 3] = [[3; 16], [4; 16], [5; 16]];
+        let (warning, clear) = (Status::Warning, Status::Clear);
+        let more = [(warning, 3, 0), (warning, 1, 1), (clear, 4, 2), (Status::Critical, 2, 0)];
+        for (status, ni, rule) in more {
+            summary.add(&kept("cpu_high", texts, &rules[rule], "system.cpu", "stat", ni, status, 1.0));
+        }
+        summary.add(&kept("ram_low", [""; 4], &HASH_B, "system.ram", "meminfo", 1, Status::Critical, 3.0));
         let header = concat!(
             r#"{"all_alerts_header":["Alert Name","Alert Summary","Metrics Contexts","Alert Classifications","#,
             r##""Alert Components","Alert Types","Notification Recipients","# of Critical Instances","##,
@@ -873,7 +953,7 @@ mod tests {
         );
         let cpu = concat!(
             r#"["cpu_high","the summary of ${name}",["system.cpu","cpu.cpu"],"Utilization","CPU",["System","Net"],"#,
-            r#""sysadmin",0,1,1,0,2,2,2]"#
+            r#""sysadmin",1,3,2,0,6,4,5]"#
         );
         let ram = r#"["ram_low","the summary of ${name}","system.ram",null,null,null,null,1,0,0,0,1,1,1]"#;
         for limit in [0, 2, 3] {
@@ -925,7 +1005,6 @@ mod tests {
         Row {
             ati: 2,
             ni: 1,
-            hostname: "box".into(),
             global_id: 77,
             name: b"cpu_high".to_vec(),
             context: "system.cpu".into(),
@@ -958,7 +1037,7 @@ mod tests {
     fn an_instance_prints_what_the_options_ask() {
         let printed = |row: &Row, options: u64| {
             let collector = Collector { summary: None, rows: Some(vec![row.clone()]) };
-            super::tests::printed(&collector, options, &[])
+            super::tests::printed(&collector, options)
         };
         // the text of a UUID whose sixteen bytes are all `byte`
         let uuid = |byte: &str| {
