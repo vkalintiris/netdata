@@ -4,8 +4,8 @@
 //!
 //! Not ported yet: `/mcp` and `/sse`, and the API commands other than `info`, `chart`, `charts`, `context`,
 //! `contexts`, `registry`, `data`, `dbengine_stats`, `function`, `functions`, `manage`, `me`, `nodes`, `progress`,
-//! `stream_info`, `stream_path`, `versions`, `alerts`, `alert_transitions` and health's (`alarms`, `alarm_log` and
-//! the others of its block of the table, and `badge.svg`).
+//! `stream_info`, `stream_path`, `versions`, `alerts`, `alert_transitions`, `q` and health's (`alarms`, `alarm_log`
+//! and the others of its block of the table, and `badge.svg`).
 //! `/netdata.conf` shows only the keys of the subsystems ported so far.
 
 use std::sync::Arc;
@@ -239,6 +239,13 @@ const API_V2: &[Command] = &[
         callback: |route, _, query| contexts_v2::contexts(route, query),
     },
     Command {
+        name: "q",
+        acl: acl::bits::METRICS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: |route, _, query| contexts_v2::q(route, query),
+    },
+    Command {
         name: "alerts",
         acl: acl::bits::ALERTS,
         access: access::ANONYMOUS_DATA,
@@ -382,6 +389,13 @@ const API_V3: &[Command] = &[
         access: access::ANONYMOUS_DATA,
         allow_subpaths: false,
         callback: |route, _, query| contexts_v2::contexts(route, query),
+    },
+    Command {
+        name: "q",
+        acl: acl::bits::METRICS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: |route, _, query| contexts_v2::q(route, query),
     },
     Command {
         name: "info",
@@ -1460,6 +1474,72 @@ mod tests {
             assert_eq!(code, status::OK, "{transition}: {body}");
             assert!(body.starts_with(r#"{"api":2,"nodes":[],"alerts":[],"alerts_by_type":["#), "{transition}: {body}");
         }
+    }
+
+    /// `/api/v2/q` and `/api/v3/q` (`api_v2_q()`): the nodes, the contexts that matched, the counters, the versions
+    /// and the agent, in that order. Without a context pattern a host is listed whatever matched; with one, only
+    /// for a context that matched. Without a word in `q` nothing is searched and every context is listed. `q` is
+    /// echoed with `debug`.
+    #[test]
+    fn q_is_routed_in_v2_and_v3() {
+        let s = shared();
+        let all = acl::bits::ALL_LISTENER_FEATURES;
+        let text = |path: &[u8], query: &[u8]| {
+            let r = asked(&s, path, query, all);
+            let shown = String::from_utf8_lossy(query).into_owned();
+            assert_eq!((r.code, r.content_type), (status::OK, ContentType::ApplicationJson), "{shown}");
+            assert!(r.no_cacheable, "{shown}");
+            String::from_utf8(r.body).unwrap()
+        };
+        let node = concat!(
+            r#""nodes":[{"mg":"0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e","nm":"box","ni":0,"#,
+            r#""st":{"ai":0,"code":200,"msg":""}}]"#
+        );
+        let (_rules, _chart, _linked) = two_alerts(&s);
+        s.hosts.localhost().contexts().process_queued();
+        for path in [&b"/api/v2/q"[..], b"/api/v3/q"] {
+            let shown = String::from_utf8_lossy(path).into_owned();
+            let body = text(path, b"q=ctx");
+            let top = ["api", "nodes", "contexts", "searches", "versions", "agents", "timings"];
+            assert_eq!(members(&body), top, "{shown}");
+            // the context of the one chart, by a part of its id, whatever the case
+            let body = text(path, b"q=T.CT&options=minify");
+            let head = format!(r#"{{"api":2,{node},"contexts":{{"t.ctx":{{"matched":["id"]}}}},"searches":{{"#);
+            assert!(body.starts_with(&head), "{shown}: {body}");
+            // nothing matches: no context; the host is listed as the node list lists it, until a context pattern
+            // makes it need a context that counts
+            let body = text(path, b"q=nomatch&options=minify");
+            let head = format!(r#"{{"api":2,{node},"contexts":{{}},"searches":{{"strings":"#);
+            assert!(body.starts_with(&head), "{shown}: {body}");
+            let body = text(path, b"q=nomatch&scope_contexts=t.*&options=minify");
+            assert!(body.starts_with(r#"{"api":2,"nodes":[],"contexts":{},"searches":{"strings":"#), "{shown}: {body}");
+            // nothing is searched: the context is listed with no match, and nothing was tested
+            for query in [&b"options=minify"[..], b"q=*&options=minify", b"q=,&options=minify"] {
+                let body = text(path, query);
+                let head = format!(
+                    concat!(
+                        r#"{{"api":2,{node},"contexts":{{"t.ctx":{{"matched":[]}}}},"#,
+                        r#""searches":{{"strings":0,"char":0,"total":0}},"versions":{{"#
+                    ),
+                    node = node
+                );
+                assert!(body.starts_with(&head), "{shown}: {body}");
+            }
+            let denied = server::permission_denied_acl();
+            let r = asked(&s, path, b"q=ctx", all & !acl::bits::METRICS);
+            assert_eq!((r.code, &r.body), (denied.code, &denied.body), "{shown}");
+            assert_eq!(asked(&s, path, b"q=ctx", acl::bits::METRICS).code, status::OK, "{shown}");
+        }
+        // the family, with the text that matched
+        let body = text(b"/api/v3/q", b"q=F&options=minify");
+        assert!(body.contains(r#""contexts":{"t.ctx":{"family":"f","matched":["families"]}},"searches":{"#), "{body}");
+        // `mcp`: neither `api` nor `matched` nor `timings`
+        let body = text(b"/api/v3/q", b"q=ctx&options=mcp");
+        assert_eq!(members(&body), ["nodes", "contexts", "searches", "versions", "agents"]);
+        // the echo
+        let echo: String = text(b"/api/v2/q", b"q=a|b&options=debug").split_whitespace().collect();
+        assert!(echo.contains(r#""mode":["versions","agents","nodes","search"],"#), "{echo}");
+        assert!(echo.contains(r#""filters":{"q":"a|b","after":0,"before":0}}"#), "{echo}");
     }
 
     /// `/api/v2/alert_transitions` and `/api/v3/alert_transitions` (`api_v2_alert_transitions()`). With an empty

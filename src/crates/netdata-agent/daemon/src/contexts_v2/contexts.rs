@@ -13,6 +13,7 @@ use netdata_agent_rrd::contexts::{Context, ContextState, flags, string_2way_merg
 use netdata_agent_text::json::JsonWriter;
 
 use super::labels::{AggregatedLabels, limited_items_to_json};
+use super::search::{Matches, per_context_limit};
 use super::{Request, Window};
 
 /// `MCP_INFO_CONTEXT_NEXT_STEPS` (`src/web/mcp/mcp.h`).
@@ -43,6 +44,10 @@ const MCP_INFO_TOO_MANY_CONTEXTS_GROUPED_IN_CATEGORIES: &str = "The response has
 minimize size.\nNext Steps: repeat the 'list_metrics' call with a pattern to match what is interesting, or run \
 'get_metrics_details' to get more information for the contexts of interest.";
 
+/// The `info` of a search whose contexts were cut, for an MCP caller.
+const MCP_INFO_SEARCH_CARDINALITY_LIMIT: &str =
+    "Cardinality limit reached. Use cardinality_limit parameter to see more results.";
+
 /// The `help` of the categorized output's `__info__`.
 const CATEGORIZED_HELP: &str = "Results grouped by category with samples. Use 'metrics' parameter with specific \
 patterns like 'system.*' to get full details for a category.";
@@ -65,6 +70,8 @@ struct Entry {
     instances: Option<IndexSet<String>>,
     dimensions: Option<IndexSet<String>>,
     labels: Option<AggregatedLabels>,
+    /// What of the context a search matched, over the hosts walked; nothing in the other modes.
+    matches: Matches,
 }
 
 impl Entry {
@@ -81,6 +88,7 @@ impl Entry {
             instances: None,
             dimensions: None,
             labels: None,
+            matches: Matches::default(),
         }
     }
 
@@ -217,6 +225,15 @@ fn limit(req: &Request) -> usize {
     req.cardinality_limit as usize
 }
 
+/// The `__truncated__` member that ends a `contexts` object cut at the cardinality limit.
+fn truncated_to_json(w: &mut JsonWriter, total: usize, returned: usize) {
+    w.member_add_object("__truncated__");
+    w.member_add_uint64("total_contexts", total as u64);
+    w.member_add_uint64("returned", returned as u64);
+    w.member_add_uint64("remaining", (total - returned) as u64);
+    w.object_close();
+}
+
 /// The category of a context id (`rrdcontext_categorize_and_output()`): the id up to its second dot, or up to its
 /// only dot, or the whole id; 255 bytes of it at most.
 ///
@@ -286,6 +303,42 @@ impl ContextsDict {
         self.entries[at].react(rc, options, window);
     }
 
+    /// The search's `dictionary_set()` of a host's context: inserted or merged as [`Self::add`] does, without the
+    /// lists, which are the contexts answer's alone, and with what the search matched of it on this host.
+    pub(super) fn add_searched(&mut self, rc: &Context, state: ContextState, options: u64, found: Matches) {
+        let new = Entry::new(state, rc.flags.get());
+        match self.entries.get_index_of(rc.id()) {
+            Some(at) => {
+                self.entries[at].merge(&new, options);
+                self.entries[at].matches.merge(found);
+            }
+            None => {
+                self.entries.insert(rc.id().to_owned(), Entry { matches: found, ..new });
+            }
+        }
+    }
+
+    /// `contexts_v2_search_results_to_json()`: the `contexts` member of a search, each context with what matched
+    /// of it, at most `cardinality` of them with what was cut after them, and the `info` text an MCP caller gets
+    /// when contexts were cut.
+    pub(super) fn search_to_json(&self, w: &mut JsonWriter, req: &Request) {
+        let (limit, total) = (limit(req), self.entries.len());
+        let mcp = req.options & MCP != 0;
+        let per = per_context_limit(limit, total);
+        w.member_add_object("contexts");
+        for (count, (id, entry)) in self.entries.iter().enumerate() {
+            if limit != 0 && count >= limit {
+                truncated_to_json(w, total, count);
+                break;
+            }
+            entry.matches.to_json(w, id, &entry.title, &entry.family, &entry.units, per, mcp);
+        }
+        w.object_close();
+        if mcp && limit != 0 && total > limit {
+            w.member_add_string("info", MCP_INFO_SEARCH_CARDINALITY_LIMIT);
+        }
+    }
+
     /// `contexts_v2_contexts_to_json()`: the `contexts` member, and the `info` text an MCP caller gets after it.
     /// `now` is the walk's clock, a collected context's last entry.
     pub(super) fn to_json(&self, w: &mut JsonWriter, req: &Request, now: i64) {
@@ -307,11 +360,7 @@ impl ContextsDict {
         for (count, (id, entry)) in self.entries.iter().enumerate() {
             if limit != 0 && count >= limit {
                 if object {
-                    w.member_add_object("__truncated__");
-                    w.member_add_uint64("total_contexts", total as u64);
-                    w.member_add_uint64("returned", count as u64);
-                    w.member_add_uint64("remaining", (total - count) as u64);
-                    w.object_close();
+                    truncated_to_json(w, total, count);
                 } else {
                     w.add_array_item_string(format!("... {} contexts more", total - count));
                 }
@@ -472,6 +521,120 @@ mod tests {
 
     const DEFAULTS: u64 = PRIORITIES | RETENTION | LIVENESS | FAMILY | UNITS;
     const LISTS: u64 = TITLES | LABELS | INSTANCES | DIMENSIONS;
+    /// The options of the search's routes.
+    const SEARCH: u64 = FAMILY | UNITS | TITLES | LABELS | INSTANCES | DIMENSIONS;
+
+    /// The search of these hosts' contexts for `q`, as the engine's walk runs it, printed: the `contexts` member
+    /// under `options` and `cardinality`, then `searches`.
+    fn searched(hosts: &[&Arc<Host>], q: Option<&str>, window: Window, options: u64, cardinality: u64) -> String {
+        use super::super::search::{Fts, search};
+        use netdata_agent_text::simple_pattern::SimplePattern;
+        let q = q.and_then(|q| SimplePattern::from_web_nocase_substring(q.as_bytes()));
+        let (mut dict, mut fts) = (ContextsDict::default(), Fts::default());
+        for host in hosts {
+            for rc in host.contexts().all() {
+                let state = rc.state();
+                let found = q.as_ref().map(|q| search(&rc, &state, q, SEARCH, window, &mut fts));
+                if found.as_ref().is_some_and(|found| !found.any()) {
+                    continue;
+                }
+                dict.add_searched(&rc, state, SEARCH, found.unwrap_or_default());
+            }
+        }
+        let mut w = JsonWriter::new(JsonOptions::MINIFY);
+        dict.search_to_json(&mut w, &request(options, cardinality));
+        fts.to_json(&mut w);
+        w.finalize();
+        String::from_utf8(w.into_bytes()).unwrap()
+    }
+
+    /// The answers C gave for the parity fixture (`/api/v2/q?scope_nodes=*&q=...`, the oracle's dumps of
+    /// 2026-10-07): what matched, the names stored, and the counters. A pattern's words are parts of a text,
+    /// whatever the case. The 15 tests of a miss: the context's id, family, title and units; `q.a`'s id and name
+    /// and its five metrics' ids with `a`'s name; `q.two`'s id and its two metrics' ids. With `a`, two ids match,
+    /// so their two names are not tested, and what is stored is the name. A label counts by what matched of it.
+    #[test]
+    fn the_search_answers_as_c_for_the_fixture() {
+        let child = host("11111111-1111-1111-1111-111111111111", &[(&Q_A, T - 60), (&Q_TWO, T - 60)]);
+        let answer = |q: &str| searched(&[&child], Some(q), NO_WINDOW, SEARCH, 0);
+        let searches = |strings: u32, chars: u32| {
+            format!(r#""searches":{{"strings":{strings},"char":{chars},"total":{}}}"#, strings + chars)
+        };
+        let alpha = r#"{"contexts":{"q.ctx":{"matched":["dimensions"],"dimensions":["alpha"]}},"#;
+        assert_eq!(answer("*alpha*"), format!("{alpha}{}}}", searches(15, 0)));
+        assert_eq!(answer("ALPHA"), format!("{alpha}{}}}", searches(15, 0)));
+        let a = concat!(
+            r#"{"contexts":{"q.ctx":{"family":"fam","matched":["families","instances","dimensions"],"#,
+            r#""instances":["q.q_a_name"],"dimensions":["alpha","a"]}},"#
+        );
+        assert_eq!(answer("a"), format!("{a}{}}}", searches(13, 0)));
+        let k = r#"{"contexts":{"q.ctx":{"matched":["labels"],"labels":{"k":["v1","v2"]}}},"#;
+        assert_eq!(answer("k"), format!("{k}{}}}", searches(15, 2)));
+        assert_eq!(answer("v"), format!("{k}{}}}", searches(15, 2)));
+        let v2 = r#"{"contexts":{"q.ctx":{"matched":["labels"],"labels":{"k":["v2"]}}},"#;
+        assert_eq!(answer("v2"), format!("{v2}{}}}", searches(15, 1)));
+        // nothing matches: the context is not stored, and every text was still tested
+        assert_eq!(answer("nomatch"), format!(r#"{{"contexts":{{}},{}}}"#, searches(15, 0)));
+        // the context's own texts, each of them and all together
+        let texts = concat!(
+            r#"{"contexts":{"q.ctx":{"title":"title [x]","family":"fam","units":"units","#,
+            r#""matched":["title","units","families"]}},"#
+        );
+        assert_eq!(answer("fam|units|title"), format!("{texts}{}}}", searches(15, 0)));
+        // no pattern, and a text without a word: every context is stored with no match and nothing is tested
+        let unsearched = format!(r#"{{"contexts":{{"q.ctx":{{"matched":[]}}}},{}}}"#, searches(0, 0));
+        assert_eq!(searched(&[&child], None, NO_WINDOW, SEARCH, 0), unsearched);
+        assert_eq!(answer(","), unsearched);
+        assert_eq!(answer("*"), unsearched);
+    }
+
+    /// The search across hosts, its window and its limits: a later host's names join the first's; with a window an
+    /// instance whose retention misses it is not searched (no slack here), so only the context's four texts are
+    /// (alone on its host, the chart's title is the context's, and it has the letter);
+    /// `cardinality` cuts the contexts and says so, with one more text for an MCP caller, who gets no `matched`.
+    #[test]
+    fn a_search_spans_hosts_and_obeys_the_window_and_the_limit() {
+        let other = TestChart { id: "other", name: Some("q_a_other"), dims: &[("o", None)], labels: &[], ..Q_A };
+        let child = host("11111111-1111-1111-1111-111111111111", &[(&Q_A, T - 60)]);
+        let child2 = host("22222222-2222-2222-2222-222222222222", &[(&other, T - 60)]);
+        let both = searched(&[&child, &child2], Some("q_a"), NO_WINDOW, SEARCH, 0);
+        let union = r#"{"contexts":{"q.ctx":{"matched":["instances"],"instances":["q.q_a_name","q.q_a_other"]}},"#;
+        assert!(both.starts_with(union), "{both}");
+
+        // the instance's data ends at the walk's clock (it is collected): a window after it misses it
+        let after = Window { range: Some((NOW + 1, NOW + 100)), now: NOW };
+        let missed = searched(&[&child], Some("a"), after, SEARCH, 0);
+        let texts_only = concat!(
+            r#"{"contexts":{"q.ctx":{"title":"title a","family":"fam","matched":["title","families"]}},"#,
+            r#""searches":{"strings":4,"char":0,"total":4}}"#
+        );
+        assert_eq!(missed, texts_only);
+        // a window that ends at the clock meets it, to the second
+        let meets = Window { range: Some((NOW, NOW + 100)), now: NOW };
+        assert!(searched(&[&child], Some("a"), meets, SEARCH, 0).contains(r#""instances":["q.q_a_name"]"#));
+
+        // two contexts, room for one
+        let second = TestChart { id: "s", name: None, context: "q.second", ..Q_A };
+        let two = host("33333333-3333-3333-3333-333333333333", &[(&Q_A, T - 60), (&second, T - 60)]);
+        let cut = searched(&[&two], Some("fam"), NO_WINDOW, SEARCH, 1);
+        let truncated = concat!(
+            r#"{"contexts":{"q.ctx":{"family":"fam","matched":["families"]},"#,
+            r#""__truncated__":{"total_contexts":2,"returned":1,"remaining":1}},"searches":{"#
+        );
+        assert!(cut.starts_with(truncated), "{cut}");
+        let mcp = searched(&[&two], Some("fam"), NO_WINDOW, SEARCH | MCP, 1);
+        let told = concat!(
+            r#"{"contexts":{"q.ctx":{"family":"fam"},"#,
+            r#""__truncated__":{"total_contexts":2,"returned":1,"remaining":1}},"#,
+            r#""info":"Cardinality limit reached. Use cardinality_limit parameter to see more results.","#,
+            r#""searches":{"#
+        );
+        assert!(mcp.starts_with(told), "{mcp}");
+        // both fit: no cut, and nothing told
+        let whole = searched(&[&two], Some("fam"), NO_WINDOW, SEARCH | MCP, 2);
+        let fits = r#"{"contexts":{"q.ctx":{"family":"fam"},"q.second":{"family":"fam"}},"searches":{"#;
+        assert!(whole.starts_with(fits), "{whole}");
+    }
 
     /// The answer C gave for the parity fixture with every list (`/api/v2/contexts?scope_nodes=*&options=titles,
     /// labels,instances,dimensions`, C against C, 2026-10-07): the `contexts` member's bytes, with the fixture's two
@@ -577,6 +740,7 @@ mod tests {
             instances: None,
             dimensions: None,
             labels: None,
+            matches: Matches::default(),
         };
         let merged = |mut old: Entry, new: &Entry, options: u64| {
             old.merge(new, options);

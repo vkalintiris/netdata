@@ -2,8 +2,9 @@
 //! `rrdcontext_to_json_v2()` and its host walk (`src/database/contexts/api_v2_contexts.c`, `query_scope.c`) for the
 //! modes the agent serves so far: `/api/v3/stream_path`, `/api/v2/info` (`/api/v3/info`), `/api/v2/functions`
 //! (`/api/v3/functions`), `/api/v2/versions` (`/api/v3/versions`), `/api/v2/nodes` (`/api/v3/nodes`),
-//! `/api/v2/contexts` (`/api/v3/contexts`), `/api/v2/alerts` (`/api/v3/alerts`) and `/api/v2/alert_transitions`
-//! (`/api/v3/alert_transitions`). Decisions D51, D92, D160, D231 and D234 in the status repository.
+//! `/api/v2/contexts` (`/api/v3/contexts`), `/api/v2/alerts` (`/api/v3/alerts`), `/api/v2/alert_transitions`
+//! (`/api/v3/alert_transitions`) and `/api/v2/q` (`/api/v3/q`). Decisions D51, D92, D160, D231 and D234 in the
+//! status repository.
 
 use std::ops::ControlFlow;
 use std::sync::Arc;
@@ -19,8 +20,8 @@ use netdata_agent_query::request::pairs;
 use netdata_agent_query::tables::{
     alert_statuses_to_json_array,
     contexts_options::{
-        CONFIGURATIONS, DEBUG, FAMILY, INSTANCES, JSON_LONG_KEYS, LIVENESS, MCP, MINIFY, PRIORITIES, RETENTION,
-        RFC3339, UNITS,
+        CONFIGURATIONS, DEBUG, DIMENSIONS, FAMILY, INSTANCES, JSON_LONG_KEYS, LABELS, LIVENESS, MCP, MINIFY,
+        PRIORITIES, RETENTION, RFC3339, TITLES, UNITS,
     },
     contexts_options_to_json_array, parse_alert_statuses, parse_contexts_options,
 };
@@ -46,6 +47,7 @@ mod contexts;
 mod functions;
 mod labels;
 mod nodes;
+mod search;
 mod transitions;
 
 use agents::agents;
@@ -104,6 +106,8 @@ struct Request {
     transition: Option<Vec<u8>>,
     /// `status`: the bits of the status words an alerts request keeps; 0 keeps every alert.
     status: u64,
+    /// `q`: the words a search looks for (the search mode).
+    q: Option<Vec<u8>>,
     /// `last`: how many transitions an `alert_transitions` request keeps; 1 when it is 0 or not given.
     last: u32,
     /// `anchor_gi`: the global id the kept transitions are newer than.
@@ -129,6 +133,7 @@ fn parse(query: &[u8], mode: u32, options: u64) -> Request {
                 req.scope_contexts = Some(value.to_vec())
             }
             b"contexts" if mode & context_modes != 0 => req.contexts = Some(value.to_vec()),
+            b"q" if mode & mode::SEARCH != 0 => req.q = Some(value.to_vec()),
             b"options" => req.options |= parse_contexts_options(value),
             b"after" => req.after = str2l(value),
             b"before" => req.before = str2l(value),
@@ -225,6 +230,9 @@ fn request_to_json(w: &mut JsonWriter, req: &Request, mode: u32) {
     }
     w.object_close();
     w.member_add_object("filters");
+    if mode & mode::SEARCH != 0 {
+        w.member_add_string_opt("q", text(&req.q).as_deref());
+    }
     let rfc3339 = req.options & RFC3339 != 0;
     w.member_add_time_t_formatted("after", req.after, rfc3339);
     w.member_add_time_t_formatted("before", req.before, rfc3339);
@@ -341,8 +349,11 @@ fn render(shared: &Shared, req: &Request, mode: u32, wall_s: i64) -> Reply {
     // query_scope_foreach_host() with rrdcontext_to_json_v2_add_host()
     let mut selected = Vec::new();
     let mut functions = Functions::default();
-    // C makes the dictionary for the search too (commit 6)
-    let mut dict = (mode & mode::CONTEXTS != 0).then(ContextsDict::default);
+    let mut dict = (mode & (mode::CONTEXTS | mode::SEARCH) != 0).then(ContextsDict::default);
+    // The search's words: parts of a text, whatever the case. Without a word (no `q`, `q=*`, only separators) there
+    // is no search: every context in scope is stored with no match.
+    let q = req.q.as_deref().and_then(SimplePattern::from_web_nocase_substring);
+    let mut fts = search::Fts::default();
     let mut versions = Versions::default();
     let walked = foreach_host(&hosts, scope_nodes.as_ref(), nodes.as_ref(), &mut versions, |host, queryable| {
         if !queryable {
@@ -392,6 +403,11 @@ fn render(shared: &Shared, req: &Request, mode: u32, wall_s: i64) -> Reply {
                     if !context_in_window(rc, &state, window) {
                         return ControlFlow::Continue(());
                     }
+                    // rrdcontext_to_json_v2_full_text_search(): a context nothing of which matches does not count
+                    let found = q.as_ref().map(|q| search::search(rc, &state, q, req.options, window, &mut fts));
+                    if found.as_ref().is_some_and(|found| !found.any()) {
+                        return ControlFlow::Continue(());
+                    }
                     if let Some(alerts) = alerts.as_mut() {
                         // rrdcontext_matches_alert(): an instance's `ni` is the index the host is about to get
                         if !alerts.context(rc, host, host_alerts.as_deref(), ni, &filters) {
@@ -399,7 +415,11 @@ fn render(shared: &Shared, req: &Request, mode: u32, wall_s: i64) -> Reply {
                         }
                     }
                     if let Some(dict) = dict.as_mut() {
-                        dict.add(rc, state, req.options, window);
+                        if mode & mode::SEARCH != 0 {
+                            dict.add_searched(rc, state, req.options, found.unwrap_or_default());
+                        } else {
+                            dict.add(rc, state, req.options, window);
+                        }
                     }
                     counted = true;
                     if stop_at_first { ControlFlow::Break(()) } else { ControlFlow::Continue(()) }
@@ -457,7 +477,11 @@ fn render(shared: &Shared, req: &Request, mode: u32, wall_s: i64) -> Reply {
         functions.to_json(&mut w, mcp);
     }
     if let Some(dict) = &dict {
-        dict.to_json(&mut w, req, window.now);
+        if mode & mode::SEARCH != 0 {
+            dict.search_to_json(&mut w, req);
+        } else {
+            dict.to_json(&mut w, req, window.now);
+        }
     }
     if let Some(alerts) = &mut alerts {
         if mcp {
@@ -468,6 +492,9 @@ fn render(shared: &Shared, req: &Request, mode: u32, wall_s: i64) -> Reply {
             alerts.count_prototypes(&shared.health.prototypes());
             alerts.to_json(&mut w, req.options, node_index);
         }
+    }
+    if mode & mode::SEARCH != 0 {
+        fts.to_json(&mut w);
     }
     if mode & mode::VERSIONS != 0 {
         // the host index's version as the answer is written
@@ -545,6 +572,18 @@ pub fn contexts(route: &Route<'_>, query: &[u8]) -> Reply {
     render(route.shared, &req, contexts_mode, now_realtime_s())
 }
 
+/// `api_v2_q()` (`/api/v2/q`, `/api/v3/q`): the full-text search of the contexts of the hosts in scope: each
+/// context one of whose texts holds a word of `q` (its id, title, family, units, its instances' and dimensions'
+/// ids and names, its labels' keys and values), with what matched of it; then how many texts were tested, the
+/// versions and the agent. The nodes are the node list's while no context pattern and no window is given, else
+/// the hosts with a context that matched. Without a word in `q` nothing is searched and every context in scope is
+/// listed. The host in the URL does not matter.
+pub fn q(route: &Route<'_>, query: &[u8]) -> Reply {
+    let search_mode = mode::SEARCH | mode::NODES | mode::AGENTS | mode::VERSIONS;
+    let req = parse(query, search_mode, FAMILY | UNITS | TITLES | LABELS | INSTANCES | DIMENSIONS);
+    render(route.shared, &req, search_mode, now_realtime_s())
+}
+
 /// `api_v2_nodes()` (`/api/v2/nodes`, `/api/v3/nodes`): the hosts in scope, each with its version, labels, system
 /// info and state, its health and its capabilities; the host in the URL does not matter.
 pub fn nodes(route: &Route<'_>, query: &[u8]) -> Reply {
@@ -592,6 +631,9 @@ mod tests {
         );
         // scope_contexts and contexts are read only by the modes that have them
         assert_eq!(parse(b"contexts=x", mode::VERSIONS, 0).contexts, None);
+        // `q` is the search's alone; its last value counts
+        assert_eq!(parse(b"q=a&q=b|c", mode::SEARCH | mode::NODES, 0).q, Some(b"b|c".to_vec()));
+        assert_eq!(parse(b"q=a", mode::CONTEXTS | mode::NODES, 0).q, None);
     }
 
     /// The parameters of `alert_transitions` alone: `last` in any of C's bases, 1 when it is 0 or missing;

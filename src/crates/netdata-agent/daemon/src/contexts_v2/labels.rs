@@ -34,18 +34,32 @@ pub(super) struct AggregatedLabels {
 }
 
 impl AggregatedLabels {
+    /// `rrdlabels_aggregated_add_label()`: a value joins its key's set.
+    pub(super) fn add(&mut self, name: &[u8], value: &[u8]) {
+        match self.keys.get_mut(name) {
+            Some(values) => {
+                if !values.contains(value) {
+                    values.insert(value.to_vec());
+                }
+            }
+            None => {
+                self.keys.insert(name.to_vec(), IndexSet::from([value.to_vec()]));
+            }
+        }
+    }
+
     /// `rrdlabels_aggregated_add_from_rrdlabels()`: each label's value joins its key's set.
     pub(super) fn add_from(&mut self, labels: &Labels) {
         for label in labels.iter() {
-            match self.keys.get_mut(&label.name) {
-                Some(values) => {
-                    if !values.contains(&label.value) {
-                        values.insert(label.value.clone());
-                    }
-                }
-                None => {
-                    self.keys.insert(label.name.clone(), IndexSet::from([label.value.clone()]));
-                }
+            self.add(&label.name, &label.value);
+        }
+    }
+
+    /// `rrdlabels_aggregated_merge()`: another aggregate's values join their keys' sets.
+    pub(super) fn merge(&mut self, other: AggregatedLabels) {
+        for (name, values) in other.keys {
+            for value in values {
+                self.add(&name, &value);
             }
         }
     }
@@ -98,5 +112,23 @@ mod tests {
         assert_eq!(printed(3), with_k(r#""v1","v2","v3""#));
         assert_eq!(printed(2), with_k(r#""v1","... 2 values more""#));
         assert_eq!(printed(1), with_k(r#""... 3 values more""#));
+    }
+
+    /// One pair at a time, and one aggregate into another: the kept keys and values stay first, each value once.
+    #[test]
+    fn pairs_and_aggregates_join_the_kept_sets() {
+        let mut kept = AggregatedLabels::default();
+        kept.add(b"k", b"v1");
+        kept.add(b"k", b"v1");
+        kept.add(b"k", b"v2");
+        let mut other = AggregatedLabels::default();
+        other.add(b"new", b"x");
+        other.add(b"k", b"v3");
+        other.add(b"k", b"v1");
+        kept.merge(other);
+        let mut w = JsonWriter::new(JsonOptions::MINIFY);
+        kept.to_json(&mut w, b"labels", 0);
+        w.finalize();
+        assert_eq!(w.into_bytes(), br#"{"labels":{"k":["v1","v2","v3"],"new":["x"]}}"#);
     }
 }
