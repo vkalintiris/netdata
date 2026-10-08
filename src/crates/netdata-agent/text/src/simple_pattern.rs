@@ -286,40 +286,30 @@ impl SimplePattern {
         SimplePattern { words }
     }
 
-    /// `string_to_simple_pattern()`: `None` for empty text or a lone `*`.
+    /// `string_to_simple_pattern()`: `None` for empty text, a lone `*`, or a list with no word in it (only
+    /// separators, a lone `!`, a lone `\`). C returns NULL for each, and its callers read NULL as "no pattern".
     pub fn from_web(text: &[u8]) -> Option<Self> {
-        is_valid_sp(text).then(|| {
-            Self::new(
-                text,
-                Separators::Bytes(DEFAULT_WEB_SEPARATORS),
-                SimplePatternMode::Exact,
-                true,
-            )
-        })
+        Self::web(text, SimplePatternMode::Exact, true)
     }
 
     /// `string_to_simple_pattern_nocase()`.
     pub fn from_web_nocase(text: &[u8]) -> Option<Self> {
-        is_valid_sp(text).then(|| {
-            Self::new(
-                text,
-                Separators::Bytes(DEFAULT_WEB_SEPARATORS),
-                SimplePatternMode::Exact,
-                false,
-            )
-        })
+        Self::web(text, SimplePatternMode::Exact, false)
     }
 
     /// `string_to_simple_pattern_nocase_substring()`.
     pub fn from_web_nocase_substring(text: &[u8]) -> Option<Self> {
-        is_valid_sp(text).then(|| {
-            Self::new(
-                text,
-                Separators::Bytes(DEFAULT_WEB_SEPARATORS),
-                SimplePatternMode::Substring,
-                false,
-            )
-        })
+        Self::web(text, SimplePatternMode::Substring, false)
+    }
+
+    /// The three macros' shape: `is_valid_sp()`, then `simple_pattern_create()` with the web separators, which gives
+    /// NULL for a list without a word.
+    fn web(text: &[u8], mode: SimplePatternMode, case_sensitive: bool) -> Option<Self> {
+        if !is_valid_sp(text) {
+            return None;
+        }
+        let pattern = Self::new(text, Separators::Bytes(DEFAULT_WEB_SEPARATORS), mode, case_sensitive);
+        (!pattern.is_empty()).then_some(pattern)
     }
 
     /// `true` when the list has no words (C returns `NULL`).

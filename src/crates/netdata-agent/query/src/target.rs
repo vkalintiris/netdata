@@ -1095,6 +1095,9 @@ mod tests {
         assert_eq!(walk(None, b"", b"", false, false), (false, all([false; 3])));
         // the callback stops it
         assert_eq!(walk(None, b"", b"", true, true), (true, listed(&[("ctx.a", true)])));
+        // a scope or a selector with no word in it is no pattern (C's constructor returns NULL for it)
+        assert_eq!(walk(Some(b"|"), b"|", b"", true, false), (false, all([true; 3])));
+        assert_eq!(walk(None, b"", b"|", true, false), (false, all([true; 3])));
     }
 
     fn v2(h: &Arc<Host>, query: &str) -> QueryTarget {

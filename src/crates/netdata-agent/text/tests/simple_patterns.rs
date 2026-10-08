@@ -140,3 +140,23 @@ fn case_sensitivity_applies_to_the_first_segment() {
         assert_eq!(p.matches(s.as_bytes()), expected, "{s:?}");
     }
 }
+
+/// `string_to_simple_pattern()` and its two kin give NULL for a text with no word in it (only separators, a lone
+/// `!`, a lone `\`), as for an empty text and a lone `*`, and C's callers read NULL as "no pattern". A text with a
+/// word beside the separators is a pattern.
+#[test]
+fn a_web_list_with_no_word_is_no_pattern() {
+    type FromWeb = fn(&[u8]) -> Option<SimplePattern>;
+    let constructors: [(&str, FromWeb); 3] = [
+        ("exact", SimplePattern::from_web),
+        ("nocase", SimplePattern::from_web_nocase),
+        ("nocase substring", SimplePattern::from_web_nocase_substring),
+    ];
+    for (name, from_web) in constructors {
+        for text in [&b""[..], b"*", b"|", b",", b"!", b"\\", b"|,|", b",\t\r\n"] {
+            assert!(from_web(text).is_none(), "{name}: {:?}", String::from_utf8_lossy(text));
+        }
+        let pattern = from_web(b"|abc,").expect("a word between separators");
+        assert!(pattern.matches(b"abc") && !pattern.matches(b"x"), "{name}");
+    }
+}

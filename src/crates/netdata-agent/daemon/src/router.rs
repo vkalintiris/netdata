@@ -1189,6 +1189,9 @@ mod tests {
             assert!(body.starts_with(&format!(r#"{{"api":2,{node},"contexts":{{}},"versions":{{"#)), "{shown}: {body}");
             let mcp = ["nodes", "contexts", "info", "versions", "agents"];
             assert_eq!(members(&text(path, b"options=mcp")), mcp, "{shown}");
+            // a selector with no word in it is no pattern: the host without a context is still listed
+            let body = text(path, b"options=minify&contexts=|");
+            assert!(body.starts_with(&format!(r#"{{"api":2,{node},"contexts":{{}},"versions":{{"#)), "{shown}: {body}");
 
             let denied = server::permission_denied_acl();
             let r = asked(&s, path, b"", all & !acl::bits::METRICS);
@@ -1246,6 +1249,10 @@ mod tests {
             assert_eq!(contexts(limit), format!(r#"{node},"contexts":{{{},{cut}}}"#, one("t.ctx")), "{limit}");
         }
         assert_eq!(contexts("contexts=nomatch"), both);
+        // a selector with no word in it (only separators, a lone `!`) is no pattern, as C's NULL
+        for no_word in ["scope_contexts=|", "contexts=,", "scope_nodes=,", "nodes=!"] {
+            assert_eq!(contexts(no_word), both, "{no_word}");
+        }
         assert_eq!(contexts("scope_contexts=u.ctx"), format!(r#"{node},"contexts":{{{}}}"#, one("u.ctx")));
         assert_eq!(contexts("scope_contexts=u.*"), format!(r#"{node},"contexts":{{{}}}"#, one("u.ctx")));
         let nothing = r#""nodes":[],"contexts":{}"#;
