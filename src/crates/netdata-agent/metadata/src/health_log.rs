@@ -1306,9 +1306,11 @@ impl MetaDb {
     }
 
     /// `sql_get_alert_configuration()` for several hashes: every rule's row, hash by hash in the order given,
-    /// under one hold of the connection. C joins a temporary table of the hashes to `alert_hash` and takes the
-    /// rows as SQLite's plan gives them, which for a list of hashes beside a table keyed by the hash is the order
-    /// the hashes went in (decision D234 F5 in the status repository). A hash without a row gives nothing; a row
+    /// under one hold of the connection. C joins a temporary table of the hashes to `alert_hash` without an
+    /// order and takes the rows as SQLite's plan gives them. A plan that scans the hashes and seeks each rule by
+    /// its key answers in the order the hashes went in, which is this order; whether C's plan is always that one
+    /// (with statistics that say `alert_hash` holds a few rows it may scan that table instead) is settled only
+    /// by a run (decision D234 F5 in the status repository). A hash without a row gives nothing; a row
     /// whose hash is no 16-byte blob is skipped, and one record counts them. `Err` when the statement cannot be
     /// prepared.
     #[allow(clippy::result_unit_err)]

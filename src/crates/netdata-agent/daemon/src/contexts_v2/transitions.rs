@@ -266,8 +266,11 @@ impl<'a> Collector<'a> {
                 self.operations.shifts += 1;
                 self.kept.pop_back();
             }
-            // C prepends its "last added" item here, which only on a full list is the row's copy: on a list with
-            // room it re-links an item the list already holds and loses the row. The copy is prepended always.
+            // C prepends its "last added" item here, which only on a full list is the row's copy. On a list with
+            // room it links an item the list already holds in front of the list, which makes the list a cycle: C
+            // then never answers, or answers with rows lost (DEFECTS in the status repository). The row's copy is
+            // prepended always. Where C has no answer this one is the port's own: the row goes first, whatever
+            // the ids after it.
             self.kept.push_front(Kept::of(row, machine_guid));
             self.last_added = 0;
             self.operations.prepend += 1;
@@ -288,13 +291,8 @@ impl<'a> Collector<'a> {
 
     /// The rule hashes of the kept rows, each once, in the rows' order: what `configurations` lists.
     pub(super) fn config_hashes(&self) -> Vec<[u8; 16]> {
-        let mut hashes: Vec<[u8; 16]> = Vec::new();
-        for kept in &self.kept {
-            if !hashes.contains(&kept.config_hash_id) {
-                hashes.push(kept.config_hash_id);
-            }
-        }
-        hashes
+        let hashes: indexmap::IndexSet<[u8; 16]> = self.kept.iter().map(|kept| kept.config_hash_id).collect();
+        hashes.into_iter().collect()
     }
 
     /// `contexts_v2_alert_transitions_to_json()`: `facets` (not with `mcp`), `transitions`, `configurations` when
@@ -585,11 +583,46 @@ mod tests {
     }
 
     /// A row newer than the list's (the statement by id has no order): on a full list it takes the place of the
-    /// oldest; on a list with room it goes first (C loses it there, see `keep`).
+    /// oldest; on a list with room it goes first (C has no answer there: its list becomes a cycle, see `keep`).
     #[test]
     fn a_newer_row_goes_first() {
         assert_eq!(after(1, 0, &[5, 9]), (vec![9], [2, 2, 1, 1, 0, 1], [1, 1, 0, 0, 0, 1, 0, 0]));
         assert_eq!(after(3, 0, &[5, 9]), (vec![9, 5], [2, 2, 2, 3, 0, 0], [1, 1, 0, 0, 0, 0, 0, 0]));
+    }
+
+    /// A row that is newer than the place last added to (rows read by a transition's id come in no order): the
+    /// search walks backwards from that place, and on a full list the oldest row falls off and the new one goes
+    /// to the head, not to its place by id. C's results, walked by hand.
+    #[test]
+    fn a_row_out_of_order_is_searched_backwards_and_goes_first() {
+        // 8 walks back from 5 past 7; the list is full, 5 falls off, 8 is the new head
+        assert_eq!(after(3, 0, &[9, 7, 5, 8]), (vec![8, 9, 7], [4, 4, 3, 3, 0, 1], [1, 1, 2, 1, 0, 1, 0, 0]));
+        // a full list of two: the place last added to is the tail and the row before it is newer, so no step back
+        assert_eq!(after(2, 0, &[9, 7, 8]), (vec![8, 9], [3, 3, 2, 2, 0, 1], [1, 1, 1, 0, 0, 1, 0, 0]));
+    }
+
+    /// Two rows with one global id at a full list: the second is appended and falls off, so the first to arrive
+    /// is the one that stays.
+    #[test]
+    fn of_two_rows_with_one_id_the_first_to_arrive_stays() {
+        let mut c = collector(&[], 2, 0);
+        for row in [row(9), row(8), bare(8)] {
+            c.row(&row);
+        }
+        let kept: Vec<_> = c.kept.iter().map(|kept| (kept.global_id, kept.transition_id)).collect();
+        assert_eq!(kept, [(9, [0x71; 16]), (8, [0x71; 16])]);
+        assert_eq!(kept_of(&c).2, [1, 0, 2, 0, 0, 1, 0, 0]);
+    }
+
+    /// The rule hashes the answer's `configurations` asks for: the kept rows', each once, in the rows' order.
+    #[test]
+    fn the_kept_rows_rule_hashes_are_listed_once_in_their_order() {
+        let mut c = collector(&[], 10, 0);
+        for row in [bare(9), row(8), bare(7), row(6)] {
+            c.row(&row);
+        }
+        assert_eq!(c.config_hashes(), [[0xbb; 16], [0xaa; 16]]);
+        assert!(collector(&[], 10, 0).config_hashes().is_empty());
     }
 
     /// The facets: every value a row shows is an option of its facet, in first-seen order, `unknown` for a text

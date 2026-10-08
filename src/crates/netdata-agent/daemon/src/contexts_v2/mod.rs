@@ -100,7 +100,8 @@ struct Request {
     /// `cardinality` or `cardinality_limit`: how many contexts, and items of each of their lists, are printed; 0 for
     /// all.
     cardinality_limit: u64,
-    /// `alert`: a pattern on the alerts' names (the two alert modes).
+    /// `alert`: for the alerts mode a pattern on the alerts' names; for the transitions mode one alert name,
+    /// compared whole by the statement.
     alert: Option<Vec<u8>>,
     /// `transition`: the id of one transition of the alert log (the two alert modes).
     transition: Option<Vec<u8>>,
@@ -248,7 +249,8 @@ fn request_to_json(w: &mut JsonWriter, req: &Request, mode: u32) {
 }
 
 /// `contexts_v2_alert_transitions_to_json()` with its query (`sql_alert_transitions()`): the alert log's
-/// transitions of the hosts selected, inside the window's two ends (none given: both 0, which no entry meets), of
+/// transitions of the hosts selected, inside the window's two ends (none given: both 0, which only an entry
+/// stored with a global id of 0 meets, as in C), of
 /// the request's `contexts` text as one chart context and of its `alert` text as one alert name, each compared
 /// whole; or, with `transition=`, the entries with that id whatever their host and time (a text that is no UUID is
 /// reported and finds nothing). Without a metadata database there is no entry. The rules of `options=config` are
