@@ -20,7 +20,7 @@ use netdata_agent_web::progress::Table;
 use netdata_agent_web::status;
 
 use crate::router::Route;
-use crate::server::Reply;
+use crate::server::{Reply, Shared};
 
 /// `nd_profile` as the data queries read it: the tiers in use and the agent's update every.
 fn profile(route: &Route<'_>) -> netdata_agent_query::request::Profile {
@@ -32,6 +32,35 @@ pub(crate) fn profile_of(storage: &netdata_agent_rrd::storage::StorageLayout) ->
     netdata_agent_query::request::Profile {
         storage_tiers: storage.storage_tiers() as u64,
         update_every: storage.update_every(),
+    }
+}
+
+/// The agent answering (`localhost`), held while a reply's writer reads it.
+pub(crate) struct Answerer<'a> {
+    localhost: &'a Host,
+    hostname: String,
+    nodes_hard_hash: Box<dyn Fn() -> u64 + 'a>,
+}
+
+impl<'a> Answerer<'a> {
+    pub(crate) fn new(shared: &'a Shared) -> Self {
+        let localhost: &Host = shared.hosts.localhost();
+        Answerer {
+            localhost,
+            hostname: localhost.hostname(),
+            nodes_hard_hash: Box::new(move || u64::from(shared.hosts.version())),
+        }
+    }
+
+    /// What the `agents` member and the versions of a v2 answer are written from: the host index's version
+    /// is read when it is written.
+    pub(crate) fn agent(&self) -> Agent<'_> {
+        Agent {
+            machine_guid: self.localhost.machine_guid(),
+            node_id: self.localhost.node_id(),
+            hostname: &self.hostname,
+            nodes_hard_hash: &*self.nodes_hard_hash,
+        }
     }
 }
 
@@ -144,15 +173,8 @@ fn execute(
         _ => {}
     }
 
-    let localhost = route.shared.hosts.localhost();
-    let hostname = localhost.hostname();
-    let nodes_hard_hash = || u64::from(route.shared.hosts.version());
-    let agent = Agent {
-        machine_guid: localhost.machine_guid(),
-        node_id: localhost.node_id(),
-        hostname: &hostname,
-        nodes_hard_hash: &nodes_hard_hash,
-    };
+    let answerer = Answerer::new(route.shared);
+    let agent = answerer.agent();
     let control = Control {
         received,
         interrupted: route.interrupted,

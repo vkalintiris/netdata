@@ -4,13 +4,14 @@
 use std::time::Instant;
 
 use netdata_agent_query::jsonwrap::timings;
-use netdata_agent_query::jsonwrap_v2::{Agent, agents_v2};
+use netdata_agent_query::jsonwrap_v2::agents_v2;
 use netdata_agent_query::tables::contexts_options::RFC3339;
 use netdata_agent_rrd::clock::now_realtime_s;
 use netdata_agent_rrd::retention::retention_stats;
 use netdata_agent_text::json::JsonWriter;
 
 use super::{Request, mode};
+use crate::data::Answerer;
 use crate::server::Shared;
 use crate::{capas, cloud};
 
@@ -25,15 +26,8 @@ pub(super) fn agents(
     received: Instant,
     executed: Instant,
 ) -> Instant {
-    let localhost = shared.hosts.localhost();
-    let hostname = localhost.hostname();
-    let nodes_hard_hash = || u64::from(shared.hosts.version());
-    let agent = Agent {
-        machine_guid: localhost.machine_guid(),
-        node_id: localhost.node_id(),
-        hostname: &hostname,
-        nodes_hard_hash: &nodes_hard_hash,
-    };
+    let answerer = Answerer::new(shared);
+    let agent = answerer.agent();
     let rfc3339 = req.options & RFC3339 != 0;
     let mut finished = executed;
     agents_v2(w, agent, now_s, rfc3339, true, |w| {

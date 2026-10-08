@@ -4,8 +4,8 @@
 //!
 //! Not ported yet: `/mcp` and `/sse`, and the API commands other than `info`, `chart`, `charts`, `context`,
 //! `contexts`, `registry`, `data`, `dbengine_stats`, `function`, `functions`, `manage`, `me`, `nodes`, `progress`,
-//! `stream_info`, `stream_path`, `versions`, `alerts`, `alert_transitions`, `q`, `settings`, version 1's `weights`
-//! and `metric_correlations`, and health's (`alarms`, `alarm_log` and the others of its block of the table, and
+//! `stream_info`, `stream_path`, `versions`, `alerts`, `alert_transitions`, `q`, `settings`, `weights`,
+//! `metric_correlations`, and health's (`alarms`, `alarm_log` and the others of its block of the table, and
 //! `badge.svg`).
 //! `/netdata.conf` shows only the keys of the subsystems ported so far.
 
@@ -249,6 +249,13 @@ const API_V2: &[Command] = &[
         callback: |route, _, query| data::v23(route, query, 2),
     },
     Command {
+        name: "weights",
+        acl: acl::bits::METRICS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: weights::v2_weights,
+    },
+    Command {
         name: "contexts",
         acl: acl::bits::METRICS,
         access: access::ANONYMOUS_DATA,
@@ -371,6 +378,13 @@ const API_V3: &[Command] = &[
         access: access::ANONYMOUS_DATA,
         allow_subpaths: false,
         callback: |route, _, query| data::v23(route, query, 3),
+    },
+    Command {
+        name: "weights",
+        acl: acl::bits::METRICS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: weights::v2_weights,
     },
     Command {
         name: "alerts",
@@ -1542,16 +1556,11 @@ mod tests {
         }
     }
 
-    /// `/api/v1/weights` (`api_v1_weights()`: anomaly rates by context) and `/api/v1/metric_correlations`
-    /// (`api_v1_metric_correlations()`: ks2 by chart), over a chart whose `up` rose and was anomalous in the last
-    /// minute while `flat` did not move: the answers' shape, C's refusals with their statuses and bodies, the 404
-    /// of an answer without a dimension, the reply's cache mark by the window, the access and the readiness gate.
-    #[test]
-    fn weights_are_routed_in_v1() {
+    /// Localhost of `s` gets chart `w.c` of `w.ctx` with a point a second for the 400 seconds before the clock (the
+    /// second returned): `up` rose from 1 to 9 and was anomalous for the last 70 of them, `flat` stayed at 5.
+    fn weights_fixture(s: &Shared) -> i64 {
         use netdata_agent_rrd::chart::{Algorithm, ChartSpec, ChartType};
         use netdata_agent_storage::storage_number::SN_FLAG_NOT_ANOMALOUS;
-        let s = shared();
-        let all = acl::bits::ALL_LISTENER_FEATURES;
         let host = s.hosts.localhost();
         let now = netdata_agent_rrd::clock::now_realtime_s();
         let (chart, _) = host.charts().create(&ChartSpec {
@@ -1581,6 +1590,18 @@ mod tests {
             flat.store_metric(at, 5.0, SN_FLAG_NOT_ANOMALOUS);
         }
         host.contexts().process_queued();
+        now
+    }
+
+    /// `/api/v1/weights` (`api_v1_weights()`: anomaly rates by context) and `/api/v1/metric_correlations`
+    /// (`api_v1_metric_correlations()`: ks2 by chart), over [`weights_fixture`]: the answers' shape, C's refusals
+    /// with their statuses and bodies, the 404 of an answer without a dimension, the reply's cache mark by the
+    /// window, the access and the readiness gate.
+    #[test]
+    fn weights_are_routed_in_v1() {
+        let s = shared();
+        let all = acl::bits::ALL_LISTENER_FEATURES;
+        let now = weights_fixture(&s);
         let json = |path: &[u8], query: &[u8]| {
             let r = asked(&s, path, query, all);
             assert_eq!(r.content_type, ContentType::ApplicationJson, "{}", String::from_utf8_lossy(query));
@@ -1635,7 +1656,7 @@ mod tests {
         // without any option zeros are no results: a window in which nothing was anomalous gives none
         assert_eq!(refused(b"after=-300&before=-200").0, status::NOT_FOUND);
 
-        // the access: the metrics feature; no subpath; later versions have no such commands yet
+        // the access: the metrics feature; no subpath
         let denied = server::permission_denied_acl();
         for path in [&b"/api/v1/weights"[..], b"/api/v1/metric_correlations"] {
             let r = asked(&s, path, b"after=-60&options=raw", all & !acl::bits::METRICS);
@@ -1646,6 +1667,114 @@ mod tests {
         // until the agent is ready: 503 with the request
         let starting = Shared { ready: || false, ..shared() };
         let r = asked(&starting, b"/api/v1/weights", b"after=-60", all);
+        assert_eq!((r.code, r.content_type), (status::SERVICE_UNAVAILABLE, ContentType::TextPlain));
+    }
+
+    /// `/api/v2/weights` and `/api/v3/weights` (`api_v2_weights()` for both): the values of the last minute over
+    /// [`weights_fixture`], as a row per metric with the rollups of its chart, context and node and the
+    /// dictionaries the rows index; grouped when the request groups; limited; with a baseline for the methods
+    /// that have one. An answer without a result is an answer here (a 404 in version 1). C's refusals, the
+    /// reply's cache mark by the window, the access and the readiness gate are version 1's.
+    #[test]
+    fn weights_are_routed_in_v2_and_v3() {
+        let s = shared();
+        let all = acl::bits::ALL_LISTENER_FEATURES;
+        let now = weights_fixture(&s);
+        let json = |path: &[u8], query: &[u8]| {
+            let r = asked(&s, path, query, all);
+            assert_eq!(r.content_type, ContentType::ApplicationJson, "{}", String::from_utf8_lossy(query));
+            (r.code, String::from_utf8(r.body).unwrap(), r.no_cacheable)
+        };
+        let guid = s.hosts.localhost().machine_guid().to_owned();
+
+        for path in [&b"/api/v2/weights"[..], b"/api/v3/weights"] {
+            // `up` is 9 and `flat` 5 for the whole minute; the points are the window's, so their sums and counts
+            // depend on the second the handler reads
+            let (code, body, no_cache) = json(path, b"after=-60&options=minify");
+            assert_eq!((code, no_cache), (status::OK, true), "{body}");
+            assert!(body.starts_with(r#"{"api":2,"request":{"method":"value","options":["#), "{body}");
+            assert!(body.contains(r#""selectors":{"nodes":"*","contexts":"*","#), "{body}");
+            let aggregations = r#""metrics":[{"group_by":["none"],"aggregation":"average"}]},"timeout":300000},"#;
+            assert!(body.contains(aggregations), "{body}");
+            assert!(body.contains(r#""view":{"format":"full","time_group":"average","window":{"after":"#), "{body}");
+            assert!(body.contains(r#""duration":59,"points":0}},"db":{"db_queries":"#), "{body}");
+            assert!(body.contains(r#""versions":{"routing_hard_hash":1,"nodes_hard_hash":"#), "{body}");
+            assert!(body.contains(r#""schema":{"type":"array","items":[{"name":"row_type","#), "{body}");
+            for row in [
+                r#""result":[[0,0,0,0,0,9,[9,9,9,"#,
+                "],[0,0,0,0,1,5,[5,5,5,",
+                "],[1,0,0,0,null,7,[5,7,9,",
+                "],[2,0,0,null,null,7,[5,7,9,",
+                "],[3,0,null,null,null,7,[5,7,9,",
+            ] {
+                assert!(body.contains(row), "{row}: {body}");
+            }
+            assert!(body.contains(&format!(r#"]],"dictionaries":{{"nodes":[{{"mg":"{guid}","#)), "{body}");
+            let dictionaries = concat!(
+                r#""contexts":[{"id":"w.ctx","units":"u","ci":0}],"instances":[{"id":"w.c","ii":0}],"#,
+                r#""dimensions":[{"id":"up","di":0},{"id":"flat","di":1}]},"agents":[{"mg":""#
+            );
+            assert!(body.contains(dictionaries), "{body}");
+            assert!(body.contains(r#""ai":0,"timings":{"prep_ms":0,"query_ms":"#), "{body}");
+            assert!(body.ends_with(r#"}}],"correlated_dimensions":2,"total_dimensions_count":2}"#), "{body}");
+        }
+
+        // grouped by dimension: a group each, with the five numbers of its weights before its point
+        let (code, body, _) = json(b"/api/v2/weights", b"after=-60&options=minify&group_by=dimension");
+        assert_eq!(code, status::OK, "{body}");
+        assert!(body.contains(r#""metrics":[{"group_by":["dimension"],"aggregation":"average"}]}"#), "{body}");
+        assert!(body.contains(r#""view":{"format":"grouped","#) && body.contains(r#""v_schema":{"#), "{body}");
+        assert!(body.contains(r#""result":[{"id":"up","v":[[9,9,9,9,1],[9,9,9,"#), "{body}");
+        assert!(body.contains(r#"]]},{"id":"flat","v":[[5,5,5,5,1],[5,5,5,"#), "{body}");
+        assert!(!body.contains("dictionaries"), "{body}");
+        // a limit of one: the larger value's row with its parents, and the summary
+        let (code, body, _) = json(b"/api/v3/weights", b"after=-60&options=minify&limit=1");
+        assert_eq!(code, status::OK, "{body}");
+        assert!(body.contains(r#""result":[[0,0,0,0,0,9,[9,9,9,"#) && !body.contains("[0,0,0,0,1,"), "{body}");
+        assert!(body.contains(r#""dimensions":[{"id":"up","di":0}]}"#), "{body}");
+        let summary = concat!(
+            r#""correlated_dimensions":2,"total_dimensions_count":2,"result_limit":{"limit":1,"total":2,"#,
+            r#""returned":1,"unit":"dimensions","truncated":true,"summary_scope":"all"}}"#
+        );
+        assert!(body.ends_with(summary), "{body}");
+        // a method with a baseline: its window in the request and the view, a second point in every row
+        let query = b"after=-60&baseline_after=-240&method=ks2&options=minify,raw";
+        let (code, body, _) = json(b"/api/v2/weights", query);
+        assert_eq!(code, status::OK, "{body}");
+        assert!(body.contains(r#""request":{"method":"ks2","#), "{body}");
+        assert!(body.contains(r#""tier":null},"baseline":{"baseline_after":"#), "{body}");
+        assert!(body.contains(r#"{"name":"baseline timeframe","type":"array","#), "{body}");
+        assert!(body.ends_with(r#"}}],"correlated_dimensions":2,"total_dimensions_count":2}"#), "{body}");
+        // an absolute window may be cached
+        let absolute = format!("after={}&before={}&options=minify", now - 60, now - 2);
+        let (code, body, no_cache) = json(b"/api/v2/weights", absolute.as_bytes());
+        assert_eq!((code, no_cache), (status::OK, false), "{body}");
+
+        // no result is an answer: the one query of a context no host has
+        let (code, body, _) = json(b"/api/v2/weights", b"after=-60&options=minify&scope_contexts=nope.ctx");
+        assert_eq!(code, status::OK, "{body}");
+        let empty =
+            r#""result":[],"dictionaries":{"nodes":[],"contexts":[],"instances":[],"dimensions":[]},"agents":["#;
+        assert!(body.contains(empty), "{body}");
+        assert!(body.ends_with(r#"}}],"correlated_dimensions":0,"total_dimensions_count":0}"#), "{body}");
+        // C's refusals
+        let limit = r#"{"error":"Weights limits must be nonnegative integers within the supported range."}"#;
+        let (code, body, _) = json(b"/api/v3/weights", b"after=-60&cardinality_limit=-1");
+        assert_eq!((code, body.as_str()), (status::BAD_REQUEST, limit));
+        let none = format!("after={now}&before={now}");
+        let (code, body, _) = json(b"/api/v2/weights", none.as_bytes());
+        assert_eq!((code, body.as_str()), (status::BAD_REQUEST, r#"{"error": "Invalid selected time-range." }"#));
+
+        // the access: the metrics feature; no subpath; until the agent is ready, 503 with the request
+        let denied = server::permission_denied_acl();
+        for path in [&b"/api/v2/weights"[..], b"/api/v3/weights"] {
+            let r = asked(&s, path, b"after=-60", all & !acl::bits::METRICS);
+            assert_eq!((r.code, &r.body), (denied.code, &denied.body));
+            assert_eq!(asked(&s, path, b"after=-60", acl::bits::METRICS).code, status::OK);
+        }
+        assert_ne!(asked(&s, b"/api/v2/weights/x", b"after=-60", all).code, status::OK);
+        let starting = Shared { ready: || false, ..shared() };
+        let r = asked(&starting, b"/api/v3/weights", b"after=-60", all);
         assert_eq!((r.code, r.content_type), (status::SERVICE_UNAVAILABLE, ContentType::TextPlain));
     }
 
