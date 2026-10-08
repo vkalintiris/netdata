@@ -1807,9 +1807,11 @@ impl Host {
 
     /// `rrdhost_clear_receiver()`: detaches `slot` if it is still the attached one; then, the receiver lock released
     /// as C releases it, the host's sender is told the receiver left and its parents reset, with the receiver's
-    /// `reason` (a `STREAM_HANDSHAKE` code); the slot empties last, as C sets `host->receiver = NULL` last
-    /// (`stream-receiver.c:1507`), so whoever waits for it (a stale receiver's replacement, a free) waits for those
-    /// steps too.
+    /// `reason` (a `STREAM_HANDSHAKE` code); then, with the lock taken again, replication is reset, the host's
+    /// connection times, health and orphan flag are set, and the slot empties last, as C sets `host->receiver = NULL`
+    /// last (`stream-receiver.c:1495-1507`), so whoever waits for it (a stale receiver's replacement, a free) waits
+    /// for those steps too. Until then a reader still sees the host's health as it was: a node list asked during
+    /// the detach prints it on, as C's does.
     pub fn clear_receiver(&self, slot: &Arc<ReceiverSlot>, reason: i32) {
         self.clear_receiver_then(slot, reason, || {});
     }
@@ -1826,28 +1828,17 @@ impl Host {
         self.local.fetch_and(!local_flags::COLLECTOR_ONLINE, Ordering::AcqRel);
         // object_state_deactivate(): the child's functions unavailable, still registered
         self.functions.activate();
-        self.receiver_last_connected_s.store(0, Ordering::Relaxed);
-        self.receiver_last_disconnected_s
-            .store(now_realtime_s(), Ordering::Relaxed);
-        // health stays off until the child returns (rrdhost_update() sets it again): the stale path entry has no
-        // HEALTH flag and a later metadata store writes it off
-        self.info.write().unwrap_or_else(PoisonError::into_inner).health_enabled = false;
         self.stamp_health_iteration();
-        self.orphan
-            .store(true, std::sync::atomic::Ordering::Release);
         self.contexts.record_first_time_changes(Taker::Receiver, false);
         // stream_path_child_disconnected()
         self.replace_stream_path(Vec::new());
-        self.replication_reset();
         drop(receiver);
         if let Some(up) = self.upstream() {
             up.receiver_left(reason);
         }
         self.contexts.child_disconnected();
         // rrdcalc_child_disconnected(), for a receiver whose health was on: the host's alerts go and are asked for
-        // again at its return. Told with no index lock held: a free of the host waits for this receiver. The
-        // host's health is off already here (C turns it off after this, with its lock taken again): the detach's
-        // work in health does not read it
+        // again at its return. Told with no index lock held: a free of the host waits for this receiver
         if slot.health {
             self.storage().health_event(HealthEvent::ChildDisconnected(self));
         }
@@ -1856,6 +1847,15 @@ impl Host {
         }
         let mut receiver = lock(&self.receiver);
         if receiver.as_ref().is_some_and(|r| Arc::ptr_eq(r, slot)) {
+            self.replication_reset();
+            self.receiver_last_connected_s.store(0, Ordering::Relaxed);
+            self.receiver_last_disconnected_s
+                .store(now_realtime_s(), Ordering::Relaxed);
+            // health stays off until the child returns (rrdhost_update() sets it again): the stale path entry has
+            // no HEALTH flag and a later metadata store writes it off
+            self.info.write().unwrap_or_else(PoisonError::into_inner).health_enabled = false;
+            self.orphan
+                .store(true, std::sync::atomic::Ordering::Release);
             *receiver = None;
             if let Some(count) = self.receivers_connected.get() {
                 count.fetch_sub(1, Ordering::Relaxed);
@@ -3352,8 +3352,8 @@ mod tests {
     /// was on, none from one whose health was off, none from a slot that is not the attached one. The event comes
     /// where C calls (`stream-receiver.c:1479-1485`): after the host's sender is told to stop, before its parents
     /// are reset, with the receiver lock released (health takes the host's alerts and charts there, and a new
-    /// receiver or a free of the host is not kept waiting for it). The host's health is off by then, which C turns
-    /// off only afterwards (`:1503`); nothing health does at the event reads it.
+    /// receiver or a free of the host is not kept waiting for it). The host's health is still on then: C turns it
+    /// off afterwards, with the lock taken again (`:1503`), and a node list asked meanwhile shows it on.
     #[test]
     fn health_hears_of_a_detach_only_from_a_receiver_whose_health_was_on() {
         use crate::storage::HealthEvent;
@@ -3384,7 +3384,8 @@ mod tests {
         host.set_health_enabled(true);
         assert_eq!(host.set_receiver(Arc::clone(&on)), Attach::Attached);
         host.clear_receiver(&on, -19);
-        assert_eq!(heard(), [("guid-c".to_owned(), false, true)]);
+        assert_eq!(heard(), [("guid-c".to_owned(), true, true)]);
+        assert!(!host.health_enabled());
         assert_eq!(calls(), [("receiver_left", -19), ("health told", 0), ("parents_reset", -19)]);
         host.clear_receiver(&on, -19);
         assert!(heard().is_empty() && calls().is_empty());
