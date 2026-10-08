@@ -10,7 +10,7 @@ use std::time::Instant;
 use netdata_agent_rrd::chart::{Chart, dim_flags};
 use netdata_agent_rrd::contexts::{self, Context, Instance, Metric, flags};
 use netdata_agent_rrd::host::Host;
-use netdata_agent_rrd::labels::PatternArray;
+use netdata_agent_rrd::labels::{Labels, PatternArray};
 use netdata_agent_rrd::storage::{AlertClass, ChartAlert, TierHandle};
 use netdata_agent_storage::dbengine::RRD_STORAGE_TIERS;
 use netdata_agent_storage::storage_point::StoragePoint;
@@ -286,6 +286,79 @@ pub fn matches_retention(after: i64, before: i64, first: i64, last: i64, ue: i64
     first - 2 * ue <= before && last + 2 * ue >= after
 }
 
+/// `query_instance_matches()`: an instance against an instances pattern: by its id; by its name when that is
+/// another text (or ids are not matched); by the two further names a request of its version may use (`id_fqdn`,
+/// `name_fqdn`: [`instance_fqdn`]); and by `id@node_id` when a node id is given. The first that is not NOT decides.
+pub fn instance_matches(
+    sp: &SimplePattern,
+    ri: &Instance,
+    id_fqdn: &str,
+    name_fqdn: &str,
+    node_id: Option<&str>,
+    match_ids: bool,
+    match_names: bool,
+) -> bool {
+    let m = |s: &str| sp.matches_extract(s.as_bytes(), 0).0;
+    let name = ri.state().name;
+    let mut r = if match_ids {
+        m(ri.id())
+    } else {
+        SimplePatternResult::NotMatched
+    };
+    if r == SimplePatternResult::NotMatched && match_names && (name != ri.id() || !match_ids) {
+        r = m(&name);
+    }
+    if r == SimplePatternResult::NotMatched && match_ids {
+        r = m(id_fqdn);
+    }
+    if r == SimplePatternResult::NotMatched && match_names {
+        r = m(name_fqdn);
+    }
+    if r == SimplePatternResult::NotMatched
+        && match_ids
+        && let Some(node_id) = node_id
+    {
+        r = m(&format!("{}@{node_id}", ri.id()));
+    }
+    r == SimplePatternResult::MatchedPositive
+}
+
+/// A metric against a dimensions pattern: by its id, then by its name when that is another text (or ids are not
+/// matched).
+pub fn dimension_matches(sp: &SimplePattern, rm: &Metric, match_ids: bool, match_names: bool) -> SimplePatternResult {
+    let name = rm.state().name;
+    let mut r = if match_ids {
+        sp.matches_extract(rm.id().as_bytes(), 0).0
+    } else {
+        SimplePatternResult::NotMatched
+    };
+    if r == SimplePatternResult::NotMatched && match_names && (name != rm.id() || !match_ids) {
+        r = sp.matches_extract(name.as_bytes(), 0).0;
+    }
+    r
+}
+
+/// The two further names of an instance (`query_instance_id_fqdn()`, `query_instance_name_fqdn()`): for a request
+/// of version 2 and above `id@machine_guid` and `name@hostname`, each cut as C's 1200-byte buffer cuts it; before
+/// that the id and the name themselves.
+pub fn instance_fqdn(version: u8, ri: &Instance, name: &str, host: &Host) -> (String, String) {
+    if version >= 2 {
+        (
+            bounded(format!("{}@{}", ri.id(), host.machine_guid())),
+            bounded(format!("{name}@{}", host.hostname())),
+        )
+    } else {
+        (ri.id().to_string(), name.to_string())
+    }
+}
+
+/// `query_instance_matches_labels()`: an instance's labels against the label-key pattern and the label array, each
+/// when given.
+pub fn labels_match(labels: &Labels, key: Option<&SimplePattern>, array: Option<&PatternArray>) -> bool {
+    key.is_none_or(|k| labels.match_simple_pattern_parsed(k, 0).is_positive())
+        && array.is_none_or(|a| a.label_match(labels, b':'))
+}
+
 struct Walk<'a> {
     req: &'a DataRequest,
     /// The request's `scope_contexts` and `contexts` patterns, built once for every host's walk.
@@ -310,7 +383,7 @@ fn pattern(v: &Option<Vec<u8>>) -> Option<SimplePattern> {
 }
 
 impl Walk<'_> {
-    /// `query_instance_matches()`: the first match that is not NOT decides.
+    /// [`instance_matches`] with the request's two matching flags.
     fn instance_matches(
         &self,
         sp: &SimplePattern,
@@ -319,49 +392,12 @@ impl Walk<'_> {
         qi_name: &str,
         node_id: Option<&str>,
     ) -> bool {
-        let m = |s: &str| sp.matches_extract(s.as_bytes(), 0).0;
-        let name = ri.state().name;
-        let mut r = if self.match_ids {
-            m(ri.id())
-        } else {
-            SimplePatternResult::NotMatched
-        };
-        if r == SimplePatternResult::NotMatched
-            && self.match_names
-            && (name != ri.id() || !self.match_ids)
-        {
-            r = m(&name);
-        }
-        if r == SimplePatternResult::NotMatched && self.match_ids {
-            r = m(qi_id);
-        }
-        if r == SimplePatternResult::NotMatched && self.match_names {
-            r = m(qi_name);
-        }
-        if r == SimplePatternResult::NotMatched
-            && self.match_ids
-            && let Some(node_id) = node_id
-        {
-            r = m(&format!("{}@{node_id}", ri.id()));
-        }
-        r == SimplePatternResult::MatchedPositive
+        instance_matches(sp, ri, qi_id, qi_name, node_id, self.match_ids, self.match_names)
     }
 
-    /// Id then name, as the dimension patterns match.
+    /// [`dimension_matches`] with the request's two matching flags.
     fn dimension_matches(&self, sp: &SimplePattern, rm: &Metric) -> SimplePatternResult {
-        let name = rm.state().name;
-        let mut r = if self.match_ids {
-            sp.matches_extract(rm.id().as_bytes(), 0).0
-        } else {
-            SimplePatternResult::NotMatched
-        };
-        if r == SimplePatternResult::NotMatched
-            && self.match_names
-            && (name != rm.id() || !self.match_ids)
-        {
-            r = sp.matches_extract(name.as_bytes(), 0).0;
-        }
-        r
+        dimension_matches(sp, rm, self.match_ids, self.match_names)
     }
 
     /// Retention from the contexts tree, for dimensions that are counted but not queried.
@@ -545,19 +581,14 @@ impl Walk<'_> {
         f(&mut self.qt.nodes[node].metrics);
     }
 
+    /// The instance's labels against the label-key pattern and the scope's or the selector's label array.
     fn labels_match(&self, ri: &Instance, scope: bool) -> bool {
-        let labels = ri.labels();
-        let key_ok = self
-            .qt
-            .chart_label_key
-            .as_ref()
-            .is_none_or(|k| labels.match_simple_pattern_parsed(k, 0).is_positive());
         let array = if scope {
             &self.scope_labels
         } else {
             &self.labels
         };
-        key_ok && array.as_ref().is_none_or(|a| a.label_match(&labels, b':'))
+        labels_match(&ri.labels(), self.qt.chart_label_key.as_ref(), array.as_ref())
     }
 
     /// One instance: scope checks, queryability, its dimensions, pruning.
@@ -575,14 +606,7 @@ impl Walk<'_> {
         let host = Arc::clone(&self.qt.nodes[node].host);
         let node_id = self.qt.nodes[node].node_id.clone();
         let state = ri.state();
-        let (id_fqdn, name_fqdn) = if self.req.version >= 2 {
-            (
-                bounded(format!("{}@{}", ri.id(), host.machine_guid())),
-                bounded(format!("{}@{}", state.name, host.hostname())),
-            )
-        } else {
-            (ri.id().to_string(), state.name.clone())
-        };
+        let (id_fqdn, name_fqdn) = instance_fqdn(self.req.version, ri, &state.name, &host);
         if !chart_path {
             if let Some(sp) = &self.scope_instances
                 && !self.instance_matches(sp, ri, &id_fqdn, &name_fqdn, node_id.as_deref())
@@ -831,6 +855,94 @@ pub fn foreach_context<B>(
     ControlFlow::Continue(())
 }
 
+/// `rrdcontext_retention_match()`: whether a context's retention meets a window, with one second as the update
+/// every of the slack; a collected context reaches the window's end when its stored end is before it.
+pub fn context_retention_matches(rc: &Context, after: i64, before: i64) -> bool {
+    let state = rc.state();
+    let last = if rc.flags.is_collected() {
+        before.max(state.last_time_s)
+    } else {
+        state.last_time_s
+    };
+    matches_retention(after, before, state.first_time_s, last, 1)
+}
+
+/// What `weights_foreach_rrdmetric_in_context()` selects by: a request's patterns, compiled, with its version
+/// (which decides the further names of an instance) and C's two matching flags.
+#[derive(Default)]
+pub struct MetricFilters {
+    pub version: u8,
+    pub match_ids: bool,
+    pub match_names: bool,
+    pub scope_instances: Option<SimplePattern>,
+    pub scope_labels: Option<PatternArray>,
+    pub scope_dimensions: Option<SimplePattern>,
+    pub instances: Option<SimplePattern>,
+    pub chart_label_key: Option<SimplePattern>,
+    pub labels: Option<PatternArray>,
+    pub alerts: Option<SimplePattern>,
+    pub dimensions: Option<SimplePattern>,
+}
+
+/// `weights_foreach_rrdmetric_in_context()`: the metrics of one context of `host` that the filters leave, the
+/// instances in creation order and each one's metrics in theirs. Per instance, in C's order: `scope_instances`,
+/// `scope_labels` (without the label-key pattern), `instances`, `labels` with the label-key pattern, `alerts`; per
+/// metric: `scope_dimensions`, then `dimensions`. Deleted contexts, instances and metrics are skipped; hidden
+/// metrics are visited. No node id is tried for an instance (C passes an empty one here). `f` may stop the walk.
+pub fn foreach_metric_in_context<B>(
+    host: &Host,
+    rc: &Context,
+    filters: &MetricFilters,
+    mut f: impl FnMut(&Arc<Instance>, &Arc<Metric>) -> ControlFlow<B>,
+) -> ControlFlow<B> {
+    if rc.flags.is_deleted() {
+        return ControlFlow::Continue(());
+    }
+    let (ids, names) = (filters.match_ids, filters.match_names);
+    let by_instance = filters.scope_instances.is_some() || filters.instances.is_some();
+    let by_labels = filters.scope_labels.is_some() || filters.chart_label_key.is_some() || filters.labels.is_some();
+    for ri in rc.instances() {
+        if ri.flags.is_deleted() {
+            continue;
+        }
+        let fqdn = by_instance.then(|| instance_fqdn(filters.version, &ri, &ri.state().name, host));
+        let selects = |sp: &SimplePattern| {
+            fqdn.as_ref().is_some_and(|(id, name)| instance_matches(sp, &ri, id, name, None, ids, names))
+        };
+        if filters.scope_instances.as_ref().is_some_and(|sp| !selects(sp)) {
+            continue;
+        }
+        let labels = by_labels.then(|| ri.labels());
+        if labels.as_ref().is_some_and(|labels| !labels_match(labels, None, filters.scope_labels.as_ref())) {
+            continue;
+        }
+        if filters.instances.as_ref().is_some_and(|sp| !selects(sp)) {
+            continue;
+        }
+        let (key, array) = (filters.chart_label_key.as_ref(), filters.labels.as_ref());
+        if labels.as_ref().is_some_and(|labels| !labels_match(labels, key, array)) {
+            continue;
+        }
+        if filters.alerts.as_ref().is_some_and(|sp| !alerts_match(sp, host, &ri)) {
+            continue;
+        }
+        for rm in ri.metrics() {
+            if rm.flags.is_deleted() {
+                continue;
+            }
+            let selects =
+                |sp: &SimplePattern| dimension_matches(sp, &rm, ids, names) == SimplePatternResult::MatchedPositive;
+            if filters.scope_dimensions.as_ref().is_some_and(|sp| !selects(sp))
+                || filters.dimensions.as_ref().is_some_and(|sp| !selects(sp))
+            {
+                continue;
+            }
+            f(&ri, &rm)?;
+        }
+    }
+    ControlFlow::Continue(())
+}
+
 /// `query_target_create()` up to the window calculation. `now_s` is the wall clock (`now_realtime_sec()`).
 pub fn create(mut req: DataRequest, source: Source, now_s: i64) -> QueryTarget {
     if req.nodes.is_some() && req.scope_nodes.is_none() {
@@ -1019,6 +1131,78 @@ mod tests {
         }
         h.contexts().process_queued();
         h
+    }
+
+    /// `weights_foreach_rrdmetric_in_context()`: every metric of the context, the hidden one too, in creation order;
+    /// the two dimension patterns, the scope first; an instance by its id, and for a request of version 2 by
+    /// `id@machine_guid` and `name@hostname` (never before version 2); the two label arrays and the label-key
+    /// pattern; an alerts pattern drops an instance whose chart has no alert; the callback can stop the walk.
+    #[test]
+    fn the_metric_walk_visits_what_its_filters_leave() {
+        let h = host();
+        let rc = h.contexts().get("ctx.a").expect("the fixture's context");
+        let sp = |text: &str| SimplePattern::from_web(text.as_bytes());
+        let labels = |text: &str| sp(text).map(|sp| label_pattern_array(&sp));
+        let with = |set: &dyn Fn(&mut MetricFilters)| {
+            let mut filters = MetricFilters { version: 2, match_ids: true, match_names: true, ..Default::default() };
+            set(&mut filters);
+            let mut seen = Vec::new();
+            let flow = foreach_metric_in_context(&h, &rc, &filters, |ri, rm| {
+                seen.push(format!("{}/{}", ri.id(), rm.id()));
+                ControlFlow::<()>::Continue(())
+            });
+            assert!(flow.is_continue());
+            seen
+        };
+        assert_eq!(with(&|_| {}), ["t.a/d1", "t.a/d2", "t.a/h"]);
+        assert_eq!(with(&|f| f.scope_dimensions = sp("d*")), ["t.a/d1", "t.a/d2"]);
+        assert_eq!(with(&|f| f.dimensions = sp("h|d2")), ["t.a/d2", "t.a/h"]);
+        let both = |f: &mut MetricFilters| {
+            f.scope_dimensions = sp("d*");
+            f.dimensions = sp("!d1|*");
+        };
+        assert_eq!(with(&both), ["t.a/d2"]);
+        // an instance by its id, and by the two names of a version 2 request
+        for pattern in ["t.a", "t.a@guid-1", "t.a@child"] {
+            assert_eq!(with(&|f| f.instances = sp(pattern)).len(), 3, "{pattern}");
+            assert_eq!(with(&|f| f.scope_instances = sp(pattern)).len(), 3, "{pattern}");
+        }
+        assert!(with(&|f| f.instances = sp("nomatch")).is_empty());
+        assert!(with(&|f| f.scope_instances = sp("!t.a|*")).is_empty());
+        let version_1 = |f: &mut MetricFilters| {
+            f.version = 1;
+            f.instances = sp("t.a@guid-1");
+        };
+        assert!(with(&version_1).is_empty());
+        // labels: the chart's own collecting plugin, as a label, as a scope label and by its key
+        assert_eq!(with(&|f| f.labels = labels("_collect_plugin:p")).len(), 3);
+        assert!(with(&|f| f.labels = labels("_collect_plugin:other")).is_empty());
+        assert!(with(&|f| f.scope_labels = labels("_collect_plugin:other")).is_empty());
+        assert_eq!(with(&|f| f.chart_label_key = sp("_collect_plugin")).len(), 3);
+        assert!(with(&|f| f.chart_label_key = sp("no_such_key")).is_empty());
+        // an alerts pattern: the chart has no alert
+        assert!(with(&|f| f.alerts = sp("a*")).is_empty());
+        // a stop ends the walk at the metric that asked for it
+        let mut seen = 0;
+        let filters = MetricFilters { version: 2, match_ids: true, match_names: true, ..Default::default() };
+        let flow = foreach_metric_in_context(&h, &rc, &filters, |_, _| {
+            seen += 1;
+            if seen == 2 { ControlFlow::Break("stop") } else { ControlFlow::Continue(()) }
+        });
+        assert_eq!((flow, seen), (ControlFlow::Break("stop"), 2));
+    }
+
+    /// `rrdcontext_retention_match()`: a collected context reaches whatever end the window has, so only a window
+    /// that ends before its first point misses it, by more than the two seconds of slack.
+    #[test]
+    fn a_collected_context_s_retention_reaches_the_window_s_end() {
+        let h = host();
+        let rc = h.contexts().get("ctx.a").expect("the fixture's context");
+        let first = rc.state().first_time_s;
+        assert!(rc.flags.is_collected() && first != 0);
+        assert!(context_retention_matches(&rc, T + 1000, T + 2000));
+        assert!(context_retention_matches(&rc, first - 100, first - 2));
+        assert!(!context_retention_matches(&rc, first - 100, first - 3));
     }
 
     /// `query_scope_foreach_context()`: a scope that names one of the host's contexts exactly gives that context
