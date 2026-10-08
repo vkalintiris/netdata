@@ -956,7 +956,6 @@ mod tests {
     use super::*;
     use crate::request::parse_v2;
     use netdata_agent_rrd::chart::{Algorithm, ChartSpec, ChartType};
-    use netdata_agent_rrd::host::HostInfo;
     use netdata_agent_rrd::mode::DbMode;
 
     const T: i64 = 1_700_000_000;
@@ -988,27 +987,7 @@ mod tests {
     }
 
     fn host() -> Arc<Host> {
-        let info = HostInfo {
-            hostname: "child".into(),
-            registry_hostname: "child".into(),
-            os: "linux".into(),
-            timezone: "UTC".into(),
-            abbrev_timezone: "UTC".into(),
-            utc_offset: 0,
-            program_name: "p".into(),
-            program_version: "1".into(),
-            update_every: 1,
-            db_mode: DbMode::Ram,
-            history_entries: 3600,
-            health_enabled: false,
-            system_info: Default::default(),
-            replication_enabled: false,
-            replication_period: 0,
-            replication_step: 0,
-            stream_send: None,
-            cache_dir: None,
-        };
-        let h = Arc::new(Host::new("guid-1", false, info));
+        let h = Arc::new(Host::new("guid-1", false, crate::testing::info("child", 1, DbMode::Ram)));
         let (chart, _) = h.charts().create(&ChartSpec {
             type_: "t",
             id: "a",
@@ -1212,6 +1191,39 @@ mod tests {
         assert!(qt.query.is_empty());
         assert_eq!(qt.instances.len(), 1);
         assert_eq!(qt.nodes[0].instances.excluded, 1);
+    }
+
+    /// A selector with no word in it (only separators, a lone `!`) is no pattern, as C's NULL `SIMPLE_PATTERN`,
+    /// which every test in `query_target.c` reads as "not given" (`:427`, `:457`, `:782-784`, `:812-817`, `:843`,
+    /// `:921`): the query selects what it selects without the parameter.
+    #[test]
+    fn a_selector_with_no_word_selects_as_none_given() {
+        let h = host();
+        let window = format!("after={}&before={T}", T - 5);
+        let plain = v2(&h, &window);
+        let no_words = [
+            "dimensions=|",
+            "instances=,",
+            "scope_instances=,",
+            "scope_dimensions=,",
+            "alerts=!",
+            "contexts=,",
+            "scope_contexts=|",
+            "nodes=!",
+            "scope_nodes=,",
+        ];
+        for no_word in no_words {
+            let qt = v2(&h, &format!("{window}&{no_word}"));
+            let counts = (qt.nodes.len(), qt.contexts.len(), qt.instances.len(), qt.query.len());
+            assert_eq!(counts, (1, 1, 1, 2), "{no_word}");
+            assert_eq!(statuses(&qt), statuses(&plain), "{no_word}");
+            assert_eq!(qt.nodes[0].metrics, plain.nodes[0].metrics, "{no_word}");
+        }
+        // version 1's `chart=|` names no chart and selects no instance, so the whole host answers
+        // (`api_v1_data.c:139-148`, `:175`)
+        let p = crate::request::parse_v1(b"chart=|", &crate::request::Profile::default());
+        let qt = create(p.request, Source::V1 { host: &h, chart: None }, T + 1);
+        assert_eq!((qt.instances.len(), qt.query.len()), (1, 2));
     }
 
     #[test]

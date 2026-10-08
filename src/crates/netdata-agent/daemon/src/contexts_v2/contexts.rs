@@ -526,9 +526,17 @@ mod tests {
         let only = |options: u64| printed(&dict(&[&h], options, NO_WINDOW), &request(options, 0), JsonOptions::MINIFY);
         assert_eq!(only(INSTANCES), r#"{"contexts":{"q.ctx":{"instances":["q.q_a_name","q.two"]}}}"#);
         assert_eq!(only(DIMENSIONS), r#"{"contexts":{"q.ctx":{"dimensions":["alpha","b","z","inc","h","a"]}}}"#);
-        let dated = only(RETENTION | RFC3339);
-        assert!(dated.starts_with(r#"{"contexts":{"q.ctx":{"first_entry":"2023-11-14T22:1"#), "{dated}");
-        assert!(dated.contains(r#","last_entry":"2023-11-14T22:14:27"#), "{dated}");
+        // both texts whole, the `Z` and the first entry's own second: 1700000000 is 2023-11-14T22:13:20Z
+        let t0 = 1_700_000_000;
+        assert!((t0..t0 + 40).contains(&first) && NOW == t0 + 67, "{first}");
+        let dated = format!(
+            concat!(
+                r#"{{"contexts":{{"q.ctx":{{"first_entry":"2023-11-14T22:13:{:02}Z","#,
+                r#""last_entry":"2023-11-14T22:14:27Z"}}}}}}"#
+            ),
+            first - t0 + 20
+        );
+        assert_eq!(only(RETENTION | RFC3339), dated);
 
         // with a limit, as C printed them: a list of more items than the limit is cut after one fewer, and a
         // list within it is whole (`cardinality=1`, then `cardinality_limit=2`)
@@ -600,10 +608,11 @@ mod tests {
         assert_eq!(merged(kept(true), &higher, all), text("title [x]", "fam", 1000, (100, 200), true));
         // nor when the kept side is not collected and the newcomer is: the lower stays, the newcomer's is not taken
         assert_eq!(merged(kept(false), &higher, all), text("title [x]", "fam", 1000, (100, 200), true));
-        // a third host merges into what the first two left
+        // a third host, not collected, into what the first two left: its texts, which a merge would mix in, and
+        // its lower priority are not taken
         let mut three = kept(true);
         three.merge(&other(true), all);
-        let third = entry("third [x]", "fam3", "units3", 950, 10, 400, false);
+        let third = entry("[x]y", "fam[x]z", "units3", 850, 10, 400, false);
         assert_eq!(merged(three, &third, all), text("[x] [x]", "fam[x]", 900, (10, 400), true));
         // an option that is off leaves its field the first host's
         assert_eq!(merged(kept(true), &other(true), RETENTION), text("title [x]", "fam", 1000, (50, 300), true));
@@ -669,14 +678,6 @@ mod tests {
     #[test]
     fn a_window_filters_the_lists_with_the_instance_s_slack() {
         let h = host("guid-1", &[(&Q_A, T - 59), (&Q_TWO, T - 58)]);
-        // while the charts are collected their retention reaches the walk's clock: a window after the data's end
-        // still lists them
-        let live = Window { range: Some((T + 50, T + 90)), now: T + 100 };
-        let text = printed(&dict(&[&h], LISTS, live), &request(LISTS, 0), JsonOptions::MINIFY);
-        assert!(text.ends_with(r#""instances":["q.q_a_name","q.two"]}}}"#), "{text}");
-        // the child is gone: nothing is collected, and the retention ends at T whatever the walk's clock
-        h.contexts().child_disconnected();
-        h.contexts().worker_cycle();
         let lists = |after: i64, before: i64| {
             let window = Window { range: Some((after, before)), now: T + 100 };
             let text = printed(&dict(&[&h], LISTS, window), &request(LISTS, 0), JsonOptions::MINIFY);
@@ -686,6 +687,12 @@ mod tests {
             r#""dimensions":["alpha","b","z","inc","h","a"],"labels":{"_collect_plugin":["fixture-pusher"],"#,
             r#""_collect_module":["corpus"],"k":["v1","v2"]},"instances":["q.q_a_name","q.two"]}}}"#
         );
+        // while the charts are collected, their retention and their metrics' reach the walk's clock: a window after
+        // the data's end still lists them whole, dimensions and labels too
+        assert_eq!(lists(T + 50, T + 90), both);
+        // the child is gone: nothing is collected, and the retention ends at T whatever the walk's clock
+        h.contexts().child_disconnected();
+        h.contexts().worker_cycle();
         // a window that starts 2 seconds after the data's end still meets q.a (every 1 s) and q.two (every 2 s)
         assert_eq!(lists(T + 2, T + 50), both);
         // 3 seconds after: beyond q.a's slack of 2, within q.two's of 4

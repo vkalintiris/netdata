@@ -1599,17 +1599,17 @@ mod replay {
                     self.dirs.stock = (args[1] != "-").then(|| args[1].as_bytes().to_vec());
                 }
                 "health-enabled" => self.host.set_health_enabled(flag(args[0])),
-                // a child's detach, as the streaming receiver makes it, off the HEALTH thread. The host's health
-                // is turned off before health is told, as `Host::clear_receiver_then` does; C tells first and
-                // turns it off after, and the vectors, which are C's, show that it makes no difference
+                // a child's detach, as the streaming receiver makes it, off the HEALTH thread: health is told
+                // first and the host's health is turned off after, as `Host::clear_receiver_then` does and as the
+                // oracle's `disconnect` step does (`oracle/gen-loop-vectors.c`)
                 "disconnect" => {
                     let (health, world, host) = (self.health(), &self.world, &self.host);
                     let health_thread = world.health_thread.replace(false);
                     world.gate.set(false);
-                    host.set_health_enabled(false);
                     let ((), records) = netdata_agent_log::capture(|| {
                         health.child_disconnected(host, world, &|| world.clock());
                     });
+                    host.set_health_enabled(false);
                     world.health_thread.set(health_thread);
                     self.dump(line, None, records);
                 }

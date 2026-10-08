@@ -343,9 +343,9 @@ pub fn info(route: &Route<'_>, query: &[u8]) -> Reply {
 }
 
 /// `api_v2_contexts()` (`/api/v2/contexts`, `/api/v3/contexts`): the contexts of the hosts in scope, merged by id,
-/// with the nodes (every host in scope while no context pattern and no window is given, else those with a context
-/// that counts), the versions and the agent; the dashboard's chart menu. `options` adds to the route's defaults,
-/// so a request cannot remove one. The host in the URL does not matter.
+/// with the nodes (every host in scope that `nodes` selects while no context pattern and no window is given, else
+/// those of them with a context that counts), the versions and the agent; the dashboard's chart menu. `options`
+/// adds to the route's defaults, so a request cannot remove one. The host in the URL does not matter.
 pub fn contexts(route: &Route<'_>, query: &[u8]) -> Reply {
     let contexts_mode = mode::CONTEXTS | mode::NODES | mode::AGENTS | mode::VERSIONS;
     let req = parse(query, contexts_mode, PRIORITIES | RETENTION | LIVENESS | FAMILY | UNITS);

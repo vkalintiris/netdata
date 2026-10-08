@@ -1851,8 +1851,8 @@ impl Host {
             self.receiver_last_connected_s.store(0, Ordering::Relaxed);
             self.receiver_last_disconnected_s
                 .store(now_realtime_s(), Ordering::Relaxed);
-            // health stays off until the child returns (rrdhost_update() sets it again): the stale path entry has
-            // no HEALTH flag and a later metadata store writes it off
+            // health stays off until the child returns (rrdhost_update() sets it again). Nothing here flags the
+            // host's row for a store, as in C: the stored value changes with the host's next update
             self.info.write().unwrap_or_else(PoisonError::into_inner).health_enabled = false;
             self.orphan
                 .store(true, std::sync::atomic::Ordering::Release);
@@ -2628,6 +2628,14 @@ mod tests {
         assert!(host.functions().get(b"child").is_some() && host.functions().get(b"before").is_some());
     }
 
+    /// What a detach sets at its end, with the receiver lock taken again (`stream-receiver.c:1495-1505`): the host's
+    /// health, its orphan flag, whether a connection time and a disconnection time are kept, and the backfills
+    /// replication waits for. A connected child's are `(_, false, (true, false), _)`.
+    fn detach_end_state(host: &Host) -> (bool, bool, (bool, bool), u32) {
+        let times = (host.receiver_last_connected_s() != 0, host.receiver_last_disconnected_s() != 0);
+        (host.health_enabled(), host.is_orphan(), times, host.backfill_pending())
+    }
+
     /// A sender whose parents reset waits until released, as `Sender::parents_reset` waits for the parents lock an
     /// attempt holds across its connect.
     #[derive(Debug, Default)]
@@ -2676,7 +2684,9 @@ mod tests {
         host.set_upstream(Arc::clone(&slow) as Arc<dyn Upstream>);
         let slot = || Arc::new(ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {})));
         let old = slot();
+        host.set_health_enabled(true);
         assert_eq!(host.set_receiver(Arc::clone(&old)), Attach::Attached);
+        host.backfill_requested();
         assert_eq!(hosts.receivers_connected(), 1);
         std::thread::scope(|s| {
             s.spawn(|| host.clear_receiver(&old, -10));
@@ -2688,15 +2698,20 @@ mod tests {
                 host.is_receiver(&Arc::downgrade(&old)),
                 host.is_online(),
                 hosts.receivers_connected(),
+                detach_end_state(&host),
                 host.set_receiver(slot()),
             );
             // a second detach of the same receiver does nothing
             host.clear_receiver(&old, -10);
             slow.release.store(true, Ordering::SeqCst);
-            assert_eq!(during, (true, false, false, 1, Attach::AlreadyServed));
+            // inside the parents' reset, the last step before the end, the host's health, orphan flag, times and
+            // pending backfills are still the connected child's, also for a receiver whose own health was off
+            let connected = (true, false, (true, false), 1);
+            assert_eq!(during, (true, false, false, 1, connected, Attach::AlreadyServed));
         });
         assert!(host.receiver().is_none());
         assert_eq!(hosts.receivers_connected(), 0);
+        assert_eq!(detach_end_state(&host), (false, true, (false, true), 0));
         assert_eq!(host.set_receiver(slot()), Attach::Attached);
     }
 
@@ -3365,7 +3380,7 @@ mod tests {
             move |event| {
                 if let HealthEvent::ChildDisconnected(host) = event {
                     let unlocked = host.receiver.try_lock().is_ok();
-                    lock(&heard).push((host.machine_guid().to_owned(), host.health_enabled(), unlocked));
+                    lock(&heard).push((host.machine_guid().to_owned(), detach_end_state(host), unlocked));
                     lock(&upstream.calls).push(("health told", 0));
                 }
             }
@@ -3383,9 +3398,12 @@ mod tests {
         let on = slot(true);
         host.set_health_enabled(true);
         assert_eq!(host.set_receiver(Arc::clone(&on)), Attach::Attached);
+        host.backfill_requested();
         host.clear_receiver(&on, -19);
-        assert_eq!(heard(), [("guid-c".to_owned(), true, true)]);
-        assert!(!host.health_enabled());
+        // health hears while the host's health, orphan flag, times and pending backfills are still the connected
+        // child's; the detach's end sets all four
+        assert_eq!(heard(), [("guid-c".to_owned(), (true, false, (true, false), 1), true)]);
+        assert_eq!(detach_end_state(&host), (false, true, (false, true), 0));
         assert_eq!(calls(), [("receiver_left", -19), ("health told", 0), ("parents_reset", -19)]);
         host.clear_receiver(&on, -19);
         assert!(heard().is_empty() && calls().is_empty());
@@ -3397,6 +3415,41 @@ mod tests {
         host.clear_receiver(&off, -5);
         assert!(heard().is_empty());
         assert_eq!(calls(), [("receiver_left", -5), ("parents_reset", -5)]);
+    }
+
+    /// A race of C's that the detach's order brings along: two connections of one child both pass the accept check
+    /// while nothing is attached; the first attaches and drops, and the second's host update asks for health on
+    /// (`rrdhost.c:729`) inside the first's detach, whose end turns it off (`stream-receiver.c:1503`). The second
+    /// then attaches, and an attach does not set health (`:1398-1433`): the child stays connected with health off
+    /// until it connects again.
+    #[test]
+    fn a_host_update_inside_a_detach_loses_health_to_the_detach_s_end() {
+        use crate::storage::HealthEvent;
+        let storage = Arc::new(StorageLayout::default());
+        let updated = Arc::new(Mutex::new(Vec::new()));
+        storage.set_health_hook({
+            let updated = Arc::clone(&updated);
+            move |event| {
+                if let HealthEvent::ChildDisconnected(host) = event {
+                    let wanted = HostInfo { health_enabled: true, ..info("c") };
+                    host.update(&wanted, 1, 4096, true, 86400, 3600);
+                    lock(&updated).push(host.health_enabled());
+                }
+            }
+        });
+        let host = Host::with_storage("guid-c", false, info("c"), &storage);
+        let slot = || {
+            let slot = ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {}));
+            Arc::new(slot.with_health(true))
+        };
+        let first = slot();
+        host.set_health_enabled(true);
+        assert_eq!(host.set_receiver(Arc::clone(&first)), Attach::Attached);
+        host.clear_receiver(&first, -19);
+        assert_eq!(*lock(&updated), [true], "the update ran inside the detach and left health on");
+        assert!(!host.health_enabled(), "the detach's end turned it off");
+        assert_eq!(host.set_receiver(slot()), Attach::Attached);
+        assert!(!host.health_enabled(), "an attach does not set health");
     }
 
     /// What health hears of the database: a chart freed, a host's cleanup before its charts are freed and once

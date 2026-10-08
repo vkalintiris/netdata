@@ -36,6 +36,7 @@ impl Drop for BackfillRunning {
 }
 
 /// `stream_control_user_data_query_started()` and `_finished()`: a data query counts while its guard lives.
+#[must_use = "the query counts only while its guard lives"]
 pub struct UserDataQuery;
 
 impl UserDataQuery {
@@ -53,6 +54,7 @@ impl Drop for UserDataQuery {
 
 /// `stream_control_user_weights_query_started()` and `_finished()`: a query of a weights request counts while its
 /// guard lives.
+#[must_use = "the query counts only while its guard lives"]
 pub struct UserWeightsQuery;
 
 impl UserWeightsQuery {

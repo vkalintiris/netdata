@@ -274,6 +274,23 @@ mod tests {
         data_query_execute(&mut qt, &mut window, &control, &agent)
     }
 
+    /// Version 1's `chart_label_key` with no word in it is no pattern (C's NULL): the answer is the one without the
+    /// parameter, with no `chart_labels` member (`jsonwrap-v1.c:166`); a key prints the member.
+    #[test]
+    fn a_chart_label_key_with_no_word_is_none_given() {
+        // the answer up to its `timings`, which no two calls share
+        let body = |extra: &str| {
+            let r = respond(&format!("after={T0}&before={}&options=jsonwrap{extra}", T0 + 6));
+            let body = String::from_utf8(r.body).unwrap();
+            let timings = body.find(r#""timings""#).expect("timings");
+            body[..timings].to_owned()
+        };
+        let plain = body("");
+        assert!(plain.contains(r#""chart_ids""#) && !plain.contains(r#""chart_labels""#), "{plain}");
+        assert_eq!(body("&chart_label_key=|"), plain);
+        assert!(body("&chart_label_key=_collect_plugin").contains(r#""chart_labels""#));
+    }
+
     #[test]
     fn jsonwrap_v1_members_follow_c() {
         let r = respond(&format!("after={T0}&before={}&options=jsonwrap", T0 + 6));

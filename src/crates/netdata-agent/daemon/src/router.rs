@@ -1249,8 +1249,9 @@ mod tests {
             assert_eq!(contexts(limit), format!(r#"{node},"contexts":{{{},{cut}}}"#, one("t.ctx")), "{limit}");
         }
         assert_eq!(contexts("contexts=nomatch"), both);
-        // a selector with no word in it (only separators, a lone `!`) is no pattern, as C's NULL
-        for no_word in ["scope_contexts=|", "contexts=,", "scope_nodes=,", "nodes=!"] {
+        // a selector with no word in it (only separators, a lone `!`) is no pattern, as C's NULL (`contexts=`
+        // filters nothing here; the host without a context, above, holds it)
+        for no_word in ["scope_contexts=|", "scope_nodes=,", "nodes=!"] {
             assert_eq!(contexts(no_word), both, "{no_word}");
         }
         assert_eq!(contexts("scope_contexts=u.ctx"), format!(r#"{node},"contexts":{{{}}}"#, one("u.ctx")));
