@@ -733,6 +733,11 @@ mod tests {
             let of = Of { host: h, hostname: &hostname, context: &rc, instance: &ri, metric: &rm };
             register(&mut results, &mut stats, true, &of, found);
         }
+        finished_of(method, query, results)
+    }
+
+    /// A finished version-2 request of `method` that holds `results`.
+    fn finished_of(method: Method, query: &str, mut results: Vec<Registered>) -> Finished {
         let mut request = parse(query.as_bytes(), 2, method, Format::Multinode, 1).expect("a request");
         // what the engine leaves: the windows, the timeout, the group-by it knows, and no option but the query's
         (request.after, request.before, request.baseline_after, request.baseline_before) = (1000, 1060, 760, 1000);
@@ -742,7 +747,7 @@ mod tests {
         if request.cardinality_limit != 0 && request.group_by.group_by == group_by::NONE {
             select(&mut results, usize::try_from(request.cardinality_limit).unwrap(), normalized);
         }
-        stats = Stats { db_points: 484, result_points: 4, db_queries: 4, ..Stats::default() };
+        let mut stats = Stats { db_points: 484, result_points: 4, db_queries: 4, ..Stats::default() };
         stats.db_points_per_tier[0] = 484;
         Finished {
             request,
@@ -1079,6 +1084,54 @@ mod tests {
         let (ids, text) = kept(Method::Value, "options=minify&group_by=dimension&limit=2");
         assert_eq!(ids, "ab");
         assert!(text.ends_with(r#""returned":2,"unit":"groups","truncated":false,"summary_scope":"all"}}"#), "{text}");
+    }
+
+    /// Two charts of one context and a second context on one host: an instance's rollup comes when the instance
+    /// changes inside its context, a context's when the context changes; each chart is an entry of the
+    /// instances.
+    #[test]
+    fn rollups_close_at_the_instance_inside_a_context() {
+        use crate::testing::{weights_charts_host, weights_results_on};
+        let charts = [("w1", "ctx.w", "u"), ("w2", "ctx.w", "u"), ("o", "ctx.o", "u")];
+        let host = weights_charts_host(ONE, "wide", &charts);
+        let values = [("ctx.w", "t.w1", "a", 0.5), ("ctx.w", "t.w2", "a", 0.25), ("ctx.o", "t.o", "a", 0.75)];
+        let f = finished_of(Method::Value, "options=minify", weights_results_on(&host, &values));
+        let (text, printed) = body(plain, &f);
+        assert_eq!(printed, 3);
+        let result = [
+            r#""result":["#,
+            &format!("[0,0,0,0,0,0.5,{ZEROS}],[1,0,0,0,null,0.5,{ZEROS}],"),
+            &format!("[0,0,0,1,0,0.25,{ZEROS}],[1,0,0,1,null,0.25,{ZEROS}],[2,0,0,null,null,0.375,{ZEROS}],"),
+            &format!("[0,0,1,2,0,0.75,{ZEROS}],[1,0,1,2,null,0.75,{ZEROS}],[2,0,1,null,null,0.75,{ZEROS}],"),
+            &format!("[3,0,null,null,null,0.5,{ZEROS}]"),
+            r#"],"dictionaries":{"nodes":["#,
+        ]
+        .concat();
+        assert!(text.contains(&result), "{text}");
+        let dictionaries = concat!(
+            r#""contexts":[{"id":"ctx.w","units":"u","ci":0},{"id":"ctx.o","units":"u","ci":1}],"#,
+            r#""instances":[{"id":"t.w1","ii":0},{"id":"t.w2","ii":1},{"id":"t.o","ii":2}],"#,
+            r#""dimensions":[{"id":"a","di":0}]},"#
+        );
+        assert!(text.contains(dictionaries), "{text}");
+    }
+
+    /// Grouped by units alone, the results of a context without units are a group whose id is empty and which has
+    /// no name of its own (C reads through a null pointer there: decision D239).
+    #[test]
+    fn results_without_units_are_a_group_with_an_empty_id() {
+        use crate::testing::{weights_charts_host, weights_results_on};
+        let host = weights_charts_host(ONE, "bare", &[("e", "ctx.e", ""), ("u", "ctx.u", "u")]);
+        let values = [("ctx.e", "t.e", "a", 0.5), ("ctx.e", "t.e", "b", 0.25), ("ctx.u", "t.u", "a", 0.75)];
+        let f = finished_of(Method::Value, "options=minify&group_by=units", weights_results_on(&host, &values));
+        let (text, grouped_results) = body(multinode, &f);
+        assert_eq!(grouped_results, 3);
+        let result = [
+            format!(r#""result":[{{"id":"","v":[[0.25,0.375,0.5,0.75,2],{ZEROS}]}},"#),
+            format!(r#"{{"id":"u","v":[[0.75,0.75,0.75,0.75,1],{ZEROS}]}}],"#),
+        ]
+        .concat();
+        assert!(text.contains(&result), "{text}");
     }
 
     /// Each aggregation ranks the groups by its own score. Of a (0.9 and 0.1), b (0.4 alone) and z (0.95 and

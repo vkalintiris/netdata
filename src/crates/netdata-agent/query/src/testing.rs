@@ -131,6 +131,42 @@ pub fn weights_named_host(guid: &str, hostname: &str) -> Arc<Host> {
     h
 }
 
+/// A host whose charts hold next to nothing, for the units of the weights' orders and formats: each
+/// `(chart id, context, units)` is a chart of type `t` with the dimensions `a` and `b` and one point.
+pub fn weights_charts_host(guid: &str, hostname: &str, charts: &[(&str, &str, &str)]) -> Arc<Host> {
+    let h = Arc::new(Host::new(guid, false, info(hostname, 1, DbMode::Ram)));
+    for &(id, context, units) in charts {
+        let (chart, _) = h.charts().create(&ChartSpec { id, context: Some(context), units, ..ram_chart(3600) });
+        for dimension in ["a", "b"] {
+            let (dim, _) = chart.dim_add(dimension, None, 1, 1, Algorithm::Absolute);
+            dim.store_metric((T0 + 1) as u64 * 1_000_000, 1.0, SN_FLAG_NOT_ANOMALOUS);
+        }
+    }
+    h.contexts().process_queued();
+    h
+}
+
+/// A weights result for each `(context, chart, dimension, value)` of `host`, registered in that order with
+/// zeros counting.
+pub fn weights_results_on(
+    host: &Arc<Host>,
+    values: &[(&str, &str, &str, f64)],
+) -> Vec<crate::weights::results::Registered> {
+    use crate::weights::methods::Stats;
+    use crate::weights::results::{Found, Of, register};
+    let hostname = host.hostname();
+    let (mut results, mut stats) = (Vec::new(), Stats::default());
+    for &(context, chart, dimension, value) in values {
+        let rc = host.contexts().get(context).expect("the context");
+        let ri = rc.instances().into_iter().find(|ri| ri.id() == chart).expect("the chart's instance");
+        let rm = ri.metric(dimension).expect("the metric");
+        let of = Of { host, hostname: &hostname, context: &rc, instance: &ri, metric: &rm };
+        let found = Found { value, flags: 0, highlighted: None, baseline: None, duration_us: 0 };
+        register(&mut results, &mut stats, true, &of, found);
+    }
+    results
+}
+
 /// What health would show of [`host`]'s chart: three alerts, one in each of three classes, in link order, with
 /// the values 12.5, 0 and none.
 struct ThreeAlerts;

@@ -280,6 +280,27 @@ mod tests {
         assert_eq!(compare(&results[0], &results[0], true), Ordering::Equal);
     }
 
+    /// Equal values of one host are ranked by the context's id, then by the instance's; and a context is marked
+    /// when it holds a selected result, not when its host does. The host has the charts `t.w1` and `t.w2` of
+    /// `ctx.w` and `t.o` of `ctx.o`.
+    #[test]
+    fn equal_values_of_a_host_are_ranked_by_context_and_instance() {
+        use crate::testing::{weights_charts_host, weights_results_on};
+        let charts = [("w1", "ctx.w", "u"), ("w2", "ctx.w", "u"), ("o", "ctx.o", "u")];
+        let host = weights_charts_host("11111111-1111-1111-1111-111111111111", "wide", &charts);
+        let values = [("ctx.w", "t.w2", "a", 0.5), ("ctx.w", "t.w1", "a", 0.5), ("ctx.o", "t.o", "a", 0.5)];
+        let marks = |limit: usize| {
+            let mut results = weights_results_on(&host, &values);
+            select(&mut results, limit, true);
+            let marks = |t: &Registered| (t.selected, t.node_selected, t.context_selected, t.instance_selected);
+            results.iter().map(marks).collect::<Vec<_>>()
+        };
+        let (y, n) = (true, false);
+        // `ctx.o` comes before `ctx.w`; in `ctx.w` the chart `t.w1` before `t.w2`
+        assert_eq!(marks(1), [(n, y, n, n), (n, y, n, n), (y, y, y, y)]);
+        assert_eq!(marks(2), [(n, y, y, n), (y, y, y, y), (y, y, y, y)]);
+    }
+
     /// `register_result()`: what is no number is dropped; the sign goes; a zero (of either sign) is kept only
     /// when zeros count, and a subnormal is no zero; only a base-to-highlight ratio moves the largest ratio; a
     /// point that is not given stays zeroed.

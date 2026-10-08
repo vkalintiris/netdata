@@ -210,6 +210,11 @@ mod tests {
             let found = Found { value, flags: 0, highlighted: None, baseline: None, duration_us: 0 };
             register(&mut results, &mut stats, true, &of, found);
         }
+        finished_of(method, query, results)
+    }
+
+    /// A finished request of `method` that holds `results`.
+    fn finished_of(method: Method, query: &str, mut results: Vec<Registered>) -> Finished {
         let mut request = parse(query.as_bytes(), 1, method, Format::Contexts, 1).expect("a request");
         // the windows as the engine leaves them, and no option but what the query gave
         (request.after, request.before, request.baseline_after, request.baseline_before) = (1000, 1060, 760, 1000);
@@ -218,7 +223,7 @@ mod tests {
             let limit = usize::try_from(request.cardinality_limit).unwrap();
             select(&mut results, limit, false);
         }
-        stats = Stats { db_points: 484, result_points: 4, db_queries: 4, ..Stats::default() };
+        let mut stats = Stats { db_points: 484, result_points: 4, db_queries: 4, ..Stats::default() };
         stats.db_points_per_tier[0] = 484;
         let (received, versions) = (Instant::now(), Versions::default());
         Finished { request, shifts: 2, results, stats, examined: 10, received, duration_us: 2500, versions }
@@ -233,6 +238,55 @@ mod tests {
         r#""statistics":{"query_time_ms":2.5,"db_queries":4,"query_result_points":4,"binary_searches":0,"#,
         r#""db_points_read":484,"db_points_per_tier":[484]},"#
     );
+
+    /// A context with two charts, in the `contexts` format: each chart's weight is the mean of its dimensions,
+    /// the context's the mean of all its results. Under a limit a chart without a selected result is not printed
+    /// and still counts in its context's mean, and a printed chart's mean still counts its dimensions that are
+    /// not. C's numbers for the charts (100, 1) and (90, 2): 50.5, 46 and 48.25.
+    #[test]
+    fn a_context_with_two_charts_has_each_chart_s_mean_and_its_own() {
+        use crate::testing::{weights_charts_host, weights_results_on};
+        let host = weights_charts_host("guid-wide", "wide", &[("w1", "ctx.w", "u"), ("w2", "ctx.w", "u")]);
+        let (w1, w2) = ("t.w1", "t.w2");
+        let values =
+            [("ctx.w", w1, "a", 100.0), ("ctx.w", w1, "b", 1.0), ("ctx.w", w2, "a", 90.0), ("ctx.w", w2, "b", 2.0)];
+        let written = |query: &str| {
+            let finished = finished_of(Method::Value, query, weights_results_on(&host, &values));
+            text(contexts(&finished, 1))
+        };
+        let (body, dimensions) = written("options=minify");
+        let whole = concat!(
+            r#""contexts":{"ctx.w":{"charts":{"t.w1":{"dimensions":{"a":100,"b":1},"weight":50.5},"#,
+            r#""t.w2":{"dimensions":{"a":90,"b":2},"weight":46}},"weight":48.25}},"correlated_dimensions":4,"#
+        );
+        assert!(body.contains(whole), "{body}");
+        assert_eq!(dimensions, 4);
+        let (body, dimensions) = written("options=minify&limit=1");
+        let limited = concat!(
+            r#""contexts":{"ctx.w":{"charts":{"t.w1":{"dimensions":{"a":100},"weight":50.5}},"weight":48.25}},"#,
+            r#""correlated_dimensions":4,"#
+        );
+        assert!(body.contains(limited), "{body}");
+        assert_eq!(dimensions, 1);
+    }
+
+    /// A dimension is keyed by its name and a chart by its id, in both formats.
+    #[test]
+    fn a_dimension_is_keyed_by_its_name_and_a_chart_by_its_id() {
+        use crate::testing::{weights_named_host, weights_results_on};
+        let host = weights_named_host("guid-named", "named");
+        let one = [("ctx.n", "t.n", "d", 0.5)];
+        let named = || finished_of(Method::Value, "options=minify", weights_results_on(&host, &one));
+        let by_context = concat!(
+            r#""contexts":{"ctx.n":{"charts":{"t.n":{"dimensions":{"dee":0.5},"weight":0.5}},"#,
+            r#""weight":0.5}}"#
+        );
+        let (body, _) = text(contexts(&named(), 1));
+        assert!(body.contains(by_context), "{body}");
+        let by_chart = r#""correlated_charts":{"t.n":{"context":"ctx.n","dimensions":{"dee":0.5}}}"#;
+        let (body, _) = text(charts(&named(), 1));
+        assert!(body.contains(by_chart), "{body}");
+    }
 
     /// The limit's summary says what was asked, how many results there are and how many are shown: a limit
     /// above the results shows all of them and is not truncated.
