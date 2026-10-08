@@ -8,7 +8,6 @@ use std::time::Instant;
 use netdata_agent_rrd::host::Host;
 use netdata_agent_rrd::pulse::Queries;
 use netdata_agent_text::simple_pattern::SimplePattern;
-use netdata_agent_text::time_window::relative_window_to_absolute_query;
 use netdata_agent_web::progress::Tracker;
 use netdata_agent_web::status;
 
@@ -72,19 +71,14 @@ pub struct Finished {
     pub versions: Versions,
 }
 
-/// The engine's outcome. `cacheable`: both ends of the highlighted window were absolute, which C marks on the
-/// reply before anything can refuse the request.
-pub struct Outcome {
-    pub cacheable: bool,
-    pub result: Result<Finished, Refusal>,
-}
-
 fn pattern(text: &Option<Vec<u8>>) -> Option<SimplePattern> {
     text.as_deref().and_then(SimplePattern::from_web)
 }
 
-/// `web_api_v12_weights()` up to its writers.
-pub fn run(mut req: WeightsRequest, env: &Env) -> Outcome {
+/// `web_api_v12_weights()` up to its writers: the results, or the refusal. (C also marks its buffer cacheable
+/// here when both ends of the highlighted window are absolute; no reply shows it: a writer marks an answer not
+/// cacheable, and the web server any other status.)
+pub fn run(mut req: WeightsRequest, env: &Env) -> Result<Finished, Refusal> {
     let received = Instant::now();
     let timeout = timeout_ms(req.timeout_ms);
     let labels = |text: &Option<Vec<u8>>| pattern(text).map(|sp| label_pattern_array(&sp));
@@ -109,8 +103,7 @@ pub fn run(mut req: WeightsRequest, env: &Env) -> Outcome {
             dimensions: pattern(&texts.dimensions),
         },
     };
-    let (_, _, cacheable) = relative_window_to_absolute_query(req.after, req.before, env.now_s);
-    let refused = |code: u16, text: &'static str| Outcome { cacheable, result: Err(Refusal { code, text }) };
+    let refused = |code: u16, text: &'static str| Err(Refusal { code, text });
     let highlighted = (req.after, req.before);
     let baseline = (req.baseline_after, req.baseline_before);
     let w = match windows(req.method, highlighted, baseline, req.points, env.now_s) {
@@ -185,7 +178,7 @@ pub fn run(mut req: WeightsRequest, env: &Env) -> Outcome {
     let duration_us = u64::try_from(received.elapsed().as_micros()).unwrap_or(u64::MAX);
     let (request, shifts) = (req, w.shifts);
     let finished = Finished { request, shifts, results, stats, examined, received, duration_us, versions };
-    Outcome { cacheable, result: Ok(finished) }
+    Ok(finished)
 }
 
 #[cfg(test)]
@@ -214,7 +207,7 @@ mod tests {
 
     fn finished(req: WeightsRequest) -> Finished {
         let profile = Profile::default();
-        match run(req, &env(&profile, hosts())).result {
+        match run(req, &env(&profile, hosts())) {
             Ok(finished) => finished,
             Err(refusal) => panic!("refused: {refusal:?}"),
         }
@@ -298,31 +291,29 @@ mod tests {
     }
 
     /// The refusals: C's status and text for a window that is none, a baseline that is none, too few points, a
-    /// client that went away; the body has C's two spaces; an absolute window makes the reply cacheable, a
-    /// relative one does not, whatever the outcome.
+    /// client that went away; the body has C's two spaces.
     #[test]
     fn the_engine_refuses_as_c_refuses() {
         let profile = Profile::default();
         let refusal = |req: WeightsRequest| {
-            let outcome = run(req, &env(&profile, hosts()));
-            (outcome.result.err().map(|refusal| (refusal.code, refusal.text)), outcome.cacheable)
+            run(req, &env(&profile, hosts())).err().map(|refusal| (refusal.code, refusal.text))
         };
         let parsed = |method: Method, query: &str| parse(query.as_bytes(), 1, method, Format::Contexts, 1).unwrap();
         let none = format!("after={T0}&before={T0}");
-        assert_eq!(refusal(parsed(Method::Value, &none)), (Some((400, "Invalid selected time-range.")), true));
+        assert_eq!(refusal(parsed(Method::Value, &none)), Some((400, "Invalid selected time-range.")));
         let last = T0 + W_POINTS;
         let no_baseline = format!("after={}&before={last}&baseline_after={T0}&baseline_before={T0}", last - 60);
-        assert_eq!(refusal(parsed(Method::Ks2, &no_baseline)), (Some((400, "Invalid baseline time-range.")), true));
+        assert_eq!(refusal(parsed(Method::Ks2, &no_baseline)), Some((400, "Invalid baseline time-range.")));
         let few = format!("after={}&before={last}&baseline_after=-120&points=10", last - 60);
         let too_few = "Too few points available, at least 15 are needed.";
-        assert_eq!(refusal(parsed(Method::Volume, &few)), (Some((400, too_few)), true));
-        // a relative window is not cacheable; this one is answered
-        assert_eq!(refusal(parsed(Method::Value, "after=-60")), (None, false));
+        assert_eq!(refusal(parsed(Method::Volume, &few)), Some((400, too_few)));
+        // a relative window that holds the data is answered
+        assert_eq!(refusal(parsed(Method::Value, "after=-60")), None);
 
         let gone = |_: &mut i32| true;
         let away = Env { interrupted: &gone, ..env(&profile, hosts()) };
-        let outcome = run(request(2, Method::Value, Format::Multinode, ""), &away);
-        assert_eq!(outcome.result.err(), Some(Refusal { code: 499, text: "interrupted" }));
+        let interrupted = run(request(2, Method::Value, Format::Multinode, ""), &away).err();
+        assert_eq!(interrupted, Some(Refusal { code: 499, text: "interrupted" }));
         assert_eq!(NO_RESULTS.body(), br#"{"error": "no results produced." }"#);
     }
 }

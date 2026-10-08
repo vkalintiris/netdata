@@ -78,8 +78,6 @@ impl WindowError {
 pub struct RequestWindows {
     pub after: i64,
     pub before: i64,
-    /// Both ends of the highlighted window were absolute: the answer may be cached.
-    pub absolute: bool,
     pub baseline_after: i64,
     pub baseline_before: i64,
     pub points: u64,
@@ -101,11 +99,11 @@ pub fn windows(
     points: u64,
     wall_clock_s: i64,
 ) -> Result<RequestWindows, WindowError> {
-    let (after, before, absolute) = relative_window_to_absolute_query(after, before, wall_clock_s);
+    let (after, before, _) = relative_window_to_absolute_query(after, before, wall_clock_s);
     if before <= after {
         return Err(WindowError::Highlight);
     }
-    let mut w = RequestWindows { after, before, absolute, baseline_after, baseline_before, points, shifts: 0 };
+    let mut w = RequestWindows { after, before, baseline_after, baseline_before, points, shifts: 0 };
     if !matches!(method, Method::Ks2 | Method::Volume) {
         return Ok(w);
     }
@@ -178,7 +176,7 @@ mod tests {
         };
         let settled = |times: i64, points: u64| {
             let w = absolute(Method::Ks2, times, points).expect("windows");
-            assert_eq!((w.after, w.before, w.absolute, w.baseline_before), (T - 100, T, true, T - 100), "{times}");
+            assert_eq!((w.after, w.before, w.baseline_before), (T - 100, T, T - 100), "{times}");
             // the baseline is cut to the multiple, ending where it ended
             assert_eq!(w.baseline_after, T - 100 - (100 << w.shifts), "{times}");
             (w.shifts, w.points)
@@ -201,7 +199,6 @@ mod tests {
             let kept = RequestWindows {
                 after: T - 100,
                 before: T,
-                absolute: true,
                 baseline_after: T - 400,
                 baseline_before: T - 100,
                 points: 0,
@@ -244,7 +241,7 @@ mod tests {
         // relative ends: the highlighted window counts back from the second before the wall clock, and a
         // baseline end inside the relative range counts from the highlighted window's start
         let relative = windows(Method::Ks2, (-100, 0), (-400, 0), 0, T + 1).expect("windows");
-        assert_eq!((relative.after, relative.before, relative.absolute), (T - 99, T, false));
+        assert_eq!((relative.after, relative.before), (T - 99, T));
         assert_eq!((relative.baseline_before, relative.shifts), (T - 99, 2));
         assert_eq!(relative.baseline_after, T - 99 - (99 << 2));
     }

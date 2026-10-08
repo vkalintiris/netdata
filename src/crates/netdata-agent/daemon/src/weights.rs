@@ -44,7 +44,9 @@ pub fn v2_weights(route: &Route<'_>, _host: &Arc<Host>, query: &[u8]) -> Reply {
 /// is no number: 400 with C's text, whatever else the query holds. Otherwise the engine over every host (the
 /// routed host is not looked at: C gives a version-1 request none, and uses a later version's for nothing), its
 /// refusal or the answer `write` makes of its results and the number of storage tiers; a version-1 answer
-/// without a dimension is a 404. The reply may be cached when both ends of the highlighted window were absolute.
+/// without a dimension is a 404. No reply is cacheable: C marks its buffer by the highlighted window, but every
+/// format's writer then marks it not cacheable (`buffer_json_initialize()`), and the web server sends any status
+/// but 200 so.
 fn answer(
     route: &Route<'_>,
     query: &[u8],
@@ -73,14 +75,14 @@ fn answer(
         interrupted: route.interrupted,
         progress: Some(Table::process().tracker(route.ctx.transaction)),
     };
-    let outcome = run(req, &env);
+    let result = run(req, &env);
     let storage_tiers = usize::try_from(profile.storage_tiers).unwrap_or(usize::MAX);
-    let (code, body) = match &outcome.result {
+    let (code, body) = match &result {
         Err(refusal) => (refusal.code, refusal.body()),
         Ok(finished) => match write(finished, storage_tiers) {
             (_, 0) if version < 2 => (NO_RESULTS.code, NO_RESULTS.body()),
             (body, _) => (status::OK, body),
         },
     };
-    Reply { no_cacheable: !outcome.cacheable, ..json(code, body) }
+    json(code, body)
 }

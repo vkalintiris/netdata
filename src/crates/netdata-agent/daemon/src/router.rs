@@ -1624,10 +1624,18 @@ mod tests {
         let (code, body, _) = json(b"/api/v1/weights", b"after=-60&options=minify,raw");
         let raw = r#""dimensions":{"up":100,"flat":0},"weight":50}},"weight":50}},"correlated_dimensions":2,"#;
         assert!(code == status::OK && body.contains(raw), "{body}");
-        // an absolute window may be cached
+        // no weights reply is cacheable, whatever its window: C's writers mark an answer so (the 404 comes after
+        // one), and the web server any other status
         let absolute = format!("after={}&before={}&options=minify", now - 60, now - 2);
         let (code, body, no_cache) = json(b"/api/v1/weights", absolute.as_bytes());
-        assert_eq!((code, no_cache), (status::OK, false), "{body}");
+        assert_eq!((code, no_cache), (status::OK, true), "{body}");
+        let nowhere = format!("after={}&before={}&context=nope.ctx", now - 60, now - 2);
+        let (code, _, no_cache) = json(b"/api/v1/weights", nowhere.as_bytes());
+        assert_eq!((code, no_cache), (status::NOT_FOUND, true));
+        let (high, base) = (format!("after={}&before={}", now - 60, now - 2), (now - 240, now - 60));
+        let few_points = format!("{high}&baseline_after={}&baseline_before={}&points=10", base.0, base.1);
+        let (code, _, no_cache) = json(b"/api/v1/metric_correlations", few_points.as_bytes());
+        assert_eq!((code, no_cache), (status::BAD_REQUEST, true));
 
         // ks2 by chart, raw so that an unchanged metric's zero is a result too
         let query = b"after=-60&baseline_after=-240&options=minify,raw";
@@ -1745,10 +1753,10 @@ mod tests {
         assert!(body.contains(r#""tier":null},"baseline":{"baseline_after":"#), "{body}");
         assert!(body.contains(r#"{"name":"baseline timeframe","type":"array","#), "{body}");
         assert!(body.ends_with(r#"}}],"correlated_dimensions":2,"total_dimensions_count":2}"#), "{body}");
-        // an absolute window may be cached
+        // no weights reply is cacheable, whatever its window
         let absolute = format!("after={}&before={}&options=minify", now - 60, now - 2);
         let (code, body, no_cache) = json(b"/api/v2/weights", absolute.as_bytes());
-        assert_eq!((code, no_cache), (status::OK, false), "{body}");
+        assert_eq!((code, no_cache), (status::OK, true), "{body}");
 
         // no result is an answer: the one query of a context no host has
         let (code, body, _) = json(b"/api/v2/weights", b"after=-60&options=minify&scope_contexts=nope.ctx");
