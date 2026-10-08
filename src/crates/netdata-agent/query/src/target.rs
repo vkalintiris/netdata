@@ -270,7 +270,9 @@ pub enum Source<'a> {
 }
 
 /// `pattern_array_add_simple_pattern()` for labels (`database/pattern-array.c`): per label key, the exact
-/// `key:value` patterns; the words stop at the first lone `*` or at the first word without `:`.
+/// `key:value` patterns; the words stop at the first lone `*` or at the first word without `:`. C compiles each
+/// word again as a web pattern (`string_to_simple_pattern()`), so a separator that was escaped in the request
+/// separates at this second parse, and a word that is no pattern adds nothing.
 fn label_pattern_array(sp: &SimplePattern) -> PatternArray {
     let mut array = PatternArray::default();
     for word in sp.words() {
@@ -278,13 +280,9 @@ fn label_pattern_array(sp: &SimplePattern) -> PatternArray {
         let Some(colon) = word.iter().position(|&c| c == b':') else {
             break;
         };
-        let pattern = SimplePattern::new(
-            word,
-            netdata_agent_text::simple_pattern::Separators::None,
-            netdata_agent_text::simple_pattern::SimplePatternMode::Exact,
-            true,
-        );
-        array.add(&word[..colon.min(200)], pattern);
+        if let Some(pattern) = SimplePattern::from_web(word) {
+            array.add(&word[..colon.min(200)], pattern);
+        }
     }
     array
 }
@@ -619,15 +617,14 @@ impl Walk<'_> {
         let node_id = self.qt.nodes[node].node_id.clone();
         let state = ri.state();
         let (id_fqdn, name_fqdn) = instance_fqdn(self.req.version, ri, &state.name, &host);
-        if !chart_path {
-            if let Some(sp) = &self.scope_instances
-                && !self.instance_matches(sp, ri, &id_fqdn, &name_fqdn, node_id.as_deref())
-            {
-                return;
-            }
-            if !self.labels_match(ri, true) {
-                return;
-            }
+        // the scope is asked of a chart the request names too: C tests it on each of its three paths
+        if let Some(sp) = &self.scope_instances
+            && !self.instance_matches(sp, ri, &id_fqdn, &name_fqdn, node_id.as_deref())
+        {
+            return;
+        }
+        if !self.labels_match(ri, true) {
+            return;
         }
         let instances_ok = chart_path
             || self.instances.as_ref().is_none_or(|sp| {
@@ -1496,6 +1493,27 @@ mod tests {
         assert_eq!(v2(&h, "labels=foo").query.len(), 2);
         // '!' is dropped from the parsed text: `!k:v` requires k:v.
         assert_eq!(v2(&h, "scope_labels=!k:v").query.len(), 2);
+        // C parses each word again with the web separators: a comma escaped in the request ends the value there,
+        // so `k:v\,x` asks for `k:v` (its second word, `x`, is no label's text)
+        assert_eq!(v2(&h, r"labels=k:v\,x").query.len(), 2);
+        assert!(v2(&h, r"labels=k:x\,v").query.is_empty());
+    }
+
+    /// A chart named by the request is asked the scope's questions too (C tests them on its single-chart path): a
+    /// label key the chart has no label of leaves nothing to query, which the handler answers with its 404.
+    #[test]
+    fn a_chart_asked_by_id_must_have_the_label_key() {
+        let h = host();
+        let chart = h.charts().find("t.a", true).unwrap();
+        let v1 = |query: &str| {
+            let p = crate::request::parse_v1(query.as_bytes(), &crate::request::Profile::default());
+            create(p.request, Source::V1 { host: &h, chart: Some(Arc::clone(&chart)) }, T + 1)
+        };
+        let window = format!("after={}&before={T}", T - 5);
+        assert_eq!(v1(&format!("chart=t.a&{window}")).query.len(), 2);
+        assert_eq!(v1(&format!("chart=t.a&chart_label_key=_collect_plugin&{window}")).query.len(), 2);
+        let missed = v1(&format!("chart=t.a&chart_label_key=nosuchlabel&{window}"));
+        assert!(missed.query.is_empty() && missed.nodes.is_empty());
     }
 
     /// `query_target_eval_instance_rrdcalc()`: the alerts of a version-2 query's queryable instance count for the
