@@ -34,8 +34,8 @@ pub const NODE_INSTANCE: [Capability; 9] = [
     capa("proto", 1, false),
     // ml_capable() and ml_enabled(): no ML (M14)
     capa("ml", 0, false),
-    // metric_correlations_version: the weights API (M10)
-    capa("mc", 1, false),
+    // metric_correlations_version: the weights API
+    capa("mc", 1, true),
     capa("ctx", 1, true),
     // localhost's own, or what a child's receiver negotiated
     capa("funcs", 1, true),
@@ -120,7 +120,7 @@ mod tests {
             rendered(&host(true)),
             concat!(
                 r#"{"capabilities":[{"name":"proto","version":1,"enabled":false},"#,
-                r#"{"name":"ml","version":0,"enabled":false},{"name":"mc","version":1,"enabled":false},"#,
+                r#"{"name":"ml","version":0,"enabled":false},{"name":"mc","version":1,"enabled":true},"#,
                 r#"{"name":"ctx","version":1,"enabled":true},{"name":"funcs","version":1,"enabled":true},"#,
                 r#"{"name":"http_api_v2","version":7,"enabled":true},{"name":"health","version":2,"enabled":false},"#,
                 r#"{"name":"req_cancel","version":1,"enabled":false},{"name":"dyncfg","version":2,"enabled":true}]}"#

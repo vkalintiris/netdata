@@ -28,7 +28,6 @@ type capabilityDiff struct{ c, rust, closes string }
 var capabilityDiffs = map[string]capabilityDiff{
 	"proto":      {"1/true", "1/false", "M11 Cloud"},
 	"ml":         {"1/false", "0/false", "M14 ML"},
-	"mc":         {"1/true", "1/false", "M10 weights"},
 	"req_cancel": {"1/true", "1/false", "M11 Cloud"},
 }
 

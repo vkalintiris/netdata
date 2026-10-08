@@ -207,18 +207,14 @@ var (
 	}
 	// endpointContracts are the endpoints outside slice 1. The six badge contracts left the list with the badge
 	// endpoint (M9 commit 10, D217 F5): `CASE-020/badge-*` and `CASE-023/badge-invalid-options` apply in every profile.
+	// The 21 weights contracts left it with the weights endpoints (M10 commit 10): `W/*` but `W/limit-mcp`, which
+	// asks the MCP tool, `CASE-023/weights-invalid-options` and `API/fallback-unknown-weights-method`.
 	endpointContracts = []string{
 		"CASE-023/mcp-protocol-lifecycle", "CASE-023/mcp-query-tool-schema", "CASE-023/mcp-valid-result-schema",
 		"CASE-023/mcp-valid-query-units", "CASE-023/mcp-valid-query-echo", "CASE-023/mcp-valid-query-timestamps",
 		"CASE-023/mcp-valid-query-values", "CASE-023/mcp-valid-query-anomaly-rates",
 		"CASE-023/mcp-valid-query-annotations", "CASE-023/mcp-invalid-options", "CASE-023/mcp-default-zero-options",
-		"CASE-023/weights-invalid-options", "API/fallback-unknown-weights-method",
-		"W/value", "W/anomaly-rate-per-metric-values", "W/anomaly-rate-per-metric-nonzero-default",
-		"W/anomaly-rate-multidim", "W/volume-equal-baseline-skip", "W/volume-formula", "W/ks2-raw-endpoints",
-		"W/ks2-spread-normalization",
-		"W/limit-aliases", "W/limit-boundaries", "W/limit-invalid", "W/limit-ranking", "W/limit-summaries",
-		"W/limit-legacy", "W/limit-grouped", "W/limit-complete-groups", "W/limit-thousand", "W/limit-hierarchy",
-		"W/limit-node-ties", "W/limit-mcp",
+		"W/limit-mcp",
 	}
 	// The update_every change contracts: those at tier 0, those that read higher tiers, and one that boots
 	// multi-tier daemons.
@@ -234,8 +230,8 @@ var (
 	cadenceMultiTierContracts = []string{"CASE-037/rate-volume-across-three-tier-cadence-query"}
 )
 
-// ramNotApplicable: 112 whole contracts and 7 component scopes (spec-query §12.3, decision D25; 118 before the badge
-// contracts applied, D217 F5).
+// ramNotApplicable: 91 whole contracts and 7 component scopes (spec-query §12.3, decision D25; 118 before the badge
+// contracts applied, D217 F5, and 112 before the weights contracts did, M10 commit 10).
 var ramNotApplicable = mergeScopes(
 	wholeContracts(naTier1, slices.Concat(tier1Contracts, autoTierContracts)...),
 	wholeContracts(naMultiTier, slices.Concat(dedicatedDaemonContracts, planningContracts)...),
@@ -250,8 +246,9 @@ var ramNotApplicable = mergeScopes(
 	components(naMultiTier, "CASE-033/anomaly-rate-counts-samples-in-the-row", "plan-seam-source"),
 )
 
-// dbengine1NotApplicable: 105 whole contracts and 3 component scopes, the scopes that need rollups or multi-tier
-// planning (decision D70.9; 111 before the badge contracts applied, D217 F5). Tier 0 keeps a dbengine child's history
+// dbengine1NotApplicable: 84 whole contracts and 3 component scopes, the scopes that need rollups or multi-tier
+// planning (decision D70.9; 111 before the badge contracts applied, D217 F5, and 105 before the weights contracts
+// did, M10 commit 10). Tier 0 keeps a dbengine child's history
 // across cadence changes, restarts and replication, so ram's cadence, restart, replication and dbengine-only scopes
 // apply.
 var dbengine1NotApplicable = mergeScopes(
@@ -264,9 +261,10 @@ var dbengine1NotApplicable = mergeScopes(
 	components(naMultiTier, "CASE-033/anomaly-rate-counts-samples-in-the-row", "plan-seam-source"),
 )
 
-// dbengine3NotApplicable: the 33 endpoints outside slice 1 (decision D72.6; 39 before the badge contracts applied,
-// D217 F5); every rollup, backfill, restart, replication, automatic tier and plan-switch contract applies (the plan
-// switches over a tier 0 whose oldest files were deleted, from S5, D74.3).
+// dbengine3NotApplicable: the 12 endpoints outside slice 1 (decision D72.6; 39 before the badge contracts applied,
+// D217 F5, and 33 before the weights contracts did, M10 commit 10); every rollup, backfill, restart, replication,
+// automatic tier and plan-switch contract applies (the plan switches over a tier 0 whose oldest files were deleted,
+// from S5, D74.3).
 var dbengine3NotApplicable = mergeScopes(
 	wholeContracts(naEndpoint, endpointContracts...),
 )

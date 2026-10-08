@@ -43,8 +43,9 @@ func TestCorpusProfilesAreValid(t *testing.T) {
 		}
 	}
 
-	// Decision D25, D70.9 and D72.6 counts, less the six badge contracts, which apply since the badge endpoint (D217 F5).
-	for name, want := range map[string][2]int{"ram": {112, 7}, "dbengine1": {105, 3}, "dbengine3": {33, 0}} {
+	// Decision D25, D70.9 and D72.6 counts, less the six badge contracts, which apply since the badge endpoint (D217
+	// F5), and the 21 weights contracts, which apply since the weights endpoints (M10 commit 10).
+	for name, want := range map[string][2]int{"ram": {91, 7}, "dbengine1": {84, 3}, "dbengine3": {12, 0}} {
 		whole, components := 0, 0
 		for scope := range corpusProfiles[name].notApplicable {
 			if scope.component == "" {
@@ -56,6 +57,16 @@ func TestCorpusProfilesAreValid(t *testing.T) {
 		if whole != want[0] || components != want[1] {
 			t.Errorf("%s profile: %d whole contracts and %d component scopes not applicable, want %d and %d",
 				name, whole, components, want[0], want[1])
+		}
+	}
+	// the weights contracts apply in every profile, but the one that asks the MCP tool
+	for name, p := range corpusProfiles {
+		for contract := range manifest {
+			weights := strings.HasPrefix(contract, "W/") && contract != "W/limit-mcp" ||
+				contract == "CASE-023/weights-invalid-options" || contract == "API/fallback-unknown-weights-method"
+			if _, na := p.notApplicableReason(contract, defaultContractComponent); na && weights {
+				t.Errorf("%s profile: %s is not applicable; the weights endpoints are in every profile", name, contract)
+			}
 		}
 	}
 	// the badge contracts apply in every profile
