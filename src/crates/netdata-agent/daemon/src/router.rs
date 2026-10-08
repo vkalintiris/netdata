@@ -4,8 +4,9 @@
 //!
 //! Not ported yet: `/mcp` and `/sse`, and the API commands other than `info`, `chart`, `charts`, `context`,
 //! `contexts`, `registry`, `data`, `dbengine_stats`, `function`, `functions`, `manage`, `me`, `nodes`, `progress`,
-//! `stream_info`, `stream_path`, `versions`, `alerts`, `alert_transitions`, `q`, `settings` and health's (`alarms`,
-//! `alarm_log` and the others of its block of the table, and `badge.svg`).
+//! `stream_info`, `stream_path`, `versions`, `alerts`, `alert_transitions`, `q`, `settings`, version 1's `weights`
+//! and `metric_correlations`, and health's (`alarms`, `alarm_log` and the others of its block of the table, and
+//! `badge.svg`).
 //! `/netdata.conf` shows only the keys of the subsystems ported so far.
 
 use std::sync::Arc;
@@ -39,6 +40,7 @@ use crate::static_file;
 use crate::stream_info;
 use crate::v1_charts;
 use crate::v1_contexts;
+use crate::weights;
 
 /// `FILENAME_MAX`: the path and filename copies are truncated to it.
 pub const FILENAME_MAX: usize = 4096;
@@ -122,6 +124,20 @@ const API_V1: &[Command] = &[
         access: access::ANONYMOUS_DATA,
         allow_subpaths: false,
         callback: data::v1,
+    },
+    Command {
+        name: "weights",
+        acl: acl::bits::METRICS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: weights::v1_weights,
+    },
+    Command {
+        name: "metric_correlations",
+        acl: acl::bits::METRICS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: weights::v1_metric_correlations,
     },
     Command {
         name: "dbengine_stats",
@@ -725,6 +741,7 @@ mod tests {
             meta: None,
             user_config_dir: "/etc/netdata".into(),
             varlib_dir: "/nonexistent-varlib-dir".into(),
+            cpus: 1,
             grouping_windows: Default::default(),
             gap_when_lost_iterations_above: 3,
             release_channel: "nightly",
@@ -1523,6 +1540,113 @@ mod tests {
             assert_eq!(code, status::OK, "{transition}: {body}");
             assert!(body.starts_with(r#"{"api":2,"nodes":[],"alerts":[],"alerts_by_type":["#), "{transition}: {body}");
         }
+    }
+
+    /// `/api/v1/weights` (`api_v1_weights()`: anomaly rates by context) and `/api/v1/metric_correlations`
+    /// (`api_v1_metric_correlations()`: ks2 by chart), over a chart whose `up` rose and was anomalous in the last
+    /// minute while `flat` did not move: the answers' shape, C's refusals with their statuses and bodies, the 404
+    /// of an answer without a dimension, the reply's cache mark by the window, the access and the readiness gate.
+    #[test]
+    fn weights_are_routed_in_v1() {
+        use netdata_agent_rrd::chart::{Algorithm, ChartSpec, ChartType};
+        use netdata_agent_storage::storage_number::SN_FLAG_NOT_ANOMALOUS;
+        let s = shared();
+        let all = acl::bits::ALL_LISTENER_FEATURES;
+        let host = s.hosts.localhost();
+        let now = netdata_agent_rrd::clock::now_realtime_s();
+        let (chart, _) = host.charts().create(&ChartSpec {
+            type_: "w",
+            id: "c",
+            name: None,
+            family: Some("f"),
+            context: Some("w.ctx"),
+            title: "T",
+            units: "u",
+            plugin: "p",
+            module: None,
+            priority: 1000,
+            update_every: 1,
+            chart_type: ChartType::Line,
+            mode: netdata_agent_rrd::mode::DbMode::Ram,
+            history_entries: 3600,
+            page_size: 4096,
+        });
+        let (up, _) = chart.dim_add("up", None, 1, 1, Algorithm::Absolute);
+        let (flat, _) = chart.dim_add("flat", None, 1, 1, Algorithm::Absolute);
+        for t in now - 400..=now - 2 {
+            // well inside the last minute's window whatever second the handler's clock reads
+            let risen = t > now - 70;
+            let at = t as u64 * 1_000_000;
+            up.store_metric(at, if risen { 9.0 } else { 1.0 }, if risen { 0 } else { SN_FLAG_NOT_ANOMALOUS });
+            flat.store_metric(at, 5.0, SN_FLAG_NOT_ANOMALOUS);
+        }
+        host.contexts().process_queued();
+        let json = |path: &[u8], query: &[u8]| {
+            let r = asked(&s, path, query, all);
+            assert_eq!(r.content_type, ContentType::ApplicationJson, "{}", String::from_utf8_lossy(query));
+            (r.code, String::from_utf8(r.body).unwrap(), r.no_cacheable)
+        };
+
+        // the anomaly rates of the last minute, spread: `up`'s 100 is the strongest (0), `flat`'s 0 the other of
+        // two distinct values (a half). An option was given, so zeros count
+        let (code, body, no_cache) = json(b"/api/v1/weights", b"after=-60&options=minify");
+        assert_eq!((code, no_cache), (status::OK, true), "{body}");
+        assert!(body.starts_with(r#"{"after":"#), "{body}");
+        assert!(body.contains(r#""duration":59,"points":0,"statistics":{"query_time_ms":"#), "{body}");
+        assert!(body.contains(r#""group":"average","method":"anomaly-rate","options":["#), "{body}");
+        let tail = concat!(
+            r#""contexts":{"w.ctx":{"charts":{"w.c":{"dimensions":{"up":0,"flat":0.5},"weight":0.25}},"#,
+            r#""weight":0.25}},"correlated_dimensions":2,"total_dimensions_count":2}"#
+        );
+        assert!(body.ends_with(tail), "{body}");
+        // raw: the rates themselves
+        let (code, body, _) = json(b"/api/v1/weights", b"after=-60&options=minify,raw");
+        let raw = r#""dimensions":{"up":100,"flat":0},"weight":50}},"weight":50}},"correlated_dimensions":2,"#;
+        assert!(code == status::OK && body.contains(raw), "{body}");
+        // an absolute window may be cached
+        let absolute = format!("after={}&before={}&options=minify", now - 60, now - 2);
+        let (code, body, no_cache) = json(b"/api/v1/weights", absolute.as_bytes());
+        assert_eq!((code, no_cache), (status::OK, false), "{body}");
+
+        // ks2 by chart, raw so that an unchanged metric's zero is a result too
+        let query = b"after=-60&baseline_after=-240&options=minify,raw";
+        let (code, body, _) = json(b"/api/v1/metric_correlations", query);
+        assert_eq!(code, status::OK, "{body}");
+        assert!(body.contains(r#""baseline_points":"#) && body.contains(r#""method":"ks2""#), "{body}");
+        assert!(body.contains(r#""correlated_charts":{"w.c":{"context":"w.ctx","dimensions":{"up":"#), "{body}");
+        assert!(body.ends_with(r#""correlated_dimensions":2,"total_dimensions_count":2}"#), "{body}");
+
+        // C's refusals
+        let refused = |query: &[u8]| {
+            let (code, body, _) = json(b"/api/v1/weights", query);
+            (code, body)
+        };
+        let limit = r#"{"error":"Weights limits must be nonnegative integers within the supported range."}"#;
+        assert_eq!(refused(b"after=-60&limit=x"), (status::BAD_REQUEST, limit.to_owned()));
+        let none = format!("after={now}&before={now}");
+        let range = r#"{"error": "Invalid selected time-range." }"#;
+        assert_eq!(refused(none.as_bytes()), (status::BAD_REQUEST, range.to_owned()));
+        let few = r#"{"error": "Too few points available, at least 15 are needed." }"#;
+        let (code, body, _) = json(b"/api/v1/metric_correlations", b"after=-60&baseline_after=-120&points=10");
+        assert_eq!((code, body.as_str()), (status::BAD_REQUEST, few));
+        // an answer without a dimension: the one query of a context no host has
+        let nothing = r#"{"error": "no results produced." }"#;
+        assert_eq!(refused(b"after=-60&context=nope.ctx"), (status::NOT_FOUND, nothing.to_owned()));
+        // without any option zeros are no results: a window in which nothing was anomalous gives none
+        assert_eq!(refused(b"after=-300&before=-200").0, status::NOT_FOUND);
+
+        // the access: the metrics feature; no subpath; later versions have no such commands yet
+        let denied = server::permission_denied_acl();
+        for path in [&b"/api/v1/weights"[..], b"/api/v1/metric_correlations"] {
+            let r = asked(&s, path, b"after=-60&options=raw", all & !acl::bits::METRICS);
+            assert_eq!((r.code, &r.body), (denied.code, &denied.body));
+            assert_eq!(asked(&s, path, b"after=-60&options=raw", acl::bits::METRICS).code, status::OK);
+        }
+        assert_ne!(asked(&s, b"/api/v1/weights/x", b"after=-60", all).code, status::OK);
+        // until the agent is ready: 503 with the request
+        let starting = Shared { ready: || false, ..shared() };
+        let r = asked(&starting, b"/api/v1/weights", b"after=-60", all);
+        assert_eq!((r.code, r.content_type), (status::SERVICE_UNAVAILABLE, ContentType::TextPlain));
     }
 
     /// `/api/v3/settings` (`api_v3_settings()`), a command of v3 alone. The checks in C's order, each with C's text:

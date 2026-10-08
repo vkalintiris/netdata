@@ -59,6 +59,7 @@ mod testing;
 mod timezone;
 mod v1_charts;
 mod v1_contexts;
+mod weights;
 
 use netdata_agent_metadata::open::{ContextDb, MetaDb};
 use netdata_agent_metadata::read::{EventKind, NodeId};
@@ -955,6 +956,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         meta: meta.as_ref().map(Arc::downgrade),
         user_config_dir: conf.dirs.user_config.clone(),
         varlib_dir: conf.dirs.varlib.clone(),
+        cpus: conf.threads.cpus as usize,
         grouping_windows,
         gap_when_lost_iterations_above: db.gap_when_lost_iterations_above,
         release_channel,
