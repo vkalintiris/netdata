@@ -5,11 +5,11 @@ use netdata_agent_health::alerts::HostAlerts;
 use netdata_agent_health::api::alert_counts;
 use netdata_agent_query::jsonwrap_v2::node_add_v2;
 use netdata_agent_query::keys::Keys;
-use netdata_agent_query::tables::contexts_options::MCP;
+use netdata_agent_query::tables::contexts_options::{JSON_LONG_KEYS, MCP};
 use netdata_agent_rrd::host::{Host, pending_flags};
 use netdata_agent_text::json::JsonWriter;
 
-use super::{Request, mode};
+use super::{Request, instances, mode};
 use crate::capas;
 use crate::server::Shared;
 
@@ -34,16 +34,19 @@ fn node_add_v2_mcp(w: &mut JsonWriter, host: &Host) {
     w.member_add_boolean("connected", host.is_online());
 }
 
-/// `rrdcontext_to_json_v2_rrdhost()` for the node modes served.
+/// `rrdcontext_to_json_v2_rrdhost()` for the node modes served. `now` is the walk's clock (`ctl->now`): the host's
+/// status is read at it, so an instance's ages and an online host's last time agree with the answer's own `now`.
 pub(super) fn node_to_json(
     w: &mut JsonWriter,
     host: &Host,
     shared: &Shared,
     ni: usize,
-    k: Keys,
     req: &Request,
     mode: u32,
+    now: i64,
 ) {
+    // json_keys_init(): the long names follow their option alone, whatever the node's head is
+    let k = Keys::with_long(req.options & JSON_LONG_KEYS != 0);
     w.add_array_item_object();
     if req.options & MCP != 0 {
         node_add_v2_mcp(w, host);
@@ -81,6 +84,9 @@ pub(super) fn node_to_json(
             false,
             None,
         );
+    }
+    if mode & mode::NODE_INSTANCES != 0 {
+        instances::to_json(w, host, shared, k, req.options, now);
     }
     w.object_close();
 }

@@ -1,7 +1,11 @@
-//! A host's status (`rrdhost_status()` with `RRDHOST_STATUS_BASIC`, `src/database/rrdhost-status.c`): whether its
-//! database is queryable, whether it is live, and what feeds it. Only the fields this agent reports so far.
+//! A host's status (`rrdhost_status()`, `src/database/rrdhost-status.c`): whether its database is queryable, whether
+//! it is live, what feeds it and what it offers. [`Host::status_basic`] is C's `RRDHOST_STATUS_BASIC`, the six fields
+//! health and pulse ask on their own paths; [`Host::status`] is `RRDHOST_STATUS_ALL` without three parts: health's,
+//! which the daemon computes (health sits above this crate); what a child's receiver adds to `ingest` (its
+//! replication, capabilities and socket); and `stream`, the sender's. The last two are not ported yet.
 
-use crate::host::{Host, local_flags};
+use crate::host::{Host, local_flags, netdata_start_time};
+use crate::mode::DbMode;
 
 /// `RRDHOST_DB_STATUS`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +39,62 @@ pub enum IngestStatus {
     Replicating,
     Online,
     Offline,
+}
+
+/// `RRDHOST_ML_STATUS`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MlStatus {
+    Disabled,
+    Offline,
+    Running,
+}
+
+/// `RRDHOST_ML_TYPE`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MlType {
+    Disabled,
+    /// `RRDHOST_ML_TYPE_SELF`: the host's models are trained by this agent.
+    Own,
+    Received,
+}
+
+/// `RRDHOST_DYNCFG_STATUS`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DyncfgStatus {
+    Unavailable,
+    Available,
+}
+
+impl MlStatus {
+    /// `rrdhost_ml_status_to_string()`.
+    pub fn name(self) -> &'static str {
+        match self {
+            MlStatus::Disabled => "disabled",
+            MlStatus::Offline => "offline",
+            MlStatus::Running => "online",
+        }
+    }
+}
+
+impl MlType {
+    /// `rrdhost_ml_type_to_string()`.
+    pub fn name(self) -> &'static str {
+        match self {
+            MlType::Disabled => "disabled",
+            MlType::Own => "self",
+            MlType::Received => "received",
+        }
+    }
+}
+
+impl DyncfgStatus {
+    /// `rrdhost_dyncfg_status_to_string()`.
+    pub fn name(self) -> &'static str {
+        match self {
+            DyncfgStatus::Unavailable => "unavailable",
+            DyncfgStatus::Available => "online",
+        }
+    }
 }
 
 impl DbStatus {
@@ -134,6 +194,56 @@ pub struct HostStatus {
     pub last_time_s: i64,
 }
 
+/// `RRDHOST_STATUS`' `db`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Db {
+    pub status: DbStatus,
+    pub liveness: DbLiveness,
+    /// `host->rrd_memory_mode`.
+    pub mode: DbMode,
+    pub first_time_s: i64,
+    pub last_time_s: i64,
+    /// The items of the host's contexts tree (`host->rrdctx.*_count`), collected or not.
+    pub metrics: u64,
+    pub instances: u64,
+    pub contexts: u64,
+}
+
+/// `RRDHOST_STATUS`' `ingest`, without what a child's receiver adds (the module's note).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ingest {
+    /// `host->stream.rcv.status.connections`: the receivers that attached to the host since the agent started.
+    pub id: u32,
+    pub hops: i16,
+    pub kind: IngestType,
+    pub status: IngestStatus,
+    /// Since when the host is in this state: its last attach or detach; the agent's start for a local host that
+    /// ingests and for a host no receiver touched; the end of its data for an archived one.
+    pub since_s: i64,
+    /// The items of the tree that are collected now (`host->collected.*_count`).
+    pub metrics: u64,
+    pub instances: u64,
+    pub contexts: u64,
+}
+
+/// `RRDHOST_STATUS`' `ml`, without the counts of a host whose models run (no host's do: ML is not ported).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ml {
+    pub status: MlStatus,
+    pub kind: MlType,
+}
+
+/// `RRDHOST_STATUS` with `RRDHOST_STATUS_ALL`, without the parts the module's note names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Status {
+    /// The clock the status was asked with: an online host's data ends there, and ages are counted from it.
+    pub now: i64,
+    pub db: Db,
+    pub ingest: Ingest,
+    pub ml: Ml,
+    pub dyncfg: DyncfgStatus,
+}
+
 impl Host {
     /// `rrdhost_should_run_health()`: health is enabled for the host, its collector is online, it is no orphan and
     /// it ingests data now. A host without a metric is not online in that sense, so an empty one has no pass.
@@ -147,6 +257,84 @@ impl Host {
     /// `rrdhost_status(host, now, &s, RRDHOST_STATUS_BASIC)`: a host that is not online is archived when no receiver
     /// attached to it since the agent started (one loaded from the metadata database), else offline.
     pub fn status_basic(&self, now: i64) -> HostStatus {
+        let contexts = self.contexts();
+        let connections = self.receiver_connections();
+        self.status_decided(now, connections, || contexts.any_metric(), || contexts.any_metric_collected())
+    }
+
+    /// `rrdhost_status(host, now, &s, RRDHOST_STATUS_ALL)`, without the parts the module's note names. The host's
+    /// contexts tree is walked once: its counts are the status's, and the questions the basic status asks the tree
+    /// are answered from them.
+    pub fn status(&self, now: i64) -> Status {
+        self.status_started(now, netdata_start_time())
+    }
+
+    /// [`Host::status`] of an agent that started at `start_s` (C's `netdata_start_time`, one value per process).
+    fn status_started(&self, now: i64, start_s: i64) -> Status {
+        let counts = self.contexts().counts(|_| {});
+        let receiver = self.receiver_status();
+        let basic = self.status_decided(
+            now,
+            receiver.connections,
+            || counts.metrics.available > 0,
+            || counts.metrics.collected > 0,
+        );
+        // rrdhost_status_ingest()'s `since`. A host is local when it is localhost or a vnode, and its type says so:
+        // a vnode takes no receiver, so it is never a child
+        let local = matches!(basic.ingest_type, IngestType::Localhost | IngestType::Virtual);
+        let since_s = if basic.ingest_status == IngestStatus::Archived {
+            basic.last_time_s
+        } else if local && basic.ingest_status == IngestStatus::Online {
+            start_s
+        } else {
+            receiver.last_connected_s.max(receiver.last_disconnected_s)
+        };
+        Status {
+            now,
+            db: Db {
+                status: basic.db_status,
+                liveness: basic.db_liveness,
+                mode: self.info().db_mode,
+                first_time_s: basic.first_time_s,
+                last_time_s: basic.last_time_s,
+                metrics: counts.metrics.available,
+                instances: counts.instances.available,
+                contexts: counts.contexts.available,
+            },
+            ingest: Ingest {
+                id: receiver.connections,
+                hops: self.ingestion_hops(),
+                kind: basic.ingest_type,
+                status: basic.ingest_status,
+                since_s: if since_s == 0 { start_s } else { since_s },
+                metrics: counts.metrics.collected,
+                instances: counts.instances.collected,
+                contexts: counts.contexts.collected,
+            },
+            // rrdhost_status_ml_internal() of a host without an ML host: no host has one here
+            ml: Ml {
+                status: MlStatus::Disabled,
+                kind: MlType::Disabled,
+            },
+            dyncfg: if self.dyncfg_available() {
+                DyncfgStatus::Available
+            } else {
+                DyncfgStatus::Unavailable
+            },
+        }
+    }
+
+    /// What both statuses decide alike (`rrdhost_status_db()` and `rrdhost_status_ingest()`): the retention, the
+    /// database's status and liveness, the ingestion's type and status. `connections` is the host's count of
+    /// attached receivers; the two questions about its contexts tree are asked at most once each, where C loads its
+    /// counters, so the basic status can answer them without walking the tree whole.
+    fn status_decided(
+        &self,
+        now: i64,
+        connections: u32,
+        has_metric: impl Fn() -> bool,
+        has_collected_metric: impl Fn() -> bool,
+    ) -> HostStatus {
         // one load of the local flags, as C's `flags` snapshot: the type and the online state agree while a vnode's
         // run ends (ORPHAN, a word of its own here, is read apart)
         let flags = self.local_flags();
@@ -160,17 +348,13 @@ impl Host {
         if online {
             last_time_s = now;
         }
-        let db_status = if first_time_s == 0
-            || last_time_s == 0
-            || self.is_pending_context_load()
-            || !self.contexts().any_metric()
-        {
+        let db_status = if first_time_s == 0 || last_time_s == 0 || self.is_pending_context_load() || !has_metric() {
             DbStatus::Initializing
         } else {
             DbStatus::Queryable
         };
         let ingest_status = if !online {
-            if self.receiver_connections() == 0 {
+            if connections == 0 {
                 IngestStatus::Archived
             } else {
                 IngestStatus::Offline
@@ -179,7 +363,7 @@ impl Host {
             IngestStatus::Initializing
         } else if is_local {
             IngestStatus::Online
-        } else if self.replicating_charts() > 0 || !self.contexts().any_metric_collected() {
+        } else if self.replicating_charts() > 0 || !has_collected_metric() {
             IngestStatus::Replicating
         } else {
             IngestStatus::Online
@@ -204,5 +388,214 @@ impl Host {
             first_time_s,
             last_time_s,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::chart::Algorithm;
+    use crate::host::{Attach, Hosts, ReceiverLink, ReceiverSlot};
+    use crate::testutil::{collected_chart, info, store};
+
+    const T0: i64 = 1_790_180_000;
+    /// The agent's start in these units; no test here reads the process's own.
+    const START: i64 = 1_790_170_000;
+
+    /// A chart of the host with one dimension that stored at `T0` and was collected, its contexts processed.
+    fn collect(host: &Host) {
+        let chart = collected_chart(host, DbMode::Ram);
+        let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+        store(&dim, T0, 1.0);
+        crate::contexts::collected_rrdset(&chart);
+        host.contexts().worker_cycle();
+    }
+
+    fn slot() -> Arc<ReceiverSlot> {
+        Arc::new(ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {})))
+    }
+
+    /// The six fields of the basic status, taken from the full one.
+    fn basic_of(s: &Status) -> HostStatus {
+        HostStatus {
+            db_status: s.db.status,
+            db_liveness: s.db.liveness,
+            ingest_type: s.ingest.kind,
+            ingest_status: s.ingest.status,
+            first_time_s: s.db.first_time_s,
+            last_time_s: s.db.last_time_s,
+        }
+    }
+
+    /// The full status of a host, which must agree with the basic one in the six fields both have.
+    fn full(host: &Host, now: i64) -> Status {
+        let s = host.status_started(now, START);
+        assert_eq!(basic_of(&s), host.status_basic(now));
+        s
+    }
+
+    /// The texts of the three enums the full status adds (`rrdhost-status.c:44-69`): a host whose models run says
+    /// `online`, one trained here `self`, and DynCfg that is available `online`.
+    #[test]
+    fn the_added_status_texts_are_cs() {
+        let ml = [MlStatus::Disabled, MlStatus::Offline, MlStatus::Running].map(MlStatus::name);
+        assert_eq!(ml, ["disabled", "offline", "online"]);
+        let kind = [MlType::Disabled, MlType::Own, MlType::Received].map(MlType::name);
+        assert_eq!(kind, ["disabled", "self", "received"]);
+        let dyncfg = [DyncfgStatus::Unavailable, DyncfgStatus::Available].map(DyncfgStatus::name);
+        assert_eq!(dyncfg, ["unavailable", "online"]);
+    }
+
+    /// Localhost (`rrdhost-status.c:119-145`, `:169-234`): with nothing collected its database is initializing and
+    /// stale, with no first time and its last time the clock, and its ingestion initializing since the agent's
+    /// start; with a collected metric both are online and live, since the start again. Its id and hops are 0, ML is
+    /// off, and its DynCfg is always there.
+    #[test]
+    fn a_local_host_s_status() {
+        let host = Host::new("guid-l", true, info("l"));
+        let nothing = Status {
+            now: T0 + 50,
+            db: Db {
+                status: DbStatus::Initializing,
+                liveness: DbLiveness::Stale,
+                mode: DbMode::Ram,
+                first_time_s: 0,
+                last_time_s: T0 + 50,
+                metrics: 0,
+                instances: 0,
+                contexts: 0,
+            },
+            ingest: Ingest {
+                id: 0,
+                hops: 0,
+                kind: IngestType::Localhost,
+                status: IngestStatus::Initializing,
+                since_s: START,
+                metrics: 0,
+                instances: 0,
+                contexts: 0,
+            },
+            ml: Ml {
+                status: MlStatus::Disabled,
+                kind: MlType::Disabled,
+            },
+            dyncfg: DyncfgStatus::Available,
+        };
+        assert_eq!(full(&host, T0 + 50), nothing);
+
+        collect(&host);
+        let s = full(&host, T0 + 50);
+        assert_eq!((s.db.status, s.db.liveness), (DbStatus::Queryable, DbLiveness::Live));
+        // the stored point is the second that ends at T0
+        assert_eq!((s.db.first_time_s, s.db.last_time_s), (T0 - 1, T0 + 50));
+        assert_eq!((s.db.metrics, s.db.instances, s.db.contexts), (1, 1, 1));
+        let collected = Ingest {
+            status: IngestStatus::Online,
+            metrics: 1,
+            instances: 1,
+            contexts: 1,
+            ..nothing.ingest
+        };
+        assert_eq!(s.ingest, collected);
+        assert_eq!((s.ml, s.dyncfg), (nothing.ml, DyncfgStatus::Available));
+    }
+
+    /// A vnode a plugin of this agent collects is `virtual`, one hop away, with no receiver ever (id 0); it is
+    /// local, so once it has data it is online since the agent's start. It is not localhost: its DynCfg needs a
+    /// `config` method.
+    #[test]
+    fn a_vnode_s_status() {
+        let hosts = Hosts::new(Host::new("guid-l", true, info("l")));
+        let vnode = hosts.find_or_create("guid-v", DbMode::Ram, || info("v"), |_| {}).expect("created");
+        vnode.set_virtual();
+        vnode.set_collector_online();
+        let s = full(&vnode, T0 + 50);
+        assert_eq!((s.ingest.kind, s.ingest.status), (IngestType::Virtual, IngestStatus::Initializing));
+        assert_eq!((s.ingest.id, s.ingest.hops, s.ingest.since_s), (0, 1, START));
+        collect(&vnode);
+        let s = full(&vnode, T0 + 50);
+        assert_eq!((s.ingest.kind, s.ingest.status), (IngestType::Virtual, IngestStatus::Online));
+        assert_eq!((s.ingest.id, s.ingest.hops, s.ingest.since_s), (0, 1, START));
+        assert_eq!((s.db.liveness, s.dyncfg), (DbLiveness::Live, DyncfgStatus::Unavailable));
+
+        // a host that was a child and is a vnode now is local too: since the agent's start, whatever its receiver
+        // left behind (`rrdhost-status.c:175-178`), and the count of its connections stays
+        let former = hosts.find_or_create("guid-f", DbMode::Ram, || info("f"), |_| {}).expect("created");
+        let gone = slot();
+        assert_eq!(former.set_receiver(Arc::clone(&gone)), Attach::Attached);
+        former.clear_receiver(&gone, 0);
+        assert!(former.receiver_last_disconnected_s() > START);
+        former.set_virtual();
+        former.set_collector_online();
+        collect(&former);
+        let s = full(&former, T0 + 50);
+        assert_eq!((s.ingest.kind, s.ingest.status), (IngestType::Virtual, IngestStatus::Online));
+        assert_eq!((s.ingest.id, s.ingest.since_s), (1, START));
+    }
+
+    /// A host loaded from the metadata database that no receiver attached to is archived, since the end of its
+    /// data (`rrdhost-status.c:197-198`); without data, since the agent's start (`:202`). Its database reads as
+    /// stored: the last time is not the clock.
+    #[test]
+    fn an_archived_host_s_since_is_its_data_s_end() {
+        let hosts = Hosts::new(Host::new("guid-l", true, info("l")));
+        let empty = hosts.add_archived("guid-e", info("e"), |_| {});
+        empty.clear_pending_context_load();
+        let s = full(&empty, T0 + 50);
+        assert_eq!((s.ingest.kind, s.ingest.status), (IngestType::Archived, IngestStatus::Archived));
+        assert_eq!((s.db.status, s.db.last_time_s), (DbStatus::Initializing, 0));
+        assert_eq!((s.ingest.since_s, s.ingest.id), (START, 0));
+
+        let stored = hosts.add_archived("guid-a", info("a"), |_| {});
+        collect(&stored);
+        stored.clear_pending_context_load();
+        let s = full(&stored, T0 + 50);
+        assert_eq!((s.ingest.kind, s.ingest.status), (IngestType::Archived, IngestStatus::Archived));
+        assert_eq!((s.db.status, s.db.liveness), (DbStatus::Queryable, DbLiveness::Stale));
+        assert!(s.db.last_time_s >= T0 && s.db.last_time_s != T0 + 50, "{s:?}");
+        assert_eq!(s.ingest.since_s, s.db.last_time_s);
+    }
+
+    /// A child (`rrdhost-status.c:162-169`, `:187-234`): attached, it is a `child` since its connection, with the
+    /// count of its connections as its id; after it left it is archived by type and offline by status, since its
+    /// disconnection, and its id stays. The database's counts are the tree's items and the ingestion's the collected
+    /// ones: a child that left has its metrics and collects none.
+    #[test]
+    fn a_child_s_status_follows_its_receiver() {
+        let hosts = Hosts::new(Host::new("guid-l", true, info("l")));
+        let child = hosts.find_or_create("guid-c", DbMode::Ram, || info("c"), |_| {}).expect("created");
+        let attached = slot();
+        assert_eq!(child.set_receiver(Arc::clone(&attached)), Attach::Attached);
+        let connected = child.receiver_last_connected_s();
+        assert!(connected > START);
+        let s = full(&child, connected + 5);
+        assert_eq!((s.ingest.kind, s.ingest.status), (IngestType::Child, IngestStatus::Initializing));
+        assert_eq!((s.ingest.id, s.ingest.since_s, s.dyncfg), (1, connected, DyncfgStatus::Unavailable));
+
+        collect(&child);
+        let s = full(&child, connected + 5);
+        assert_eq!((s.ingest.kind, s.ingest.status), (IngestType::Child, IngestStatus::Online));
+        assert_eq!((s.db.liveness, s.db.last_time_s, s.ingest.since_s), (DbLiveness::Live, connected + 5, connected));
+        assert_eq!((s.db.metrics, s.ingest.metrics), (1, 1));
+
+        child.clear_receiver(&attached, 0);
+        child.contexts().worker_cycle();
+        let disconnected = child.receiver_last_disconnected_s();
+        assert!(disconnected >= connected);
+        let s = full(&child, disconnected + 5);
+        assert_eq!((s.ingest.kind, s.ingest.status), (IngestType::Archived, IngestStatus::Offline));
+        assert_eq!((s.ingest.id, s.ingest.since_s, s.db.liveness), (1, disconnected, DbLiveness::Stale));
+        assert_eq!((s.db.metrics, s.db.instances, s.db.contexts), (1, 1, 1));
+        assert_eq!((s.ingest.metrics, s.ingest.instances, s.ingest.contexts), (0, 0, 0));
+
+        // it returns: its metrics are there and none is collected yet, so it replicates (`:181-184`), in the full
+        // status as in the basic one, with a second connection to its count
+        assert_eq!(child.set_receiver(slot()), Attach::Attached);
+        let s = full(&child, disconnected + 5);
+        assert_eq!((s.ingest.kind, s.ingest.status, s.ingest.id), (IngestType::Child, IngestStatus::Replicating, 2));
+        assert_eq!((s.db.status, s.db.liveness), (DbStatus::Queryable, DbLiveness::Stale));
+        assert_eq!((s.db.metrics, s.ingest.metrics), (1, 0));
     }
 }

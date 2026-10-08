@@ -2,9 +2,9 @@
 //! `rrdcontext_to_json_v2()` and its host walk (`src/database/contexts/api_v2_contexts.c`, `query_scope.c`) for the
 //! modes the agent serves so far: `/api/v3/stream_path`, `/api/v2/info` (`/api/v3/info`), `/api/v2/functions`
 //! (`/api/v3/functions`), `/api/v2/versions` (`/api/v3/versions`), `/api/v2/nodes` (`/api/v3/nodes`),
-//! `/api/v2/contexts` (`/api/v3/contexts`), `/api/v2/alerts` (`/api/v3/alerts`), `/api/v2/alert_transitions`
-//! (`/api/v3/alert_transitions`) and `/api/v2/q` (`/api/v3/q`). Decisions D51, D92, D160, D231 and D234 in the
-//! status repository.
+//! `/api/v2/node_instances` (`/api/v3/node_instances`), `/api/v2/contexts` (`/api/v3/contexts`), `/api/v2/alerts`
+//! (`/api/v3/alerts`), `/api/v2/alert_transitions` (`/api/v3/alert_transitions`) and `/api/v2/q` (`/api/v3/q`).
+//! Decisions D51, D92, D160, D231 and D234 in the status repository.
 
 use std::ops::ControlFlow;
 use std::sync::Arc;
@@ -15,13 +15,12 @@ use netdata_agent_metadata::health_log::TransitionsOf;
 use netdata_agent_nrpc::catalog;
 
 use netdata_agent_query::jsonwrap_v2::{cloud_timings, version_hashes_v2};
-use netdata_agent_query::keys::Keys;
 use netdata_agent_query::request::pairs;
 use netdata_agent_query::tables::{
     alert_statuses_to_json_array,
     contexts_options::{
-        CONFIGURATIONS, DEBUG, DIMENSIONS, FAMILY, INSTANCES, JSON_LONG_KEYS, LABELS, LIVENESS, MCP, MINIFY,
-        PRIORITIES, RETENTION, RFC3339, SUMMARY, TITLES, UNITS,
+        CONFIGURATIONS, DEBUG, DIMENSIONS, FAMILY, INSTANCES, LABELS, LIVENESS, MCP, MINIFY, PRIORITIES,
+        RETENTION, RFC3339, SUMMARY, TITLES, UNITS,
     },
     contexts_options_to_json_array, parse_alert_statuses, parse_contexts_options,
 };
@@ -45,6 +44,7 @@ mod agents;
 mod alerts;
 mod contexts;
 mod functions;
+mod instances;
 mod labels;
 mod nodes;
 mod search;
@@ -468,10 +468,9 @@ fn render(shared: &Shared, req: &Request, mode: u32, wall_s: i64) -> Reply {
         alert_transitions_to_json(&mut w, shared, req, &selected, ends);
     }
     if mode & mode::NODES != 0 && !transitions_mode {
-        let k = Keys::with_long(req.options & JSON_LONG_KEYS != 0);
         w.member_add_array(Some(b"nodes"));
         for (ni, host) in selected.iter().enumerate() {
-            node_to_json(&mut w, host, shared, ni, k, req, mode);
+            node_to_json(&mut w, host, shared, ni, req, mode, window.now);
         }
         w.array_close();
     }
@@ -597,6 +596,16 @@ pub fn nodes(route: &Route<'_>, query: &[u8]) -> Reply {
     render(route.shared, &req, nodes_mode, now_realtime_s())
 }
 
+/// `api_v2_node_instances()` (`/api/v2/node_instances`, `/api/v3/node_instances`): the hosts in scope, each with
+/// this agent's instance of it (its database, what feeds it, its health, functions and capabilities), then the
+/// versions and the agent with its info; the host in the URL does not matter.
+pub fn node_instances(route: &Route<'_>, query: &[u8]) -> Reply {
+    let instances_mode =
+        mode::NODES | mode::NODE_INSTANCES | mode::AGENTS | mode::AGENTS_INFO | mode::VERSIONS;
+    let req = parse(query, instances_mode, 0);
+    render(route.shared, &req, instances_mode, now_realtime_s())
+}
+
 /// `api_v2_versions()` (`/api/v2/versions`, `/api/v3/versions`): the version hashes of the hosts in scope, none of
 /// them listed; the host in the URL does not matter.
 pub fn versions(route: &Route<'_>, query: &[u8]) -> Reply {
@@ -614,6 +623,8 @@ pub fn functions(route: &Route<'_>, query: &[u8]) -> Reply {
 
 #[cfg(test)]
 mod tests {
+    use netdata_agent_query::tables::contexts_options::JSON_LONG_KEYS;
+
     use super::*;
 
     #[test]

@@ -1274,7 +1274,19 @@ pub fn agents_v2(
     }
 }
 
-/// `buffer_json_node_add_v2()` with its status (`buffer_json_agent_status_id()`): a node's identity in v2 answers.
+/// `buffer_json_agent_status_id()`: how the agent at index `ai` of the answer's agents answered for a node.
+pub fn agent_status_id(w: &mut JsonWriter, k: Keys, ai: usize, duration_ut: u64) {
+    w.member_add_object(k.status());
+    w.member_add_uint64(k.agent_index(), ai as u64);
+    w.member_add_uint64("code", 200);
+    w.member_add_string("msg", "");
+    if duration_ut != 0 {
+        w.member_add_double("ms", duration_ut as f64 / 1000.0);
+    }
+    w.object_close();
+}
+
+/// `buffer_json_node_add_v2()`: a node's identity in v2 answers, with its status when asked.
 pub fn node_add_v2(
     w: &mut JsonWriter,
     k: Keys,
@@ -1291,14 +1303,7 @@ pub fn node_add_v2(
     w.member_add_string(k.hostname(), host.hostname());
     w.member_add_uint64(k.node_index(), ni as u64);
     if show_status {
-        w.member_add_object(k.status());
-        w.member_add_uint64(k.agent_index(), 0);
-        w.member_add_uint64("code", 200);
-        w.member_add_string("msg", "");
-        if duration_ut != 0 {
-            w.member_add_double("ms", duration_ut as f64 / 1000.0);
-        }
-        w.object_close();
+        agent_status_id(w, k, 0, duration_ut);
     }
 }
 

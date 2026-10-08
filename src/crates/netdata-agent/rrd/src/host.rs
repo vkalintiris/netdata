@@ -983,6 +983,12 @@ impl Host {
         &self.functions
     }
 
+    /// `dyncfg_available_for_rrdhost()`: localhost's DynCfg is always there; another host's while its `config`
+    /// method is available.
+    pub fn dyncfg_available(&self) -> bool {
+        self.is_localhost || self.functions.available(CONFIG_METHOD)
+    }
+
     pub fn machine_guid(&self) -> &str {
         &self.machine_guid
     }
@@ -1767,6 +1773,17 @@ impl Host {
         self.receiver_connections.load(Ordering::Relaxed)
     }
 
+    /// The receiver's stored values, read together as `rrdhost_status_ingest()` reads them: an attach and a detach
+    /// write them under the receiver lock, so no reader sees the two times of one of them half written.
+    pub fn receiver_status(&self) -> ReceiverStatus {
+        let _attached = lock(&self.receiver);
+        ReceiverStatus {
+            connections: self.receiver_connections.load(Ordering::Relaxed),
+            last_connected_s: self.receiver_last_connected_s.load(Ordering::Relaxed),
+            last_disconnected_s: self.receiver_last_disconnected_s.load(Ordering::Relaxed),
+        }
+    }
+
     /// `backfill_pending`.
     pub fn backfill_pending(&self) -> u32 {
         self.backfill_pending.load(Ordering::Relaxed)
@@ -1863,6 +1880,21 @@ impl Host {
         }
         cleanup();
     }
+}
+
+/// `PLUGINSD_FUNCTION_CONFIG`: the method a host answers DynCfg with.
+const CONFIG_METHOD: &[u8] = b"config";
+
+/// `host->stream.rcv.status`: what the host keeps of its receivers, as one hold of the receiver lock finds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReceiverStatus {
+    /// The receivers that attached to the host since the agent started.
+    pub connections: u32,
+    /// When the attached receiver attached; 0 without one.
+    pub last_connected_s: i64,
+    /// When the last receiver left; 0 while one is attached, and for a host none attached to (but an ephemeral one,
+    /// which counts as disconnected at its load).
+    pub last_disconnected_s: i64,
 }
 
 /// Why `rrdhost_find_or_create()` returned NULL: the receiver answers busy.

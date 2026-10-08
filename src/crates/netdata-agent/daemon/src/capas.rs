@@ -8,9 +8,6 @@ use netdata_agent_text::json::JsonWriter;
 /// `HTTP_API_V2_VERSION` (`aclk_get_http_api_version()`).
 pub const HTTP_API_V2_VERSION: u64 = 7;
 
-/// `PLUGINSD_FUNCTION_CONFIG`: the method a host answers DynCfg with.
-const CONFIG_METHOD: &[u8] = b"config";
-
 /// `struct capability`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capability {
@@ -55,7 +52,7 @@ pub const NODE_INSTANCE: [Capability; 9] = [
 pub fn to_json(w: &mut JsonWriter, key: &[u8], host: &Host) {
     let local = host.is_localhost();
     let functions = local || host.receiver().is_some_and(|slot| slot.link.capabilities & caps::FUNCTIONS != 0);
-    let dyncfg = local || host.functions().available(CONFIG_METHOD);
+    let dyncfg = host.dyncfg_available();
     w.member_add_array(Some(key));
     for c in NODE_INSTANCE {
         let (version, enabled) = match c.name {

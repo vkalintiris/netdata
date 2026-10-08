@@ -3,10 +3,10 @@
 //! `web_client_api_request_vX()` in `src/web/api/web_api.c`.
 //!
 //! Not ported yet: `/mcp` and `/sse`, and the API commands other than `info`, `chart`, `charts`, `context`,
-//! `contexts`, `registry`, `data`, `dbengine_stats`, `function`, `functions`, `manage`, `me`, `nodes`, `progress`,
-//! `stream_info`, `stream_path`, `versions`, `alerts`, `alert_transitions`, `q`, `settings`, `weights`,
-//! `metric_correlations`, and health's (`alarms`, `alarm_log` and the others of its block of the table, and
-//! `badge.svg`).
+//! `contexts`, `registry`, `data`, `dbengine_stats`, `function`, `functions`, `manage`, `me`, `nodes`,
+//! `node_instances`, `progress`, `stream_info`, `stream_path`, `versions`, `alerts`, `alert_transitions`, `q`,
+//! `settings`, `weights`, `metric_correlations`, and health's (`alarms`, `alarm_log` and the others of its block of
+//! the table, and `badge.svg`).
 //! `/netdata.conf` shows only the keys of the subsystems ported so far.
 
 use std::sync::Arc;
@@ -305,6 +305,13 @@ const API_V2: &[Command] = &[
         callback: |route, _, query| contexts_v2::nodes(route, query),
     },
     Command {
+        name: "node_instances",
+        acl: acl::bits::NODES,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: |route, _, query| contexts_v2::node_instances(route, query),
+    },
+    Command {
         name: "versions",
         acl: acl::bits::NODES,
         access: access::ANONYMOUS_DATA,
@@ -441,6 +448,13 @@ const API_V3: &[Command] = &[
         access: access::ANONYMOUS_DATA,
         allow_subpaths: false,
         callback: |route, _, query| contexts_v2::nodes(route, query),
+    },
+    Command {
+        name: "node_instances",
+        acl: acl::bits::NODES,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: |route, _, query| contexts_v2::node_instances(route, query),
     },
     Command {
         name: "stream_path",
@@ -1123,6 +1137,98 @@ mod tests {
         assert_eq!(asked(&s, b"/api/v2/versions", b"", acl::bits::NODES).code, status::OK);
         assert_eq!(asked(&s, b"/api/v3/versions", b"", all & !acl::bits::NODES).code, status::OK);
         assert_eq!(asked(&s, b"/api/v3/versions", b"", 0).code, status::OK);
+    }
+
+    /// `/api/v2/node_instances` and `/api/v3/node_instances` (`api_v2_node_instances()`: the NODES, NODE_INSTANCES,
+    /// AGENTS, AGENTS_INFO and VERSIONS modes): `api`, the nodes, `versions`, `agents` and `timings`, in that order.
+    /// A node is its identity with no status of its own, then `instances`: one object with the agent's status
+    /// (`st`), `db`, `ingest`, `ml`, `health`, `functions`, `capabilities` and `dyncfg`. The fixture's localhost
+    /// collects nothing: its database is initializing up to the answer's own clock and so is its ingestion, whose
+    /// age is counted from that clock, with a window too (the clock is then a second behind the wall's, for the
+    /// status as for the agent). The agent comes with its info. `long-json-keys` reaches the instance's status;
+    /// `mcp` changes the node's head and drops `api` and `timings`, not the instance; `debug` names the mode. Both
+    /// rows ask the client for the nodes feature, and for that alone.
+    #[test]
+    fn node_instances_are_routed_in_v2_and_v3() {
+        let s = shared();
+        let all = acl::bits::ALL_LISTENER_FEATURES;
+        let text = |path: &[u8], query: &[u8]| {
+            let r = asked(&s, path, query, all);
+            let shown = String::from_utf8_lossy(path).into_owned();
+            assert_eq!((r.code, r.content_type), (status::OK, ContentType::ApplicationJson), "{shown}");
+            assert!(r.no_cacheable, "{shown}");
+            String::from_utf8(r.body).unwrap()
+        };
+        // the text between the first `from` and the next `to`
+        let between = |body: &str, from: &str, to: &str| {
+            let at = body.find(from).unwrap_or_else(|| panic!("{from} in {body}")) + from.len();
+            let len = body[at..].find(to).unwrap_or_else(|| panic!("{to} in {body}"));
+            body[at..at + len].to_owned()
+        };
+        // the agent's own clock: the `now` that ends the agent's identity, before its index
+        let agent_now = |body: &str| {
+            let identity = between(body, r#""agents":[{"#, r#","ai":0"#);
+            identity.rsplit_once(r#""now":"#).unwrap_or_else(|| panic!("now in {identity}")).1.to_owned()
+        };
+        for path in [&b"/api/v2/node_instances"[..], b"/api/v3/node_instances"] {
+            let shown = String::from_utf8_lossy(path).into_owned();
+            assert_eq!(members(&text(path, b"")), ["api", "nodes", "versions", "agents", "timings"], "{shown}");
+            let body = text(path, b"options=minify");
+            let head = concat!(
+                r#"{"api":2,"nodes":[{"mg":"0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e","nm":"box","ni":0,"#,
+                r#""instances":[{"st":{"ai":0,"code":200,"msg":""},"db":{"status":"initializing","#,
+                r#""liveness":"stale","mode":"ram","first_time":0,"last_time":"#
+            );
+            assert!(body.starts_with(head), "{shown}: {body}");
+            let now = between(&body, r#""last_time":"#, ",");
+            assert_eq!(agent_now(&body), now, "{shown}: {body}");
+            // no unit sets the process's start, so the ingestion is since 0 and its age the clock itself
+            let rest = [
+                r#","metrics":0,"instances":0,"contexts":0},"ingest":{"id":0,"hops":0,"type":"localhost","#,
+                r#""status":"initializing","since":0,"age":"#,
+                now.as_str(),
+                r#","metrics":0,"instances":0,"contexts":0},"ml":{"status":"disabled","type":"disabled"},"#,
+                r#""health":{"status":"disabled"},"functions":{},"capabilities":[{"name":"proto","#,
+            ]
+            .concat();
+            assert!(body[head.len() + now.len()..].starts_with(&rest), "{shown}: {body}");
+            let tail = concat!(
+                r#"{"name":"dyncfg","version":2,"enabled":true}],"dyncfg":{"status":"online"}}]}],"#,
+                r#""versions":{"#
+            );
+            assert!(body.contains(tail), "{shown}: {body}");
+            assert!(body.contains(r#"},"agents":[{"#) && body.contains(r#""timings":{"#), "{shown}: {body}");
+            // the agent comes with its info (AGENTS_INFO)
+            assert!(body.contains(r#""application":{"#) && body.contains(r#""cloud":{"#), "{shown}: {body}");
+
+            let windowed = text(path, b"options=minify&after=-600");
+            assert_eq!(agent_now(&windowed), between(&windowed, r#""last_time":"#, ","), "{shown}: {windowed}");
+
+            let long = text(path, b"options=minify|long-json-keys");
+            let status = concat!(
+                r#""nodes_array_index":0,"instances":[{"status":{"agents_array_index":0,"code":200,"msg":""},"#,
+                r#""db":{"status":"initializing","#
+            );
+            assert!(long.contains(status), "{shown}: {long}");
+
+            let mcp = text(path, b"options=mcp|minify");
+            let head = concat!(
+                r#"{"nodes":[{"machine_guid":"0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e","hostname":"box","#,
+                r#""relationship":"localhost","connected":true,"instances":[{"st":{"ai":0,"code":200,"msg":""},"#,
+                r#""db":{"status":"initializing","#
+            );
+            assert!(mcp.starts_with(head), "{shown}: {mcp}");
+            assert!(!mcp.contains(r#""timings":{"routing_ms""#), "{shown}: {mcp}");
+
+            let debug = text(path, b"options=debug|minify");
+            let mode = r#""mode":["versions","agents","agents-info","nodes","nodes-instances"],"#;
+            assert!(debug.contains(mode), "{shown}: {debug}");
+
+            let denied = server::permission_denied_acl();
+            let r = asked(&s, path, b"", all & !acl::bits::NODES);
+            assert_eq!((r.code, &r.body), (denied.code, &denied.body), "{shown}");
+            assert_eq!(asked(&s, path, b"", acl::bits::NODES).code, status::OK, "{shown}");
+        }
     }
 
     /// `/api/v2/nodes` and `/api/v3/nodes` (`api_v2_nodes()`, the NODES and NODES_INFO modes): the hosts with their
