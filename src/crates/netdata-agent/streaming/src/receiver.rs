@@ -226,6 +226,9 @@ fn write_buffer(attached: &mut Attached, parser: Option<(&Parser, Option<&[u8]>)
         reason.text(),
         raw_fd(&attached.stream)
     );
+    // receiver_set_exit_reason(rpt, reason, false), said here because an opcode's failed write removes nothing
+    // (stream-receiver.c:957): the removal that follows, whatever its own reason, does not replace it
+    attached.slot.set_exit_reason(reason.0, false);
     Err(reason)
 }
 
@@ -309,6 +312,10 @@ impl Attached {
     /// (`pluginsd_process_cleanup()` at the end of `rrdhost_clear_receiver()`: its THREAD CLEANUP record is the
     /// removal's), the parent label updated. The caller gives back the host's stream thread pin.
     fn leave_host(&self, reason: Reason, parser: Option<Parser>) {
+        // receiver_set_exit_reason(rpt, reason, false): the removal's reason is the receiver's own account when
+        // nothing gave one before (a stopper's, a failed write's); the host keeps that account, not `reason`
+        // (stream-receiver.c:681, :765, :1498)
+        self.slot.set_exit_reason(reason.0, false);
         self.host
             .pulse_status(netdata_agent_rrd::pulse::host_status::RCV_OFFLINE);
         self.host.clear_receiver_then(&self.slot, reason.0, || drop(parser));
@@ -1271,6 +1278,10 @@ impl StreamWorker {
     /// The thread's exit: every child disconnected.
     pub(crate) fn stop_children(&mut self, cx: &mut Context<'_>) {
         for index in 0..self.children.len() {
+            // stream_receiver_cleanup(): the shutdown is forced over whatever the receiver said before
+            if let Some(child) = self.children[index].as_ref() {
+                child.attached.slot.set_exit_reason(Reason::DISCONNECT_SHUTDOWN.0, true);
+            }
             self.disconnect(cx, index, Reason::DISCONNECT_SHUTDOWN);
         }
     }
@@ -2524,6 +2535,65 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    /// The host keeps the receiver's own account of why it ended (`stream-receiver.c:1498`). A removal's reason is
+    /// that account when nothing was said before (`:681`); what was said first stays (`:334-338`): a stopper's forced
+    /// reason over the "signaled to stop" the thread then disconnects with (`:1526-1530`, `:344`), and a failed
+    /// write on the opcode path, which removes nothing (`:957`), over the reason of the removal that follows; the
+    /// stream thread's shutdown forces its own over anything (`:1337`).
+    #[test]
+    fn the_host_keeps_the_receiver_s_own_exit_reason() {
+        use std::io::Write;
+        // a refused line: the removal's own reason
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, host, _slot, mut theirs) = child(0xb1, crate::caps::V2, &pool, &hosts, &connector);
+        s.with(|w, cx| w.attach(cx, attached));
+        theirs.write_all(b"BOGUS\n").unwrap();
+        s.turn(Duration::from_millis(50));
+        assert!(host.receiver().is_none());
+        assert_eq!(host.receiver_status().reason, Reason::RCV_DISCONNECT_PARSER_FAILED.0);
+
+        // a stopper: the thread sees the flag and disconnects with "signaled to stop"; the stopper's reason stays
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, host, slot, _theirs) = child(0xb2, crate::caps::V2, &pool, &hosts, &connector);
+        s.with(|w, cx| w.attach(cx, attached));
+        let stopped = std::thread::scope(|scope| {
+            let stopper = scope.spawn(|| host.stop_receiver_and_wait(&slot, Reason::RCV_DISCONNECT_STALE_RECEIVER.0));
+            while !slot.stop_requested.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            s.with(|w, cx| w.tick_children(cx));
+            stopper.join().unwrap()
+        });
+        assert!(stopped && host.receiver().is_none());
+        assert_eq!(host.receiver_status().reason, Reason::RCV_DISCONNECT_STALE_RECEIVER.0);
+
+        // a failed write on the opcode path says why and removes nothing; the removal that follows keeps it
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, host, slot, theirs) = child(0xb3, crate::caps::V2, &pool, &hosts, &connector);
+        s.with(|w, cx| {
+            w.attach(cx, attached);
+            drop(theirs);
+            assert_eq!(slot.send_to_child(b"x\n", Traffic::Functions), 2);
+            w.drain_inline(cx);
+        });
+        let said = slot.exit_reason();
+        let write_failures = [Reason::DISCONNECT_SOCKET_WRITE_FAILED.0, Reason::DISCONNECT_SOCKET_CLOSED_BY_REMOTE.0];
+        assert!(write_failures.contains(&said), "{said}");
+        assert!(host.receiver().is_some(), "the opcode path removes nothing");
+        s.turn(Duration::from_millis(50));
+        assert!(host.receiver().is_none());
+        assert_eq!(host.receiver_status().reason, said);
+
+        // the thread's shutdown forces its own reason over one given before
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, host, slot, _theirs) = child(0xb4, crate::caps::V2, &pool, &hosts, &connector);
+        s.with(|w, cx| w.attach(cx, attached));
+        assert_eq!(slot.set_exit_reason(Reason::DISCONNECT_SOCKET_ERROR.0, false), Reason::DISCONNECT_SOCKET_ERROR.0);
+        s.with(|w, cx| w.stop_children(cx));
+        assert!(host.receiver().is_none());
+        assert_eq!(host.receiver_status().reason, Reason::DISCONNECT_SHUTDOWN.0);
     }
 
     /// The traffic time moves only once a read was processed without a removal (`stream_receiver_receive_data()`): a
