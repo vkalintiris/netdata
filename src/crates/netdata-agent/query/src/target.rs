@@ -153,6 +153,8 @@ pub struct QueryMetric {
     pub plan: Vec<crate::plan::PlanEntry>,
     /// The v2 group it joined (`qm->grouped_as`).
     pub grouped_as: GroupedAs,
+    /// How long its execution took, from the end of the metric executed before it (`qm->duration_ut`).
+    pub duration_ut: u64,
 }
 
 impl QueryMetric {
@@ -515,6 +517,7 @@ impl Walk<'_> {
             query_points: StoragePoint::default(),
             plan: Vec::new(),
             grouped_as: GroupedAs::default(),
+            duration_ut: 0,
         });
         true
     }

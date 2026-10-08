@@ -911,9 +911,11 @@ impl NodeTimer {
         }
     }
 
-    /// After a metric executed.
-    fn executed(&mut self) {
-        self.last = Instant::now();
+    /// After a metric executed: its duration is the time since the one executed before it (or the run's start).
+    fn executed(&mut self, qt: &mut QueryTarget, d: usize) {
+        let now = Instant::now();
+        qt.query[d].duration_ut = now.saturating_duration_since(self.last).as_micros() as u64;
+        self.last = now;
     }
 }
 
@@ -957,7 +959,7 @@ pub fn run_v1(qt: &mut QueryTarget, window: &mut Window, control: &Control) -> R
         if query_metric(qt, d, window, &mut grouping, &mut r, d).is_none() {
             continue;
         }
-        timer.executed();
+        timer.executed(qt, d);
         count_queried(qt, d);
         control.metric_queried(&r, &mut last_points);
         if qt.query[d].status & metric_status::NONZERO != 0 {
@@ -1001,7 +1003,7 @@ pub fn run_v2(qt: &mut QueryTarget, window: &mut Window, control: &Control) -> O
         else {
             continue;
         };
-        timer.executed();
+        timer.executed(qt, d);
         let r_tmp = &grouped.r_tmp;
         // The execution sets NONZERO on the column; v2 copies it back to the metric.
         qt.query[d].status = r_tmp.od[0];

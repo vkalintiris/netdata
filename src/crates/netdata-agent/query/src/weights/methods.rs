@@ -19,6 +19,7 @@ use super::Method;
 use super::ks2::kstwo;
 use super::results::{Found, Of, Registered, flags, register};
 use crate::execute::{Control, run_v1};
+use crate::format::exposed;
 use crate::grouping::Windows;
 use crate::request::{DataRequest, Profile};
 use crate::tables::{TimeGrouping, options};
@@ -321,6 +322,106 @@ impl Run<'_> {
             duration_us,
         };
         register(&mut self.results, &mut self.stats, self.register_zero, of, found);
+    }
+}
+
+/// The request's eleven selector texts, as given (`qwr`): the one-query path hands them to a query target.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Texts {
+    pub scope_nodes: Option<Vec<u8>>,
+    pub scope_contexts: Option<Vec<u8>>,
+    pub scope_instances: Option<Vec<u8>>,
+    pub scope_labels: Option<Vec<u8>>,
+    pub scope_dimensions: Option<Vec<u8>>,
+    pub nodes: Option<Vec<u8>>,
+    pub contexts: Option<Vec<u8>>,
+    pub instances: Option<Vec<u8>>,
+    pub dimensions: Option<Vec<u8>>,
+    pub labels: Option<Vec<u8>>,
+    pub alerts: Option<Vec<u8>>,
+}
+
+impl Run<'_> {
+    /// `rrdset_weights_multi_dimensional_value()`, the path of the methods `value` and `anomaly-rate` when the
+    /// request names contexts: one version-1 query of one point over every host, with the request's texts and
+    /// its timeout, counted as a weights query while it runs. Each column of its one row is a metric looked at;
+    /// an exposed column whose cell is a number is a result, with the points and the duration of its metric.
+    /// Returns how many metrics were looked at. Nothing is done unless the result has exactly one row and a
+    /// column for every query metric; a query cut short by its timeout is not told apart.
+    pub fn one_query(&mut self, hosts: Vec<Arc<Host>>, texts: &Texts, timeout_ms: i32) -> usize {
+        let mut data = DataRequest::new(1, self.env.profile);
+        data.scope_nodes = texts.scope_nodes.clone();
+        data.scope_contexts = texts.scope_contexts.clone();
+        data.scope_instances = texts.scope_instances.clone();
+        data.scope_labels = texts.scope_labels.clone();
+        data.scope_dimensions = texts.scope_dimensions.clone();
+        data.nodes = texts.nodes.clone();
+        data.contexts = texts.contexts.clone();
+        data.instances = texts.instances.clone();
+        data.dimensions = texts.dimensions.clone();
+        data.labels = texts.labels.clone();
+        data.alerts = texts.alerts.clone();
+        data.after = self.after;
+        data.before = self.before;
+        data.points = 1;
+        data.options = self.options | options::NATURAL_POINTS;
+        data.time_group = self.time_group;
+        data.time_group_options = self.time_group_options.clone();
+        data.tier = self.tier;
+        data.timeout_ms = timeout_ms;
+        data.priority = Priority::SynchronousFirst;
+
+        let mut qt = create(data, Source::V2 { hosts }, self.env.now_s);
+        let r = {
+            let _running = UserWeightsQuery::start();
+            let Some(mut window) = calculate(&qt, self.env.now_s) else {
+                return 0;
+            };
+            run_v1(&mut qt, &mut window, &self.env.control())
+        };
+        if r.rows != 1 || r.columns == 0 || r.columns != qt.query.len() {
+            return 0;
+        }
+        let (mut examined, mut queries) = (0, 0);
+        // a host's name is taken when the columns reach it
+        let mut named: Option<(usize, String)> = None;
+        for (d, qm) in qt.query.iter().enumerate() {
+            examined += 1;
+            if !exposed(r.od[d], self.options) {
+                continue;
+            }
+            // one row: the cell is the column's
+            let value = r.v[d];
+            if value.is_finite() {
+                let qd = &qt.dimensions[qm.dimension];
+                let qi = &qt.instances[qd.instance];
+                let qc = &qt.contexts[qi.context];
+                let host = &qt.nodes[qc.node].host;
+                let hostname = match &named {
+                    Some((node, hostname)) if *node == qc.node => hostname.clone(),
+                    _ => {
+                        let hostname = host.hostname();
+                        named = Some((qc.node, hostname.clone()));
+                        hostname
+                    }
+                };
+                let of = Of { host, hostname: &hostname, context: &qc.rc, instance: &qi.ri, metric: &qd.rm };
+                let found = Found {
+                    value,
+                    flags: 0,
+                    highlighted: Some(qm.query_points),
+                    baseline: None,
+                    duration_us: qm.duration_ut,
+                };
+                register(&mut self.results, &mut self.stats, self.register_zero, &of, found);
+            }
+            queries += 1;
+        }
+        // C's value of this path has no points per tier: they are not added
+        self.stats.db_queries += queries;
+        self.stats.result_points += r.result_points_generated;
+        self.stats.db_points += r.db_points_read;
+        examined
     }
 }
 
@@ -670,6 +771,62 @@ mod tests {
         let mut nonzero = run(&profile, Method::Ks2, 60, 120);
         nonzero.register_zero = false;
         assert!(on(nonzero, &["b"]).results.is_empty());
+    }
+
+    /// `rrdset_weights_multi_dimensional_value()`: one query over the hosts gives the values the method gives
+    /// metric by metric, in the same order, for the metrics that are columns: the hidden one is none, so it is
+    /// not looked at here. Every exposed column counts as a query; the points per tier are not added; a zero is
+    /// a result only when zeros count; the texts select as they select for a data query.
+    #[test]
+    fn one_query_gives_the_values_of_the_metrics_it_selects() {
+        use crate::testing::weights_host_as;
+        let profile = Profile::default();
+        let hosts = vec![weights_host_as("guid-1", "one"), weights_host_as("guid-2", "two")];
+        let named = |run: &Run| -> Vec<(String, String, f64)> {
+            run.results.iter().map(|t| (t.hostname.clone(), t.metric.id().to_string(), t.value)).collect()
+        };
+        let texts = |set: &dyn Fn(&mut Texts)| {
+            let mut texts = Texts { contexts: Some(b"ctx.w".to_vec()), ..Texts::default() };
+            set(&mut texts);
+            texts
+        };
+        let asked = |texts: &Texts, register_zero: bool| {
+            let mut run = run(&profile, Method::Value, 60, 60);
+            run.register_zero = register_zero;
+            let examined = run.one_query(hosts.clone(), texts, 0);
+            (run, examined)
+        };
+
+        // the method, metric by metric, on one such host
+        let by_metric = on(run(&profile, Method::Value, 60, 60), &["a", "b", "z", "step"]);
+        let of_host = |hostname: &str| -> Vec<(String, String, f64)> {
+            by_metric.results.iter().map(|t| (hostname.to_string(), t.metric.id().to_string(), t.value)).collect()
+        };
+        let both: Vec<_> = of_host("one").into_iter().chain(of_host("two")).collect();
+        assert_eq!(both.len(), 8);
+
+        let (got, examined) = asked(&texts(&|_| {}), true);
+        assert_eq!((named(&got), examined), (both.clone(), 8));
+        assert_eq!(got.stats.db_queries, 8);
+        assert!(got.stats.db_points > 0 && got.stats.result_points == 8, "{:?}", got.stats);
+        assert_eq!(got.stats.db_points_per_tier, [0; RRD_STORAGE_TIERS]);
+        let first = &got.results[0];
+        let read = by_metric.results[0].highlighted;
+        assert_eq!((first.flags, first.baseline, first.highlighted), (0, StoragePoint::default(), read));
+        assert!(Arc::ptr_eq(&first.host, &hosts[0]) && first.instance.id() == "t.w" && first.context.id() == "ctx.w");
+
+        // zeros do not count: `z` is still a column and a query, and no result
+        let (got, examined) = asked(&texts(&|_| {}), false);
+        let without_z: Vec<_> = both.iter().filter(|(_, metric, _)| metric != "z").cloned().collect();
+        assert_eq!((named(&got), examined, got.stats.db_queries), (without_z, 8, 8));
+
+        // the texts: a host, a dimension; a context that is not there gives no column and nothing is done
+        let (got, examined) = asked(&texts(&|t| t.nodes = Some(b"two".to_vec())), true);
+        assert_eq!((named(&got), examined), (of_host("two"), 4));
+        let (got, examined) = asked(&texts(&|t| t.dimensions = Some(b"b".to_vec())), true);
+        assert_eq!((named(&got).len(), examined, got.stats.db_queries), (2, 2, 2));
+        let (got, examined) = asked(&texts(&|t| t.contexts = Some(b"nope".to_vec())), true);
+        assert_eq!((got.results.len(), examined, got.stats), (0, 0, Stats::default()));
     }
 
     /// `merge_query_value_to_stats()`.
