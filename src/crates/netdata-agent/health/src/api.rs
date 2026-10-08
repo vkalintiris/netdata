@@ -1,9 +1,10 @@
 //! What the web API shows of a host's alerts and variables: the bodies of `/api/v1/alarms`, `/api/v1/alarms_values`
 //! and `/api/v1/alarm_count` (`health_json.c`), the body of `/api/v1/alarm_variables`
-//! (`health_api_v1_chart_variables2json()`), a chart's `alarms` member (`rrdset2json()`), and the counts of
-//! `/api/v1/charts` and `/api/v1/info`.
+//! (`health_api_v1_chart_variables2json()`), a chart's `alarms` member (`rrdset2json()`), the counts of
+//! `/api/v1/charts` and `/api/v1/info`, and the count by status of a node's `health` object.
 //!
-//! None of them looks at whether health is enabled: a host without alerts gives empty members and zero counts.
+//! None of them looks at whether health is enabled: a host without alerts gives empty members and zero counts. (The
+//! node's `health` object does, in its writer.)
 
 use std::sync::Arc;
 

@@ -1149,9 +1149,12 @@ mod tests {
             alert.publish(&run, None);
             assert_eq!(health(), counted("online", counts), "{status:?}");
         }
-        // a chart that waits for its alerts: `initializing`, still with the count
+        // a chart that waits for its alerts: `initializing`, still with the counts as they are
+        let mut run = alert.run();
+        run.status = Status::Warning;
+        alert.publish(&run, None);
         host.raise_pending_flags(netdata_agent_rrd::host::pending_flags::HEALTH_INITIALIZATION);
-        assert_eq!(health(), counted("initializing", [0, 0, 0, 0, 0]));
+        assert_eq!(health(), counted("initializing", [0, 1, 0, 0, 0]));
         let body = text(b"/api/v3/nodes", b"options=minify");
         assert!(body.contains(r#"{"name":"health","version":2,"enabled":true}"#), "{body}");
     }

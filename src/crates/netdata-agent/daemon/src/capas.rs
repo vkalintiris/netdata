@@ -112,7 +112,7 @@ mod tests {
         ["funcs", "health", "dyncfg"].map(entry)
     }
 
-    /// Localhost's nine entries, in C's order and with C's versions (`aclk_capas.c:44-55`); the flags of the
+    /// Localhost's nine entries, in C's order (`aclk_capas.c:44-55`), with C's versions but `ml`'s; the flags of the
     /// subsystems not ported yet are off. `/api/v2/info` prints these.
     #[test]
     fn localhost_s_capabilities_are_the_table_s() {
@@ -156,6 +156,11 @@ mod tests {
         assert_eq!(own(&local), ["1/true", "2/false", "2/true"]);
         local.set_health_enabled(true);
         assert_eq!(own(&local), ["1/true", "2/true", "2/true"]);
+
+        // a virtual node of one of this agent's plugins is not localhost: C's shortcut is `host == localhost` alone
+        let vnode = host(false);
+        vnode.set_virtual();
+        assert_eq!(own(&vnode), ["0/false", "2/false", "2/false"]);
 
         // a child without a receiver, then with one that negotiated everything but functions
         let without = host(false);

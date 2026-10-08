@@ -173,7 +173,8 @@ pub struct Pass<'a> {
     pub gate: &'a dyn Fn() -> bool,
 }
 
-/// `struct health_alert_status_counts`: the host's alerts by status, as a complete pass found them.
+/// A host's alerts by status: `struct health_alert_status_counts` as a complete pass found them, and the same five
+/// counts as a request takes them for a node's `health` object (`api::alert_counts()`).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PassCounts {
     pub clear: u32,
