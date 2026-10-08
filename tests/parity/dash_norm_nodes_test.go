@@ -3,14 +3,17 @@
 package parity
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
 
-// testDashNormNodes pins the node rows the forks of milestone 10's commit 2 add (D231): F1's guard (nodesHealthOn),
-// F2's family and guard (fnStreamNodesFamily, fnStreamNodesFacts) and the context scope's row (`v2-nodes-ctx`), on
-// C's answers recorded C against C (H33's probe p1, 14:00-14:01Z: `health.api` `endpoints`, `fn.stream` `calls`,
-// `api.v2-nodes`), trimmed to the members under test.
+// testDashNormNodes pins the node rows the forks of milestone 10's commit 2 add (D231, D232): F1's guard
+// (nodesHealthOn), F2's family and guard (fnStreamNodesFamily, fnStreamNodesFacts), the context scope's rows
+// (`v2-nodes-ctx`, `v2-nodes-nomatch`) and the wait for a child that is gone (dashNodeState, dashGonePoll), on C's
+// answers recorded C against C (H33's probe p1, 14:00-14:01Z: `health.api` `endpoints`, `fn.stream` `calls`,
+// `api.v2-nodes`; H34's probe p1, 23:22-23:23Z: the scope that matches nothing, the nodes once a child is gone),
+// trimmed to the members under test.
 func testDashNormNodes(t *testing.T) {
 	const (
 		parent = `{"mg":"5a1e0000-0000-4000-8000-0000000000aa","nm":"parity-parent","ni":0,`
@@ -107,15 +110,15 @@ func testDashNormNodes(t *testing.T) {
 		}
 	}
 
-	// the context scope's row: the child alone, numbered 0; the parent's answer is refused
-	var ctxRow v2Req
+	// the context scope's rows: the child alone, numbered 0, for a scope that matches its context, and the parent's
+	// answer is refused; no host for a scope that matches no context, and an answer that keeps a host is refused
+	rows := map[string]v2Req{}
 	for _, r := range nodesRows() {
-		if r.name == "v2-nodes-ctx" {
-			ctxRow = r
-		}
+		rows[r.name] = r
 	}
-	if ctxRow.guard == nil {
-		t.Fatal("no row v2-nodes-ctx")
+	ctxRow, noRow := rows["v2-nodes-ctx"], rows["v2-nodes-nomatch"]
+	if ctxRow.guard == nil || noRow.guard == nil {
+		t.Fatal("no row v2-nodes-ctx or v2-nodes-nomatch")
 	}
 	ctxAnswer := `{"api":2,"nodes":[` + child + nodeCaps(false) + `}],` + timings + `}`
 	both := `{"api":2,"nodes":[` + parent + `"v":"v","labels":{},"hw":{},"os":{},` + off + `"capabilities":` +
@@ -130,5 +133,95 @@ func testDashNormNodes(t *testing.T) {
 		`"v":"v","labels":{},"hw":{},"os":{},` + off + `"capabilities":` + nodeCaps(true) + `}],` + timings + `}`
 	if err := ctxRow.guard(parse(after)); err == nil {
 		t.Errorf("v2-nodes-ctx's guard took localhost after the child")
+	}
+	nomatch := `{"api":2,"nodes":[],` + timings + `}`
+	localhost := `{"api":2,"nodes":[` + parent + `"v":"v","labels":{},"hw":{},"os":{},` + off + `"capabilities":` +
+		nodeCaps(true) + `}],` + timings + `}`
+	for name, c := range map[string]struct {
+		in  string
+		bad bool
+	}{
+		"C's answer":        {nomatch, false},
+		"the child kept":    {ctxAnswer, true},
+		"localhost kept":    {localhost, true},
+		"every host kept":   {both, true},
+		"no nodes member":   {`{"api":2,` + timings + `}`, true},
+		"a versions member": {`{"api":2,"nodes":[],"versions":{},` + timings + `}`, true},
+	} {
+		if err := noRow.guard(parse(c.in)); (err != nil) != c.bad {
+			t.Errorf("v2-nodes-nomatch's guard, %s: %v", name, err)
+		}
+	}
+	if got := dashNormDiffs(t, nodesFamily, nodesFamily.masks, [2]int64{}, nomatch, strings.Replace(nomatch,
+		`"total_ms":0.041`, `"total_ms":0.004`, 1)); got != "" {
+		t.Errorf("v2-nodes-nomatch, the recorded pair: differences at %q", got)
+	}
+	if got := dashNormDiffs(t, nodesFamily, nodesFamily.masks, [2]int64{}, nomatch,
+		ctxAnswer); got != "$.nodes.length" {
+		t.Errorf("v2-nodes-nomatch against the child kept: differences at %q", got)
+	}
+
+	// the wait for a child that is gone: C's `/api/v3/nodes?scope_nodes=parity-child` once the fixture child's
+	// connection closed (its first answer), its `/api/v3/nodes` then (three hosts), and a 404 with the body of a
+	// Rust agent that does not route `nodes` yet (k102); the heads are shortened to what the poll reads
+	const (
+		head     = "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json; charset=utf-8\r\n\r\n"
+		notFound = "HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n" +
+			"Unsupported API command: nodes"
+		child2 = `{"mg":"5a1e0000-0000-4000-8000-0000000000cc","nm":"parity-child2","ni":2,"v":"1.0","labels":{},`
+	)
+	stale := strings.Replace(child, `"state":"reachable"`, `"state":"stale"`, 1)
+	goneOne := `{"api":2,"nodes":[` + stale + nodeCaps(false) + `}],` + timings + `}`
+	goneAll := `{"api":2,"nodes":[` + parent + `"v":"v","labels":{},"state":"reachable","capabilities":` +
+		nodeCaps(true) + `},` + strings.Replace(stale, `"ni":0`, `"ni":1`, 1) + nodeCaps(false) + `},` + child2 +
+		off + `"capabilities":` + nodeCaps(false) + `}],` + timings + `}`
+	walk := `{"api":2,"nodes":[{"mg":"5a1e0000-0000-4000-8000-0000000000bb","nm":"parity-child","ni":0,` +
+		`"st":{"ai":0,"code":200,"msg":""}}],"contexts":{}}`
+	// a name that begins with the one asked: the second child alone, and before the fixture child
+	secondAlone := `{"api":2,"nodes":[` + child2 + off + `"capabilities":` + nodeCaps(false) + `}],` + timings + `}`
+	secondFirst := `{"api":2,"nodes":[` + child2 + off + `"capabilities":` + nodeCaps(false) + `},` +
+		strings.Replace(stale, `"ni":0`, `"ni":3`, 1) + nodeCaps(false) + `}],` + timings + `}`
+	for name, c := range map[string]struct{ body, host, want, err string }{
+		"the child, gone":          {goneOne, "parity-child", "stale", ""},
+		"the child, connected":     {ctxAnswer, "parity-child", "reachable", ""},
+		"the child among three":    {goneAll, "parity-child", "stale", ""},
+		"the second child":         {goneAll, "parity-child2", "reachable", ""},
+		"localhost":                {goneAll, "parity-parent", "reachable", ""},
+		"a host that is not there": {goneOne, "parity-child2", "", "no node parity-child2"},
+		"a longer name alone":      {secondAlone, "parity-child", "", "no node parity-child"},
+		"a longer name first":      {secondFirst, "parity-child", "stale", ""},
+		"no host":                  {nomatch, "parity-child", "", "no node parity-child"},
+		"a node without a state":   {walk, "parity-child", "", "node parity-child has no state"},
+	} {
+		got, err := dashNodeState([]byte(c.body), c.host)
+		msg := ""
+		if err != nil {
+			msg = err.Error()
+		}
+		if got != c.want || msg != c.err {
+			t.Errorf("dashNodeState, %s: %q, %q, want %q, %q", name, got, msg, c.want, c.err)
+		}
+	}
+	if _, err := dashNodeState([]byte("Unsupported API command: nodes"), "parity-child"); err == nil {
+		t.Errorf("dashNodeState took a body that is no JSON")
+	}
+	for name, c := range map[string]struct {
+		answer, want string
+		done         bool
+	}{
+		"gone":             {head + goneOne, "stale", true},
+		"still connected":  {head + ctxAnswer, "reachable", false},
+		"another host":     {head + nomatch, "no node parity-child", false},
+		"not routed":       {notFound, "answered " + strconv.Quote(notFound), true},
+		"nothing":          {"", `answered ""`, false},
+		"a cut status":     {"HTTP/1.1 4", `answered "HTTP/1.1 4"`, false},
+		"another protocol": {"SSH-2.0-x\r\n", `answered "SSH-2.0-x\r\n"`, false},
+	} {
+		if got, done := dashGonePoll([]byte(c.answer), "parity-child"); got != c.want || done != c.done {
+			t.Errorf("dashGonePoll, %s: %q, %v, want %q, %v", name, got, done, c.want, c.done)
+		}
+	}
+	if got, done := dashGonePoll([]byte(head+`{"api":2,"nodes":[`), "parity-child"); done || got == "stale" {
+		t.Errorf("dashGonePoll, a cut body: %q, %v, want it asked again", got, done)
 	}
 }

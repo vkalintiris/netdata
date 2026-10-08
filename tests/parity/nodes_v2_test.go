@@ -10,8 +10,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/netdata/netdata/tests/query-corpus/daemon"
+	"github.com/netdata/netdata/tests/query-corpus/stream"
 )
 
 // The node APIs of the dashboard (milestone 10): `/api/v2|v3/nodes` and `/api/v2|v3/versions` (check
@@ -40,6 +42,84 @@ func dashParent(i, ni int) []dashFact {
 
 func dashChildNode(i, ni int) []dashFact {
 	return dashNode(i, ni, childHost.MachineGUID, childHost.Hostname)
+}
+
+// dashNodeState is the `state` of the host named name in the body of a `/api/v2|v3/nodes` answer: `reachable` for a
+// host that is online, `stale` for any other (database/contexts/api_v2_contexts.c:512).
+func dashNodeState(body []byte, name string) (string, error) {
+	v, err := ParseJSON(body)
+	if err != nil {
+		return "", err
+	}
+	nodes, _ := dashMember(v, "nodes")
+	for _, node := range nodes.Items {
+		if nm, err := dashMember(node, "nm"); err != nil || nm.Kind != KindString || nm.Text != name {
+			continue
+		}
+		state, err := dashMember(node, "state")
+		if err != nil || state.Kind != KindString {
+			return "", fmt.Errorf("node %s has no state", name)
+		}
+		return state.Text, nil
+	}
+	return "", fmt.Errorf("no node %s", name)
+}
+
+// dashGoneWait bounds dashGone's wait for one side. C clears a host's online flag as its receiver ends
+// (streaming/stream-receiver.c:1466-1467): both C sides read `stale` at the first poll in H34's probe p1.
+const dashGoneWait = 30 * time.Second
+
+// dashGonePoll judges one raw answer of dashGone's poll for the host named name: what it says of the host (its
+// state, or what is wrong with the answer), and whether the poll ends there: the host is `stale`, or the agent
+// answered a whole status line that is not 200 (it does not serve the route: waiting changes nothing). An answer
+// without a status line, empty or cut, is asked again.
+func dashGonePoll(answer []byte, name string) (got string, done bool) {
+	if !bytes.HasPrefix(answer, []byte("HTTP/1.1 200 ")) {
+		status, _, whole := bytes.Cut(answer, []byte("\r\n"))
+		return "answered " + strconv.Quote(truncateBytes(answer)), whole && bytes.HasPrefix(status, []byte("HTTP/1.1 "))
+	}
+	state, err := dashNodeState(httpBody(answer), name)
+	if err != nil {
+		return err.Error(), false
+	}
+	return state, state == "stale"
+}
+
+// dashGone closes a child's two connections (0 the oracle's) and waits until each side's `/api/v3/nodes` lists the
+// host `stale`: its receiver ended (rrdhost_is_online, rrdhost.h:462-470). The polls are tagged harness=wait (how many
+// there are is each side's timing). The oracle's failure ends the case, which did not run; a candidate's is reported
+// (at once when it answers the route with another status than 200) and the rows that follow show how it differs.
+//
+// The host's contexts are still collected then: C only flags the host there (rrdcontext.c:96-98), and its contexts
+// worker takes the collected flags down on its next heartbeat of 1 s (rrdcontext-worker.c:1125-1127,
+// rrdcontext-internal.h:16; a second later in the probe). A row that needs them down says so in its guard (`live`
+// false) and settles on it.
+func dashGone(t *testing.T, p *Pair, host stream.HostInfo, conns [2]*stream.Conn) {
+	t.Helper()
+	for _, conn := range conns {
+		_ = conn.Close()
+	}
+	target := "/api/v3/nodes?scope_nodes=" + host.Hostname + "&harness=wait"
+	for _, side := range p.Each() {
+		got := ""
+		pollUntil(dashGoneWait, func() bool {
+			b, err := v2Exchange(side.Daemon.Addr, v2Req{target: target})
+			if err != nil {
+				got = err.Error()
+				return false
+			}
+			done := false
+			got, done = dashGonePoll(b, host.Hostname)
+			return done
+		})
+		if got == "stale" {
+			continue
+		}
+		if side.Role == Oracle {
+			t.Fatalf("oracle: %s: %s is not stale, after %v at most: %s", target, host.Hostname, dashGoneWait, got)
+		}
+		t.Errorf("candidate: %s: %s is not stale, after %v at most: %s", target, host.Hostname, dashGoneWait, got)
+	}
 }
 
 // The values of the capabilities that vary by node (aclk_capas.c:41-42, :49, :51, :53), as nodeCapsOf takes them:
@@ -217,8 +297,15 @@ func nodesRows() []v2Req {
 		{name: "v2-nodes-ctx", target: "/api/v2/nodes?scope_contexts=" + qCharts.context, status: "200",
 			guard: dashGuard([]dashFact{dashKeys("api nodes timings"), dashAbsent("nodes", "[1]")},
 				nodesChildFacts(0, 0))},
+		// a context scope that matches no context (D232): no host is kept, the child neither (the same lines), so
+		// the row above holds because the scope matched q.ctx, not because the child has some context
+		{name: "v2-nodes-nomatch", target: "/api/v2/nodes?scope_contexts=nomatch", status: "200",
+			guard: dashGuard(nodesNone)},
 	}
 }
+
+// nodesNone are the facts of a nodes answer that keeps no host.
+var nodesNone = []dashFact{dashKeys("api nodes timings"), dashIs("[]", "nodes")}
 
 // nodesHealthOn are the facts of `/api/v3/nodes` in `health.api`'s `endpoints` case (D231 F1), whose localhost runs
 // healthAPIConf's three alerts on its chart, settled with ha_low WARNING and the two others CLEAR: localhost's health
@@ -274,10 +361,10 @@ const versionsMCP = "{\n    \"versions\":{\n        \"routing_hard_hash\":1,\n  
 	"        \"alerts_soft_hash\":0\n    }\n}\n"
 
 // TestNodesAPI compares the nodes and versions routes (check `api.v2-nodes`, D224): the dashboard's node list
-// (`/api/v3/nodes`), a host scope, a context scope (D231), and both version routes, on a parent with the fixture
-// child; then `access`: the ACL refusal (451) and bearer protection (412) of each route (web_api.c:82-89), but
-// `/api/v3/versions`, which no ACL guards (HTTP_ACL_NOCHECK, web_api_v3.c:142-147; `/api/v2/versions` has the NODES
-// ACL, web_api_v2.c:99-104). Red on Rust until commit 2.
+// (`/api/v3/nodes`), a host scope, a context scope that matches the child's context and one that matches none (D231,
+// D232), and both version routes, on a parent with the fixture child; then `access`: the ACL refusal (451) and bearer
+// protection (412) of each route (web_api.c:82-89), but `/api/v3/versions`, which no ACL guards (HTTP_ACL_NOCHECK,
+// web_api_v3.c:142-147; `/api/v2/versions` has the NODES ACL, web_api_v2.c:99-104). Red on Rust until commit 2.
 func TestNodesAPI(t *testing.T) {
 	t.Run("data", func(t *testing.T) {
 		p := dashPair(t, daemon.Options{})
