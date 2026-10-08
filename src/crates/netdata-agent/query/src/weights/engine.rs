@@ -15,7 +15,7 @@ use super::methods::{QueryEnv, Run, Stats};
 use super::parse::{Format, WeightsRequest};
 use super::results::{Registered, select, spread};
 use super::walk::{Scope, Walk};
-use super::{Method, timeout_ms, windows};
+use super::{Method, timeout_ms, timeout_us, windows};
 use crate::grouping::Windows;
 use crate::request::Profile;
 use crate::tables::{group_by, options};
@@ -140,7 +140,7 @@ pub fn run(mut req: WeightsRequest, env: &Env) -> Result<Finished, Refusal> {
     let mut walk = Walk {
         run,
         received,
-        timeout_us: timeout.unsigned_abs() as u128 * 1000,
+        timeout_us: u128::from(timeout_us(timeout)),
         interrupted: env.interrupted,
         progress: env.progress,
         examined: 0,

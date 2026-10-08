@@ -1080,6 +1080,26 @@ mod tests {
         assert!(text.ends_with(r#""returned":2,"unit":"groups","truncated":false,"summary_scope":"all"}}"#), "{text}");
     }
 
+    /// Each aggregation ranks the groups by its own score. Of a (0.9 and 0.1), b (0.4 alone) and z (0.95 and
+    /// 0.01) the largest average and the largest sum are a's, the largest minimum b's, the largest maximum z's;
+    /// with b at 0.6 alone its average passes a's, whose sum stays the largest.
+    #[test]
+    fn each_aggregation_ranks_the_groups_by_its_own_score() {
+        let kept = |found: &[(usize, &'static str, f64)], aggregation: &str| {
+            let query = format!("options=minify&group_by=dimension&limit=1&aggregation={aggregation}");
+            let (text, _) = body(grouped, &finished(Method::Value, &query, &values(found)));
+            let head = r#""result":[{"id":""#;
+            let at = text.find(head).expect("a group") + head.len();
+            text[at..at + 1].to_owned()
+        };
+        let three = [(0, "a", 0.9), (1, "a", 0.1), (0, "b", 0.4), (0, "z", 0.95), (1, "z", 0.01)];
+        let aggregations = ["average", "min", "max", "sum", "extremes", "percentage"];
+        let winners = aggregations.map(|aggregation| kept(&three, aggregation));
+        assert_eq!(winners, ["a", "b", "z", "a", "z", "a"]);
+        let two = [(0, "a", 0.9), (1, "a", 0.1), (0, "b", 0.6)];
+        assert_eq!((kept(&two, "average"), kept(&two, "sum")), ("b".to_owned(), "a".to_owned()));
+    }
+
     /// Equal scores are ranked by id.
     #[test]
     fn groups_of_equal_score_are_ranked_by_id() {

@@ -55,6 +55,12 @@ pub fn timeout_ms(given: i64) -> i64 {
     }
 }
 
+/// The timeout in microseconds as C holds it (`timeout_ms * USEC_PER_MS` in 64 unsigned bits): from
+/// 18446744073709552 ms on it wraps, and the request then times out at once.
+pub fn timeout_us(timeout_ms: i64) -> u64 {
+    (timeout_ms as u64).wrapping_mul(1000)
+}
+
 /// Why the prelude refuses a request; each is a 400 with C's text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowError {
@@ -163,6 +169,11 @@ mod tests {
         for (given, used) in [(0, 300_000), (-5, 1000), (1, 1000), (999, 1000), (1000, 1000), (5000, 5000)] {
             assert_eq!(timeout_ms(given), used, "{given}");
         }
+        // in microseconds it wraps where C's 64 unsigned bits wrap: the request is then late at once
+        use super::timeout_us;
+        assert_eq!(timeout_us(300_000), 300_000_000);
+        assert_eq!(timeout_us(18_446_744_073_709_551), 18_446_744_073_709_551_000);
+        assert_eq!(timeout_us(18_446_744_073_709_552), 384);
     }
 
     /// The windows of a request. T is a wall clock; C's "now" for a relative end is the second before it.

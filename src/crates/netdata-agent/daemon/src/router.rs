@@ -1671,7 +1671,9 @@ mod tests {
             assert_eq!((r.code, &r.body), (denied.code, &denied.body));
             assert_eq!(asked(&s, path, b"after=-60&options=raw", acl::bits::METRICS).code, status::OK);
         }
-        assert_ne!(asked(&s, b"/api/v1/weights/x", b"after=-60", all).code, status::OK);
+        let subpath = asked(&s, b"/api/v1/weights/x", b"after=-60", all);
+        assert_eq!(subpath.code, status::BAD_REQUEST);
+        assert_eq!(subpath.body, b"API command 'weights' does not support subpaths.");
         // until the agent is ready: 503 with the request
         let starting = Shared { ready: || false, ..shared() };
         let r = asked(&starting, b"/api/v1/weights", b"after=-60", all);
@@ -1780,7 +1782,9 @@ mod tests {
             assert_eq!((r.code, &r.body), (denied.code, &denied.body));
             assert_eq!(asked(&s, path, b"after=-60", acl::bits::METRICS).code, status::OK);
         }
-        assert_ne!(asked(&s, b"/api/v2/weights/x", b"after=-60", all).code, status::OK);
+        let subpath = asked(&s, b"/api/v2/weights/x", b"after=-60", all);
+        assert_eq!(subpath.code, status::BAD_REQUEST);
+        assert_eq!(subpath.body, b"API command 'weights' does not support subpaths.");
         let starting = Shared { ready: || false, ..shared() };
         let r = asked(&starting, b"/api/v3/weights", b"after=-60", all);
         assert_eq!((r.code, r.content_type), (status::SERVICE_UNAVAILABLE, ContentType::TextPlain));
