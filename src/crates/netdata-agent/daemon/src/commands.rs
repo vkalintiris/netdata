@@ -9,6 +9,7 @@ use netdata_agent_log::{netdata_log_error, netdata_log_info};
 use netdata_agent_metadata::open::MetaDb;
 use netdata_agent_rrd::host::Host;
 use netdata_agent_rrd::labels;
+use netdata_agent_text::jsonc_doc::jsonc_string;
 
 use crate::metasync::MetaQueue;
 use crate::{build, cloud_proxy, conf, host_labels, meta_store, server, shutdown};
@@ -605,24 +606,6 @@ fn remove_stale_node(args: &[u8], unregister: bool) -> (Status, Option<Vec<u8>>)
 const ACLK_STATE_OFFLINE: &str = "ACLK Available: Yes\nACLK Version: 2\nProtocols Supported: Protobuf\nProtocol Used: \
                                   Protobuf\nMQTT Version: 5\nClaimed: No\nOnline: No\nReconnect count: 0\nBanned By \
                                   Cloud: No\n\nMQTT Messages Dropped Without a PUBACK (since start): 0\n";
-
-/// A json-c string (`json_escape_str()`): `/` is escaped too, other control bytes as lower-case `\u00xx`.
-fn jsonc_string(out: &mut Vec<u8>, text: &[u8]) {
-    out.push(b'"');
-    for &ch in text {
-        match ch {
-            0x08 => out.extend_from_slice(b"\\b"),
-            b'\n' => out.extend_from_slice(b"\\n"),
-            b'\r' => out.extend_from_slice(b"\\r"),
-            b'\t' => out.extend_from_slice(b"\\t"),
-            0x0c => out.extend_from_slice(b"\\f"),
-            b'"' | b'\\' | b'/' => out.extend_from_slice(&[b'\\', ch]),
-            0..0x20 => out.extend_from_slice(format!("\\u{ch:04x}").as_bytes()),
-            _ => out.push(ch),
-        }
-    }
-    out.push(b'"');
-}
 
 /// `fill_alert_status_for_host_json()` of an agent that is not connected: an empty object for a host without its
 /// ACLK sync configuration; else the counters, zeros without a connection, and the version of the host's alerts the

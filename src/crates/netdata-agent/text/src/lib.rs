@@ -28,6 +28,7 @@ pub mod c;
 pub mod datetime;
 pub mod duration;
 pub mod json;
+pub mod jsonc_doc;
 pub mod line_splitter;
 pub mod parse;
 pub mod print;

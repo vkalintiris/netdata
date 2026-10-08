@@ -1,0 +1,199 @@
+# Inputs of gen-jsonc-doc.c: one text per line as `<flag> <text>`, the text in the vectors' field encoding (`\\` a
+# backslash, `\xHH` a byte, the bytes 0x20..0x7e but `\` and `#` as they are).
+# Flag A: the Rust reader must accept the text and agree with json-c. Flag R: the Rust reader may refuse it (json-c
+# refuses it, or reads it by a leniency the reader does not have); where it accepts, it must agree with json-c.
+A {}
+A []
+A {"version":1}
+A { "version" : 1 , "value" : { "preferred_node_ids" : [ "a" ] } }
+A {"version":2,"value":{"url":"http://x/y","n":1.50,"on":true,"off":null,"list":[]}}
+A {"version":-0}
+A {"version":0}
+A {"version":1e5}
+A {"version":1E+5}
+A {"version":18446744073709551616}
+A {"version":18446744073709551615}
+A {"version":9223372036854775807}
+A {"version":9223372036854775808}
+A {"version":-9223372036854775808}
+A {"version":-9223372036854775809}
+A {"version":1e400}
+A {"version":-1e400}
+A {"version":2147483647}
+A {"version":2147483648}
+A {"version":-2147483648}
+A {"version":-2147483649}
+A {"version":1.9}
+A {"version":-1.9}
+A {"version":0.0}
+A {"version":-0.0}
+A {"version":1e-5}
+A {"version":123456789012345678901234567890}
+A {"version":-123456789012345678901234567890}
+A {"version":4294967297}
+A {"version":2.5e9}
+A {"version":-2.5e9}
+A {"version":0e0}
+A {"version":1.50}
+A {"version":7}
+A {"version":"1"}
+A {"version":" 12abc"}
+A {"version":"abc"}
+A {"version":""}
+A {"version":"-5"}
+A {"version":"99999999999999999999"}
+A {"version":"-99999999999999999999"}
+A {"version":true}
+A {"version":false}
+A {"version":null}
+A {"version":{}}
+A {"version":[1]}
+A {"version":"0x10"}
+A {"version":"+7"}
+A {"version":"1.9"}
+A {"version":"3000000000"}
+A {"version":"7\\u0000 8"}
+A {"z":1,"version":1,"a":{"b":1,"b":2},"z":3}
+A {"version":1,"version":2}
+A {"a":1}
+A {"a":1,"b":[true,false,null],"c":{"d":{}}}
+A [1,2,3]
+A [{"version":1}]
+A "text"
+A 1
+A true
+A false
+R null
+A -5
+A 1.5
+A 0
+A -0
+A ""
+A {"version":1,"s":"a\\"b\\\\c\\/d\\b\\f\\n\\r\\t"}
+A "\\u00e9"
+A "\xc3\xa9"
+A "\\u0001"
+A "a\x09b"
+A "a\x0ab"
+A "\x01\x1f"
+A "\\ud83d\\ude00"
+A "\\uD83D\\uDE00"
+A "\\u007f"
+A "\x7f"
+A "\xff\xfe"
+A "a\\u0000b"
+A "/"
+A "\\/"
+A "\\u002f"
+A "\\u0022"
+A "\\u005c"
+A "\\u00E9\\u00e9"
+A "\\uffff"
+A "\\u0080\\u07ff\\u0800"
+A {"a\\/b":1,"version":1}
+A {"\\u00e9":1}
+A {"":1,"version":3}
+A {"a\\"b":"c\\"d"}
+A \x09{\x0a"version"\x0d:\x0a1}\x20\x20
+A {"version":1} trailing
+A {"version":1}{"version":2}
+A [1]x
+A \x20\x20[ ]\x20\x20
+A { }
+A "a"x
+A "a" "b"
+A truex
+R nullx
+A 1 2
+A 1x
+A true false
+A [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]
+A [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]
+A {"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":1}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
+A {"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
+A {"version":1}\x00garbage
+A {"version":1,"list":[1,"two",3.0,[],{}]}
+R /* c */{"version":1}
+R {"version":1,// c\x0a"a":2}
+R {'version':1}
+R {"version":1,}
+R [1,]
+R NaN
+R Infinity
+R -Infinity
+R {"version":NaN}
+R {"version":01}
+R 01
+R 0123
+R TRUE
+R {"version":True}
+R Null
+R 1.
+R -.5
+R .5
+R {"version":1.}
+R "\\ud83d"
+R "\\udc00"
+R "\\ud83dx"
+R "\\ud83d\\u0041"
+R {"a\\u0000b":1,"version":1}
+R {
+R [
+R {"version"}
+R {"version":}
+R {version:1}
+R
+R \x20
+R "unterminated
+R "\\x"
+R "\\u12"
+R -
+R 1e
+R 1e+
+R tru
+R nul
+R {"a":1 "b":2}
+R [1 2]
+R }
+R ]
+R ,
+R {"version":+1}
+R +1
+R {"version":0x10}
+R [1,,2]
+R {"a":1,,}
+R {,}
+R [,]
+R {"version":1 /* c */}
+R /
+R {"a":"\\'"}
+R 1.5.3
+R 1e5e3
+R 1-2
+R 1+2
+R -
+R --1
+R {"version":1e}
+R {"version":-}
+R [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]
+R [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]
+R {"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":{"a":1}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
+R [1
+R {"a":1
+R {"a"
+R {"a":
+R "\\
+R "\\u
+R \x00{"version":1}
+R nulL
+R fals
+R {"version":1]
+R [1}
+R {"version":"1" "a":2}
+R {"a":tru}
+R [01]
+R [1.]
+R [-]
+R [.1]
+R {"version":1.0e}
+R {"a":"x\x00y","version":1}
