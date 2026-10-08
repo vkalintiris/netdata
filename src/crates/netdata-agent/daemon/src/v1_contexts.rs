@@ -72,13 +72,16 @@ struct Params<'a> {
     chart_dimensions: Option<SimplePattern>,
 }
 
-fn pattern(text: &[u8]) -> SimplePattern {
-    SimplePattern::new(
+/// `simple_pattern_create()` as `api_v1_contexts()` and `api_v1_context()` build their three filters: `None` for a
+/// text with no word in it, where C returns NULL and the renderer, which tests the pointer, filters nothing.
+fn pattern(text: &[u8]) -> Option<SimplePattern> {
+    let pattern = SimplePattern::new(
         text,
         Separators::Bytes(b",|\t\r\n\x0c\x0b"),
         SimplePatternMode::Exact,
         true,
-    )
+    );
+    (!pattern.is_empty()).then_some(pattern)
 }
 
 /// The query loop of `api_v1_contexts()` and `api_v1_context()`: `name=value` pairs, empty ones skipped.
@@ -119,9 +122,9 @@ fn parse_params(query: &[u8]) -> Params<'_> {
             _ => {}
         }
     }
-    p.chart_label_key = key.map(pattern);
-    p.chart_labels_filter = filter.map(pattern);
-    p.chart_dimensions = dimensions.as_deref().map(pattern);
+    p.chart_label_key = key.and_then(pattern);
+    p.chart_labels_filter = filter.and_then(pattern);
+    p.chart_dimensions = dimensions.as_deref().and_then(pattern);
     p
 }
 
@@ -531,5 +534,12 @@ mod tests {
         assert_eq!((p.after, p.before), (-60, 0));
         let dims = p.chart_dimensions.unwrap();
         assert!(dims.matches(b"x") && dims.matches(b"y") && !dims.matches(b"z"));
+        // a filter with no word in it is no filter: C's `simple_pattern_create()` returns NULL for it and the
+        // renderer tests the pointer. A lone `*` is a pattern here: this route does not ask `is_valid_sp()`
+        let p = parse_params(b"chart_label_key=|&chart_labels_filter=,&dims=!");
+        assert!(p.chart_label_key.is_none() && p.chart_labels_filter.is_none() && p.chart_dimensions.is_none());
+        let p = parse_params(b"chart_label_key=*&dims=|x");
+        assert!(p.chart_label_key.is_some_and(|key| key.matches(b"any")));
+        assert!(p.chart_dimensions.is_some_and(|dims| dims.matches(b"x") && !dims.matches(b"y")));
     }
 }

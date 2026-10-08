@@ -312,7 +312,9 @@ impl SimplePattern {
         (!pattern.is_empty()).then_some(pattern)
     }
 
-    /// `true` when the list has no words (C returns `NULL`).
+    /// `true` when the list has no words. C's `simple_pattern_create()` returns NULL then, and what NULL means is
+    /// each caller's: no filter in the query and contexts code, everyone allowed in an access list, no match where
+    /// the caller only asks for a match. A caller of [`SimplePattern::new`] says which with this test.
     pub fn is_empty(&self) -> bool {
         self.words.is_empty()
     }

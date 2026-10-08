@@ -127,8 +127,9 @@ fn reverse_name(peer: Option<IpAddr>) -> Result<String, String> {
 }
 
 /// `connection_allowed()`: the numeric address matches, or (when DNS is allowed) the validated reverse name does.
+/// A list with no word in it is C's NULL list, which allows everyone.
 pub fn connection_allowed(client: &mut Client, acl: &AclPattern, name: &str) -> bool {
-    if acl.pattern.matches(client.ip.as_bytes()) {
+    if acl.pattern.is_empty() || acl.pattern.matches(client.ip.as_bytes()) {
         return true;
     }
     if client.host.is_empty() && acl.dns {
@@ -220,6 +221,26 @@ pub fn can_access_web(acl: u32, mcp_route: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use netdata_agent_text::simple_pattern::{Separators, SimplePattern, SimplePatternMode};
+
+    /// A list with no word in it (`allow connections from =`, or only blanks) is C's NULL list, and
+    /// `connection_allowed()` returns 1 for it: everyone is allowed, by address, with no name looked up. A list with
+    /// a word allows only what it matches.
+    #[test]
+    fn an_access_list_without_a_word_allows_everyone() {
+        let list = |text: &[u8]| AclPattern {
+            pattern: SimplePattern::new(text, Separators::Whitespace, SimplePatternMode::Exact, true),
+            dns: false,
+        };
+        let mut client =
+            Client { ip: "192.0.2.7".into(), peer: "192.0.2.7".parse().ok(), host: String::new(), errno: 0 };
+        for text in [&b""[..], b" ", b"  \t", b"!"] {
+            assert!(connection_allowed(&mut client, &list(text), "connections"), "{text:?}");
+            assert!(client.host.is_empty(), "{text:?}: a name was looked up");
+        }
+        assert!(connection_allowed(&mut client, &list(b"192.0.2.*"), "connections"));
+        assert!(!connection_allowed(&mut client, &list(b"10.*"), "connections"));
+    }
 
     #[test]
     fn listener_acls_match_c() {

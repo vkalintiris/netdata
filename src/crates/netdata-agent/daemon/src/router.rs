@@ -1259,6 +1259,16 @@ mod tests {
         assert_eq!(contexts("scope_contexts=nomatch"), nothing);
         assert_eq!(contexts(&format!("after={}&before={}", now - 80, now - 60)), both);
         assert_eq!(contexts(&format!("after={}&before={}", now - 10, now)), nothing);
+
+        // the v1 list of the same host: a filter with no word in it lists what no filter lists
+        let v1 = |query: &[u8]| {
+            let body = String::from_utf8(asked(&s, b"/api/v1/contexts", query, all).body).unwrap();
+            body[body.find("\"contexts\"").expect("the contexts member")..].to_owned()
+        };
+        assert!(v1(b"").contains("\"t.ctx\"") && v1(b"").contains("\"u.ctx\""), "{}", v1(b""));
+        for no_word in [&b"chart_label_key=|"[..], b"chart_labels_filter=,", b"dimensions=,", b"dims=!"] {
+            assert_eq!(v1(no_word), v1(b""), "{}", String::from_utf8_lossy(no_word));
+        }
     }
 
     /// `/api/v1/alarm_variables`, `/api/v1/variable` and `/api/v3/variable`, and the alert members of the chart JSON,
