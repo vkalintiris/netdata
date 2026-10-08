@@ -1788,6 +1788,19 @@ mod tests {
         let starting = Shared { ready: || false, ..shared() };
         let r = asked(&starting, b"/api/v3/weights", b"after=-60", all);
         assert_eq!((r.code, r.content_type), (status::SERVICE_UNAVAILABLE, ContentType::TextPlain));
+        // the gate comes before the parse: a limit that is no number is the 503 too
+        assert_eq!(asked(&starting, b"/api/v3/weights", b"limit=x", all).code, status::SERVICE_UNAVAILABLE);
+
+        // a client that went away ends the request: the handler hands the engine the request's interrupt
+        let mut req = Request::default();
+        req.path = b"/api/v2/weights".to_vec();
+        req.query = b"after=-60".to_vec();
+        req.url_as_received = b"/api/v2/weights?after=-60".to_vec();
+        let ctx = crate::access_log::RequestContext::default();
+        let features = acl::bits::TRANSPORTS | all;
+        let r = process_request(&req, b"/api/v2/weights", features, &s, Instant::now(), &ctx, &|_| true);
+        let body = String::from_utf8(r.body).unwrap();
+        assert_eq!((r.code, body.as_str()), (status::CLIENT_CLOSED_REQUEST, r#"{"error": "interrupted" }"#));
     }
 
     /// `/api/v3/settings` (`api_v3_settings()`), a command of v3 alone. The checks in C's order, each with C's text:

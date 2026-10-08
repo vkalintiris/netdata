@@ -1086,6 +1086,25 @@ mod tests {
         assert!(text.ends_with(r#""returned":2,"unit":"groups","truncated":false,"summary_scope":"all"}}"#), "{text}");
     }
 
+    /// The instances' dictionary is keyed by id and name: a chart id that one host names and another does not is
+    /// two entries, while the context both charts belong to is one.
+    #[test]
+    fn an_instance_is_an_entry_by_its_id_and_its_name() {
+        use crate::testing::{weights_charts_host, weights_results_on};
+        let plain_host = weights_charts_host(ONE, "plain", &[("n", "ctx.n", "things")]);
+        let named_host = weights_named_host(NAMED, "named");
+        let mut results = weights_results_on(&plain_host, &[("ctx.n", "t.n", "a", 0.5)]);
+        results.extend(weights_results_on(&named_host, &[("ctx.n", "t.n", "d", 0.25)]));
+        let (text, printed) = body(plain, &finished_of(Method::Value, "options=minify", results));
+        assert_eq!(printed, 2);
+        let dictionaries = concat!(
+            r#""contexts":[{"id":"ctx.n","units":"things","ci":0}],"#,
+            r#""instances":[{"id":"t.n","ii":0},{"id":"t.n","nm":"t.named","ii":1}],"#,
+            r#""dimensions":[{"id":"a","di":0},{"id":"d","nm":"dee","di":1}]},"#
+        );
+        assert!(text.contains(dictionaries), "{text}");
+    }
+
     /// Two charts of one context and a second context on one host: an instance's rollup comes when the instance
     /// changes inside its context, a context's when the context changes; each chart is an entry of the
     /// instances.

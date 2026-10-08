@@ -867,6 +867,41 @@ mod tests {
         assert!(results <= 1 && queries <= 1, "{results} results of {queries} queries");
     }
 
+    /// The one query looks at every column and counts a query for each exposed one. A hidden metric is a column
+    /// only when every dimension is wanted (`percentage`): it is then looked at, not exposed, and no result;
+    /// with `raw` every queried column is exposed, the hidden one too.
+    #[test]
+    fn the_one_query_counts_a_column_that_is_not_exposed() {
+        use crate::testing::weights_host_as;
+        let profile = Profile::default();
+        let hosts = vec![weights_host_as("guid-1", "one"), weights_host_as("guid-2", "two")];
+        let texts = Texts { contexts: Some(b"ctx.w".to_vec()), ..Texts::default() };
+        let asked = |more: u64| {
+            let mut run = run(&profile, Method::Value, 60, 60);
+            run.register_zero = true;
+            run.options |= more;
+            let examined = run.one_query(hosts.clone(), &texts, 0);
+            let hidden = run.results.iter().filter(|t| t.metric.id() == "hid").count();
+            (examined, run.stats.db_queries, hidden)
+        };
+        assert_eq!(asked(0), (8, 8, 0));
+        assert_eq!(asked(options::PERCENTAGE), (10, 8, 0));
+        assert_eq!(asked(options::PERCENTAGE | options::RETURN_RAW), (10, 10, 2));
+    }
+
+    /// A value whose every cell is empty is no value: a window inside the ring and before the data gives a
+    /// query and no result, also when zeros count and with `null2zero`, which every request carries.
+    #[test]
+    fn a_window_without_a_point_gives_no_value() {
+        let profile = Profile::default();
+        let mut early = run(&profile, Method::Value, 60, 60);
+        (early.after, early.before) = (T0 - 1000, T0 - 900);
+        early.register_zero = true;
+        assert_ne!(early.options & options::NULL2ZERO, 0);
+        let got = on(early, &["a"]);
+        assert_eq!((got.results.len(), got.stats.db_queries), (0, 1));
+    }
+
     /// `merge_query_value_to_stats()`.
     #[test]
     fn a_value_adds_to_the_statistics() {
