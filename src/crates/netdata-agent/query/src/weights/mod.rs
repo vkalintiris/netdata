@@ -1,11 +1,13 @@
 //! The numbers of the weights endpoints (`src/web/api/queries/weights.c`): how much each metric of the hosts in
 //! scope stands out in a highlighted window. For now the statistics of the `ks2` method (the two-sample
-//! Kolmogorov-Smirnov test and the distribution it ends in), the four methods on one metric and their results.
+//! Kolmogorov-Smirnov test and the distribution it ends in), the four methods on one metric, their results, and
+//! the walk over the hosts, contexts and metrics of a request.
 
 pub mod ks;
 pub mod ks2;
 pub mod methods;
 pub mod results;
+pub mod walk;
 
 /// `WEIGHTS_METHOD`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -86,7 +86,12 @@ pub const W_NOW: i64 = T0 + W_POINTS + 1;
 /// second at `T0+1..=T0+240`, the last 60 of them anomalous. `a` rises by one from 1; `b` stays at 5; `z` stays
 /// at zero; `hid` is hidden and stays at 3; `step` is zero for the first 120 points and 10 after.
 pub fn weights_host() -> Arc<Host> {
-    let h = Arc::new(Host::new("guid-w", false, info("weights", 1, DbMode::Ram)));
+    weights_host_as("guid-w", "weights")
+}
+
+/// [`weights_host`] under another machine GUID and name.
+pub fn weights_host_as(guid: &str, hostname: &str) -> Arc<Host> {
+    let h = Arc::new(Host::new(guid, false, info(hostname, 1, DbMode::Ram)));
     let (chart, _) = h.charts().create(&ChartSpec {
         id: "w",
         context: Some("ctx.w"),

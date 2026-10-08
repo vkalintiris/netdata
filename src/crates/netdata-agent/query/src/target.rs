@@ -251,6 +251,18 @@ pub struct Versions {
     pub alerts_soft_hash: u64,
 }
 
+impl Versions {
+    /// A host's part of the sums (`query_scope_foreach_host()`): its contexts' version and its alerts' two.
+    pub fn add_host(&mut self, host: &Host) {
+        self.contexts_hard_hash += u64::from(host.contexts().version());
+        if let Some(view) = host.storage().alert_view() {
+            let (hard, soft) = view.versions(host);
+            self.alerts_hard_hash += hard;
+            self.alerts_soft_hash += soft;
+        }
+    }
+}
+
 /// What selects the metrics: v1's routed host (and chart), every host for v2/v3, or the one metric a weights
 /// query names.
 pub enum Source<'a> {
@@ -827,12 +839,7 @@ pub fn foreach_host<B>(
         if scope_nodes.is_some_and(|sp| !host_matches(sp, host)) {
             continue;
         }
-        versions.contexts_hard_hash += u64::from(host.contexts().version());
-        if let Some(view) = host.storage().alert_view() {
-            let (hard, soft) = view.versions(host);
-            versions.alerts_hard_hash += hard;
-            versions.alerts_soft_hash += soft;
-        }
+        versions.add_host(host);
         f(host, nodes.is_none_or(|sp| host_matches(sp, host)))?;
     }
     ControlFlow::Continue(())
