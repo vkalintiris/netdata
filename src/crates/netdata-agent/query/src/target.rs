@@ -251,7 +251,8 @@ pub struct Versions {
     pub alerts_soft_hash: u64,
 }
 
-/// What selects the metrics: v1's routed host (and chart), or every host for v2/v3.
+/// What selects the metrics: v1's routed host (and chart), every host for v2/v3, or the one metric a weights
+/// query names.
 pub enum Source<'a> {
     /// `chart` is the chart `chart=` found (`qtr->st`).
     V1 {
@@ -259,6 +260,13 @@ pub enum Source<'a> {
         chart: Option<Arc<Chart>>,
     },
     V2 { hosts: Vec<Arc<Host>> },
+    /// One metric of one instance (`qtr->rca`, `ria` and `rma` given). The context is the instance's own; the
+    /// request's dimension rules still decide whether the metric is queried.
+    Metric {
+        host: &'a Arc<Host>,
+        instance: &'a Arc<Instance>,
+        metric: &'a Arc<Metric>,
+    },
 }
 
 /// `pattern_array_add_simple_pattern()` for labels (`database/pattern-array.c`): per label key, the exact
@@ -375,6 +383,8 @@ struct Walk<'a> {
     labels: Option<PatternArray>,
     alerts: Option<SimplePattern>,
     needs_all_dimensions: bool,
+    /// The one metric the request names (`qt->request.rma`): the instance's other metrics are not looked at.
+    only_metric: Option<Arc<Metric>>,
     qt: QueryTarget,
 }
 
@@ -508,7 +518,9 @@ impl Walk<'_> {
         queryable: bool,
     ) -> (usize, usize) {
         let (mut kept, mut admitted) = (0, 0);
-        for (priority, rm) in ri.metrics().into_iter().enumerate() {
+        // a request that names its metric adds that one alone, as the instance's first
+        let metrics = self.only_metric.as_ref().map_or_else(|| ri.metrics(), |rm| vec![Arc::clone(rm)]);
+        for (priority, rm) in metrics.into_iter().enumerate() {
             if rm.flags.is_deleted() {
                 continue;
             }
@@ -943,6 +955,14 @@ pub fn foreach_metric_in_context<B>(
     ControlFlow::Continue(())
 }
 
+/// What a target's id names, owned while the walk still borrows the request.
+enum Named {
+    Chart { hostname: String, chart_name: String },
+    Context { hostname: String },
+    Metric { hostname: String, context: String, instance: String, dimension: String },
+    DataV2,
+}
+
 /// `query_target_create()` up to the window calculation. `now_s` is the wall clock (`now_realtime_sec()`).
 pub fn create(mut req: DataRequest, source: Source, now_s: i64) -> QueryTarget {
     if req.nodes.is_some() && req.scope_nodes.is_none() {
@@ -992,6 +1012,7 @@ pub fn create(mut req: DataRequest, source: Source, now_s: i64) -> QueryTarget {
         labels: label_array(&req.labels),
         alerts: pattern(&req.alerts),
         needs_all_dimensions,
+        only_metric: None,
         qt: QueryTarget {
             request: req.clone(),
             window,
@@ -1012,7 +1033,7 @@ pub fn create(mut req: DataRequest, source: Source, now_s: i64) -> QueryTarget {
             versions: Versions::default(),
         },
     };
-    let (kind_host, kind_chart) = match source {
+    let named = match source {
         Source::V1 { host, chart } => {
             let chart_name = chart
                 .as_ref()
@@ -1031,7 +1052,20 @@ pub fn create(mut req: DataRequest, source: Source, now_s: i64) -> QueryTarget {
                 }
             }
             walk.node(host, true, instance.as_ref());
-            (Some(host.hostname()), chart_name)
+            match chart_name {
+                Some(chart_name) => Named::Chart { hostname: host.hostname(), chart_name },
+                None => Named::Context { hostname: host.hostname() },
+            }
+        }
+        Source::Metric { host, instance, metric } => {
+            walk.only_metric = Some(Arc::clone(metric));
+            walk.node(host, true, Some(instance));
+            Named::Metric {
+                hostname: host.hostname(),
+                context: instance.context().map(|rc| rc.id().to_string()).unwrap_or_default(),
+                instance: instance.id().to_string(),
+                dimension: metric.id().to_string(),
+            }
         }
         Source::V2 { hosts } => {
             let scope_nodes = pattern(&req.scope_nodes);
@@ -1043,22 +1077,20 @@ pub fn create(mut req: DataRequest, source: Source, now_s: i64) -> QueryTarget {
                     ControlFlow::Continue(())
                 });
             walk.qt.versions = versions;
-            (None, None)
+            Named::DataV2
         }
     };
-    let kind = match (&kind_host, &kind_chart) {
-        (Some(hostname), Some(chart_name)) => IdKind::Chart {
-            hostname,
-            chart_name,
-        },
-        (Some(hostname), None) => IdKind::Context {
-            hostname: Some(hostname),
-        },
-        (None, _) => IdKind::DataV2,
+    let kind = match &named {
+        Named::Chart { hostname, chart_name } => IdKind::Chart { hostname, chart_name },
+        Named::Context { hostname } => IdKind::Context { hostname: Some(hostname) },
+        Named::Metric { hostname, context, instance, dimension } => {
+            IdKind::Metric { hostname, context, instance, dimension }
+        }
+        Named::DataV2 => IdKind::DataV2,
     };
     let mut qt = walk.qt;
     qt.id = id::generate(&qt.request, kind);
-    qt.chart_scoped = kind_chart.is_some();
+    qt.chart_scoped = matches!(named, Named::Chart { .. });
     qt.preprocessed = Instant::now();
     qt
 }
@@ -1190,6 +1222,46 @@ mod tests {
             if seen == 2 { ControlFlow::Break("stop") } else { ControlFlow::Continue(()) }
         });
         assert_eq!((flow, seen), (ControlFlow::Break("stop"), 2));
+    }
+
+    /// A request that names its metric (`qtr->rma`): that metric alone is looked at, as its instance's first, and
+    /// the dimension rules still apply to it: a hidden one is excluded, and admitted when every dimension is
+    /// wanted; a dimensions pattern that misses it excludes it. The id names the four objects.
+    #[test]
+    fn a_target_of_one_metric_holds_that_metric_alone() {
+        let h = host();
+        let rc = h.contexts().get("ctx.a").expect("the fixture's context");
+        let ri = rc.instances().into_iter().next().expect("its instance");
+        let target = |dimension: &str, set: &dyn Fn(&mut DataRequest)| {
+            let rm = ri.metric(dimension).expect("the metric");
+            let mut req = DataRequest::new(1, &crate::request::Profile::default());
+            (req.after, req.before, req.points) = (T - 9, T, 1);
+            set(&mut req);
+            create(req, Source::Metric { host: &h, instance: &ri, metric: &rm }, T + 1)
+        };
+        let dimensions = |qt: &QueryTarget| -> Vec<(String, u32, usize)> {
+            qt.dimensions.iter().map(|qd| (qd.rm.id().to_string(), qd.status, qd.priority)).collect()
+        };
+        let qt = target("d2", &|_| {});
+        assert_eq!(dimensions(&qt), [("d2".to_string(), 0, 0)]);
+        assert_eq!((qt.nodes.len(), qt.contexts.len(), qt.instances.len(), qt.query.len()), (1, 1, 1, 1));
+        assert_eq!(qt.query[0].status, metric_status::SELECTED);
+        assert!(!qt.chart_scoped);
+        let id = format!("metric://hosts:child/context:ctx.a/instance:t.a/dimension:d2/after:{}/before:{T}/", T - 9);
+        assert!(qt.id.starts_with(&id), "{}", qt.id);
+
+        let hidden = target("h", &|_| {});
+        assert_eq!(dimensions(&hidden), [("h".to_string(), status::DIMENSION_HIDDEN | status::EXCLUDED, 0)]);
+        assert!(hidden.query.is_empty());
+        let wanted = target("h", &|req| req.options |= options::PERCENTAGE);
+        assert_eq!(dimensions(&wanted), [("h".to_string(), status::DIMENSION_HIDDEN, 0)]);
+        assert_eq!(wanted.query[0].status, metric_status::HIDDEN);
+
+        let missed = target("d2", &|req| req.dimensions = Some(b"d1".to_vec()));
+        assert_eq!(dimensions(&missed), [("d2".to_string(), status::EXCLUDED, 0)]);
+        assert!(missed.query.is_empty());
+        let scoped_out = target("d2", &|req| req.scope_dimensions = Some(b"d1".to_vec()));
+        assert!(scoped_out.nodes.is_empty() && scoped_out.dimensions.is_empty());
     }
 
     /// `rrdcontext_retention_match()`: a collected context reaches whatever end the window has, so only a window

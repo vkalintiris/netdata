@@ -347,11 +347,19 @@ pub fn rrdr2csv(
 /// `rrdr2value()`: one row reduced over its exposed, non-empty cells; `None` when there is none (`all_null`).
 /// `r->d == 0` or a row out of range gives NaN without marking the row null, as in C.
 pub fn rrdr2value(r: &Rrdr, i: usize, options: u64) -> (f64, bool) {
+    let (value, all_null, _) = rrdr2value_and_anomaly_rate(r, i, options);
+    (value, all_null)
+}
+
+/// `rrdr2value()` with what it writes through `anomaly_rate`: the mean anomaly rate of the cells it reduced, 0
+/// when there is none, and nothing (`None`) where it returns before writing.
+pub fn rrdr2value_and_anomaly_rate(r: &Rrdr, i: usize, options: u64) -> (f64, bool, Option<f64>) {
     if r.columns == 0 || r.rows == 0 || i >= r.rows {
-        return (f64::NAN, false);
+        return (f64::NAN, false, None);
     }
     let base = i * r.columns;
     let (mut sum, mut min, mut max, mut dims) = (0.0, f64::NAN, f64::NAN, 0usize);
+    let mut total_anomaly_rate = 0.0;
     for c in 0..r.columns {
         if !exposed(r.od[c], options) || r.o[base + c] & value_flags::EMPTY != 0 {
             continue;
@@ -368,6 +376,7 @@ pub fn rrdr2value(r: &Rrdr, i: usize, options: u64) -> (f64, bool) {
         if n > max {
             max = n;
         }
+        total_anomaly_rate += r.ar[base + c];
         dims += 1;
     }
     if dims == 0 {
@@ -376,7 +385,7 @@ pub fn rrdr2value(r: &Rrdr, i: usize, options: u64) -> (f64, bool) {
         } else {
             f64::NAN
         };
-        return (v, true);
+        return (v, true, Some(0.0));
     }
     let mut v = if options & options::DIMS_MIN2MAX != 0 {
         max - min
@@ -392,7 +401,7 @@ pub fn rrdr2value(r: &Rrdr, i: usize, options: u64) -> (f64, bool) {
     if options & options::NULL2ZERO != 0 && !v.is_finite() {
         v = 0.0;
     }
-    (v, false)
+    (v, false, Some(total_anomaly_rate / dims as f64))
 }
 
 /// `rrdr2ssv()`: one reduced value per row; overwrites `view.min`/`view.max` with the reduced values.

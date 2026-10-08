@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use netdata_agent_rrd::chart::{Algorithm, ChartSpec, ChartType};
+use netdata_agent_rrd::chart::{Algorithm, ChartSpec, ChartType, dim_flags};
 use netdata_agent_rrd::contexts::{SqlChart, SqlDim};
 use netdata_agent_rrd::host::{Host, HostInfo};
 use netdata_agent_rrd::mode::DbMode;
@@ -73,6 +73,36 @@ pub fn host() -> Arc<Host> {
             v,
             SN_FLAG_NOT_ANOMALOUS,
         );
+    }
+    h.contexts().process_queued();
+    h
+}
+
+/// How many points [`weights_host`] holds, and the wall clock of its queries: the second after its last point.
+pub const W_POINTS: i64 = 240;
+pub const W_NOW: i64 = T0 + W_POINTS + 1;
+
+/// A host for the queries the weights endpoints make per metric: chart `t.w` of `ctx.w` in ram mode, a point a
+/// second at `T0+1..=T0+240`, the last 60 of them anomalous. `a` rises by one from 1; `b` stays at 5; `z` stays
+/// at zero; `hid` is hidden and stays at 3.
+pub fn weights_host() -> Arc<Host> {
+    let h = Arc::new(Host::new("guid-w", false, info("weights", 1, DbMode::Ram)));
+    let (chart, _) = h.charts().create(&ChartSpec {
+        id: "w",
+        context: Some("ctx.w"),
+        ..ram_chart(3600)
+    });
+    for id in ["a", "b", "z", "hid"] {
+        chart.dim_add(id, None, 1, 1, Algorithm::Absolute);
+    }
+    let dim = |id: &str| chart.dim(id).expect("a dimension of the fixture");
+    dim("hid").update_meta(|m| m.flags |= dim_flags::HIDDEN);
+    for i in 1..=W_POINTS {
+        let at = (T0 + i) as u64 * 1_000_000;
+        let flags = if i > W_POINTS - 60 { 0 } else { SN_FLAG_NOT_ANOMALOUS };
+        for (id, value) in [("a", i as f64), ("b", 5.0), ("z", 0.0), ("hid", 3.0)] {
+            dim(id).store_metric(at, value, flags);
+        }
     }
     h.contexts().process_queued();
     h

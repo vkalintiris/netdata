@@ -16,7 +16,8 @@ fn or_star(v: &Option<Vec<u8>>) -> String {
     )
 }
 
-/// What the id names: a chart (v1 `chart=` found), a context query on a host (v1), or a v2/v3 query.
+/// What the id names: a chart (v1 `chart=` found), a context query on a host (v1), one metric (a weights query),
+/// or a v2/v3 query.
 pub enum IdKind<'a> {
     Chart {
         hostname: &'a str,
@@ -24,6 +25,12 @@ pub enum IdKind<'a> {
     },
     Context {
         hostname: Option<&'a str>,
+    },
+    Metric {
+        hostname: &'a str,
+        context: &'a str,
+        instance: &'a str,
+        dimension: &'a str,
     },
     DataV2,
 }
@@ -63,6 +70,10 @@ pub fn generate(req: &DataRequest, kind: IdKind) -> String {
             or_star(&req.contexts),
             or_star(&req.instances),
             or_star(&req.dimensions)
+        ),
+        IdKind::Metric { hostname, context, instance, dimension } => format!(
+            "metric://hosts:{hostname}/context:{context}/instance:{instance}/dimension:{dimension}/{window}\
+             /group:{group}/options:{tail}"
         ),
         IdKind::DataV2 => format!(
             "data_v2://scope_nodes:{}/scope_contexts:{}/scope_instances:{}/scope_labels:{}/scope_dimensions:{}\
@@ -104,6 +115,12 @@ mod tests {
                 }
             ),
             "chart://hosts:c1/instance:system.cpu/dimensions:*/after:-600/before:0/points:0/group:average/options:"
+        );
+        let metric = IdKind::Metric { hostname: "c1", context: "system.cpu", instance: "t.cpu", dimension: "user" };
+        assert_eq!(
+            generate(&p.request, metric),
+            "metric://hosts:c1/context:system.cpu/instance:t.cpu/dimension:user/after:-600/before:0/points:0\
+             /group:average/options:"
         );
         let p = parse_v1(
             b"context=a.b&dims=x&points=-1&options=abs&gtime=5&group=countif&group_options=>0",
