@@ -287,7 +287,8 @@ mod tests {
         // the id misses and the name is the id: one test
         assert!(!fts.named(&q, "z", "z"));
         assert_eq!(fts, Fts { strings: 2, chars: 0, total: 2 });
-        // the id misses, the name is tested: a part of it, whatever the case
+        // the id misses, the name is tested: a part of it (the case is judged by the fixture's answers, not here:
+        // the word `B` is in `the_Beta` as written)
         assert!(fts.named(&q, "z", "the_Beta"));
         assert_eq!(fts, Fts { strings: 4, chars: 0, total: 4 });
         assert!(!fts.named(&q, "z", ""));
@@ -371,6 +372,44 @@ mod tests {
         assert!(!none.any() && none.instances.is_none() && none.labels.is_none());
     }
 
+    /// The label arms of a later host's matches: a context without labels takes the newcomer's, one with labels
+    /// joins them (each value once, the kept ones first), and a newcomer without labels leaves them. And the cuts
+    /// under the per-context limit: the dimensions' marker, and the labels', which come after the two lists.
+    #[test]
+    fn labels_join_across_hosts_and_every_list_is_cut() {
+        let found_in = |values: &[&str]| {
+            let mut found = None;
+            for value in values {
+                let mut labels = Labels::default();
+                labels.add(b"k", value.as_bytes(), netdata_agent_rrd::labels::SRC_CONFIG);
+                label_search(&labels, &substring("k"), &mut found);
+            }
+            found
+        };
+        let labelled =
+            |values: &[&str]| Matches { types: matched::LABEL, labels: found_in(values), ..Default::default() };
+        let mut kept = Matches::default();
+        kept.merge(labelled(&["v1"]));
+        assert_eq!(printed(&kept, 0, true), r#"{"q.ctx":{"labels":{"k":["v1"]}}}"#);
+        kept.merge(labelled(&["v2", "v1"]));
+        assert_eq!(printed(&kept, 0, true), r#"{"q.ctx":{"labels":{"k":["v1","v2"]}}}"#);
+        kept.merge(Matches::default());
+        assert_eq!(printed(&kept, 0, true), r#"{"q.ctx":{"labels":{"k":["v1","v2"]}}}"#);
+        assert_eq!(kept.types, matched::LABEL);
+
+        let cut = Matches {
+            types: matched::DIMENSION | matched::LABEL,
+            dimensions: names(&["a", "b", "c", "d", "e"]),
+            labels: found_in(&["v1", "v2", "v3", "v4"]),
+            ..Default::default()
+        };
+        let text = concat!(
+            r#"{"q.ctx":{"matched":["dimensions","labels"],"dimensions":["a","b","... 3 dimensions more"],"#,
+            r#""labels":{"k":["v1","v2","... 2 values more"]}}}"#
+        );
+        assert_eq!(printed(&cut, 3, false), text);
+    }
+
     /// The limit of a context's lists: 3, or the cardinality's share per shown context when that is more.
     #[test]
     fn the_per_context_limit_is_three_or_the_cardinality_s_share() {
@@ -378,7 +417,8 @@ mod tests {
         for ((cardinality, total), per) in cases {
             assert_eq!(per_context_limit(cardinality, total), per, "{cardinality} {total}");
         }
-        // more contexts than the cardinality: the share is of the contexts shown
+        // more contexts than the cardinality: the share is of the contexts shown (the share of all of them is 3
+        // as well, for every input: which of the two C divides by cannot be told from an answer)
         assert_eq!(per_context_limit(8, 100), 3);
     }
 }

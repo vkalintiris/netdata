@@ -548,8 +548,11 @@ mod tests {
         String::from_utf8(w.into_bytes()).unwrap()
     }
 
-    /// The answers C gave for the parity fixture (`/api/v2/q?scope_nodes=*&q=...`, the oracle's dumps of
-    /// 2026-10-07): what matched, the names stored, and the counters. A pattern's words are parts of a text,
+    /// The search's answers for the parity fixture: what matched, the names stored, and the counters. Five are the
+    /// answers C gave (`/api/v2/q?scope_nodes=*&q=...`, the oracle's dumps of 2026-10-07: `*alpha*`, `a`, `k`, `v`
+    /// and `v2`); the others (`ALPHA`, `nomatch`, the three texts together, no pattern, `,` and `*`) are from the
+    /// reading of C. The order of a label's values is the order first seen here, which C does not promise (it
+    /// walks them by address); only the set is C's. A pattern's words are parts of a text,
     /// whatever the case. The 15 tests of a miss: the context's id, family, title and units; `q.a`'s id and name
     /// and its five metrics' ids with `a`'s name; `q.two`'s id and its two metrics' ids. With `a`, two ids match,
     /// so their two names are not tested, and what is stored is the name. A label counts by what matched of it.
@@ -586,6 +589,25 @@ mod tests {
         assert_eq!(searched(&[&child], None, NO_WINDOW, SEARCH, 0), unsearched);
         assert_eq!(answer(","), unsearched);
         assert_eq!(answer("*"), unsearched);
+    }
+
+    /// `cardinality` is also the limit of a context's lists, as its share per context shown: with one context,
+    /// a cardinality of 4 shows four places of a list where the default shows three.
+    #[test]
+    fn the_cardinality_is_the_lists_limit_too() {
+        let ids = ["i1", "i2", "i3", "i4", "i5"];
+        let chart = |id| TestChart { id, name: None, dims: &[("d", None)], labels: &[], ..Q_A };
+        let charts: Vec<TestChart> = ids.iter().copied().map(chart).collect();
+        let stored: Vec<(&TestChart, i64)> = charts.iter().map(|chart| (chart, T - 60)).collect();
+        let h = host("11111111-1111-1111-1111-111111111111", &stored);
+        let instances = |cardinality: u64| {
+            let text = searched(&[&h], Some("q.i"), NO_WINDOW, SEARCH, cardinality);
+            let at = text.find(r#""instances":"#).unwrap_or_else(|| panic!("no instances: {text}"));
+            let end = at + text[at..].find(']').expect("the list's end");
+            text[at..=end].to_owned()
+        };
+        assert_eq!(instances(0), r#""instances":["q.i1","q.i2","... 3 instances more"]"#);
+        assert_eq!(instances(4), r#""instances":["q.i1","q.i2","q.i3","... 2 instances more"]"#);
     }
 
     /// The search across hosts, its window and its limits: a later host's names join the first's; with a window an
