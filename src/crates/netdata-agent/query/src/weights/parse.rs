@@ -219,6 +219,9 @@ mod tests {
         assert_eq!((r.points, r.timeout_ms), (30, 2500));
         let r = v2("highlight_after=5&highlight_before=9&max_points=7&after=6");
         assert_eq!((r.after, r.before, r.points), (6, 9, 7));
+        // each second name alone
+        assert_eq!((v2("highlight_after=5").after, v2("highlight_before=9").before), (5, 9));
+        assert_eq!(v1("max_points=7").points, 7);
         // an item is cut at its first `=`: `a==b` gives a the value `=b`, which is no number; an empty name before
         // the first `=` is passed over, so `=a=b` is a's value b
         let r = v1("after==42&&&=before=43&points==7");

@@ -290,6 +290,65 @@ mod tests {
         assert!(hurried.received.elapsed().as_micros() >= u128::from(hurried.duration_us));
     }
 
+    /// Each selector text of a request reaches the metrics it selects, on the walk (the method value without a
+    /// contexts text) and on the one query (with one): a scope or a selection of nodes, of instances, of labels,
+    /// of dimensions, and an alerts pattern. The fixture's hosts are `one` and `two`, each with the chart `t.w`
+    /// (labelled by its plugin, `p`; it has no alert) and the visible metrics a, b and step that are not zero.
+    #[test]
+    fn every_selector_text_reaches_the_metrics_on_both_paths() {
+        let all = ["one:a", "one:b", "one:step", "two:a", "two:b", "two:step"];
+        let (two, b): (&[&str], &[&str]) = (&all[3..], &["one:b", "two:b"]);
+        let cases: [(&str, &[&str]); 12] = [
+            ("scope_nodes=two", two),
+            ("nodes=two", two),
+            ("scope_instances=nomatch", &[]),
+            ("instances=nomatch", &[]),
+            ("instances=t.w", &all),
+            ("scope_labels=_collect_plugin:other", &[]),
+            ("labels=_collect_plugin:other", &[]),
+            ("labels=_collect_plugin:p", &all),
+            ("scope_dimensions=b", b),
+            ("dimensions=b", b),
+            ("alerts=nope*", &[]),
+            ("", &all),
+        ];
+        for path in ["", "contexts=ctx.w&"] {
+            for (text, expected) in cases {
+                let query = format!("{path}{text}");
+                let got = finished(request(2, Method::Value, Format::Multinode, &query));
+                let metrics: Vec<String> =
+                    named(&got).into_iter().map(|(host, metric, _)| format!("{host}:{metric}")).collect();
+                assert_eq!(metrics, expected, "{query}");
+            }
+        }
+    }
+
+    /// What else of the request reaches the queries and the results: the time grouping (the rising metric's
+    /// maximum over the window, not its mean); every group-by word the weights do not group by is stripped; a
+    /// limit on spread weights selects the smallest, which is the strongest.
+    #[test]
+    fn the_grouping_the_group_by_and_a_limit_on_spread_weights() {
+        // (the rising metric is its point's number: the window's last is the fixture's last)
+        let max = finished(request(2, Method::Value, Format::Multinode, "time_group=max"));
+        assert_eq!(named(&max)[0], ("one".to_owned(), "a".to_owned(), W_POINTS as f64));
+        // (`selected` beside other words is `selected` alone to the parser, as in C: nothing is left of it)
+        for word in ["selected", "label", "percentage-of-instance", "selected,node"] {
+            let query = format!("group_by={word}");
+            let stripped = finished(request(2, Method::Value, Format::Multinode, &query));
+            assert_eq!(stripped.request.group_by.group_by, group_by::NONE, "{word}");
+        }
+        let kept = finished(request(2, Method::Value, Format::Multinode, "group_by=label,node"));
+        assert_eq!(kept.request.group_by.group_by, group_by::NODE);
+
+        // volume, spread: the rising metric and the step give two distinct weights on each host
+        let more = "baseline_after=-180&baseline_before=0&limit=1";
+        let limited = finished(request(2, Method::Volume, Format::Multinode, more));
+        let weights: Vec<f64> = limited.results.iter().map(|t| t.value).collect();
+        assert!(weights.contains(&0.0) && weights.iter().any(|w| *w > 0.0), "{:?}", named(&limited));
+        let selected: Vec<f64> = limited.results.iter().filter(|t| t.selected).map(|t| t.value).collect();
+        assert_eq!(selected, [0.0], "{:?}", named(&limited));
+    }
+
     /// The refusals: C's status and text for a window that is none, a baseline that is none, too few points, a
     /// client that went away; the body has C's two spaces.
     #[test]

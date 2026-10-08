@@ -234,6 +234,21 @@ mod tests {
         r#""db_points_read":484,"db_points_per_tier":[484]},"#
     );
 
+    /// The limit's summary says what was asked, how many results there are and how many are shown: a limit
+    /// above the results shows all of them and is not truncated.
+    #[test]
+    fn a_limit_above_the_results_is_summed_up_as_it_was_asked() {
+        for write in [charts, contexts] {
+            let (body, dimensions) = text(write(&finished(Method::Value, "options=minify&limit=5", &THREE), 1));
+            let summary = concat!(
+                r#""correlated_dimensions":3,"total_dimensions_count":10,"result_limit":{"limit":5,"total":3,"#,
+                r#""returned":3,"unit":"dimensions","truncated":false,"summary_scope":"all"}}"#
+            );
+            assert!(body.ends_with(summary), "{body}");
+            assert_eq!(dimensions, 3);
+        }
+    }
+
     /// The header: the windows and their durations, the points, the statistics, the grouping, the method and the
     /// options; the baseline's four members for the two methods that have one.
     #[test]

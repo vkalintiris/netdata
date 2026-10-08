@@ -226,6 +226,10 @@ mod tests {
         };
         assert_eq!(refused((T, T), (T - 200, T - 100), 0), Err("Invalid selected time-range."));
         assert_eq!(refused((T - 100, T), (T - 100, T - 100), 0), Err("Invalid baseline time-range."));
+        // when the baseline is none and the points are too few, the baseline's refusal comes first; and the
+        // highlighted window's before both
+        assert_eq!(refused((T - 100, T), (T - 100, T - 100), 14), Err("Invalid baseline time-range."));
+        assert_eq!(refused((T, T), (T - 100, T - 100), 14), Err("Invalid selected time-range."));
         let too_few = Err("Too few points available, at least 15 are needed.");
         assert_eq!(refused((T - 100, T), (T - 200, T - 100), 14), too_few);
         assert!(refused((T - 100, T), (T - 200, T - 100), 15).is_ok());

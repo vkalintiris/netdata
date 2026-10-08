@@ -1008,6 +1008,7 @@ mod tests {
         assert_eq!(key(0, INSTANCE), pair(&format!("t.w@{ONE}"), "t.w@one"));
         assert_eq!(key(0, INSTANCE | NODE), pair(&format!("t.w,{ONE}"), "t.w,one"));
         assert_eq!(key(0, NODE), pair(ONE, "one"));
+        assert_eq!(key(0, NODE | CONTEXT), pair(&format!("{ONE},ctx.w"), "one,ctx.w"));
         assert_eq!(key(0, CONTEXT), pair("ctx.w", "ctx.w"));
         assert_eq!(key(1, UNITS), pair("things", "things"));
         assert_eq!(key(1, DIMENSION | CONTEXT | UNITS), pair("dee,ctx.n,things", "dee,ctx.n,things"));
