@@ -2,7 +2,7 @@
 //! makes it, and what a host's first pass makes of a row the table has.
 
 use netdata_agent_log::netdata_log_error;
-use netdata_agent_metadata::health_log::{EntryRow, LoadedRow, Uuid};
+use netdata_agent_metadata::health_log::{AlertConfigRow, EntryRow, LoadedRow, Uuid};
 use netdata_agent_metadata::open::MetaDb;
 use netdata_agent_text::c::c_str;
 use netdata_agent_query::tables::options_to_json_array;
@@ -178,7 +178,7 @@ pub(crate) fn entry_of(row: LoadedRow) -> Result<Entry, &'static str> {
 }
 
 /// `rrdcalc_status2string()` of a number a table holds: one that is no status is recorded and reads `UNKNOWN`.
-fn status_name(number: i32) -> &'static str {
+pub fn status_name(number: i32) -> &'static str {
     match number {
         -2 => Status::Removed.name(),
         -1 => Status::Undefined.name(),
@@ -392,7 +392,34 @@ pub fn alert_config_json(meta: Option<&MetaDb>, hash: &[u8], default_recipient: 
     };
 
     let mut wb = JsonWriter::new(JsonOptions::DEFAULT);
-    wb.member_add_string_opt("name", column(&row.alarm));
+    alert_config_members(&mut wb, &row, default_recipient, ConfigOptions::default());
+    wb.finalize();
+    ConfigAnswer::Found(wb.into_bytes())
+}
+
+/// What `contexts_v2_alert_config_to_json_from_sql_alert_config_data()` takes from the request that asked for a
+/// rule: all off for `alert_config`, the request's options for the `configurations` of `alert_transitions`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ConfigOptions {
+    /// The lookup, the calculation and the status object are printed even when the rule has none.
+    pub debug: bool,
+    /// No `name`, no `green` and no `red`.
+    pub mcp: bool,
+    /// The lookup's two ends go through the RFC 3339 time writer.
+    pub rfc3339: bool,
+}
+
+/// `contexts_v2_alert_config_to_json_from_sql_alert_config_data()`: a rule's members, as its row of `alert_hash`
+/// has it, into the object the caller has open. `default_recipient` is localhost's, for a rule that names none.
+pub fn alert_config_members(
+    wb: &mut JsonWriter,
+    row: &AlertConfigRow,
+    default_recipient: &[u8],
+    options: ConfigOptions,
+) {
+    if !options.mcp {
+        wb.member_add_string_opt("name", column(&row.alarm));
+    }
     wb.member_add_uuid_ptr("config_hash_id", Some(&row.hash_id));
 
     wb.member_add_object("selectors");
@@ -408,36 +435,37 @@ pub fn alert_config_json(meta: Option<&MetaDb>, hash: &[u8], default_recipient: 
     wb.member_add_string_opt("units", column(&row.units));
     // C hands the 32-bit number to an unsigned 64-bit parameter
     wb.member_add_uint64("update_every", i64::from(row.update_every) as u64);
-    if row.db_after != 0 {
+    if row.db_after != 0 || options.debug {
         wb.member_add_object("db");
-        wb.member_add_time_t_formatted("after", i64::from(row.db_after), false);
-        wb.member_add_time_t_formatted("before", i64::from(row.db_before), false);
+        wb.member_add_time_t_formatted("after", i64::from(row.db_after), options.rfc3339);
+        wb.member_add_time_t_formatted("before", i64::from(row.db_before), options.rfc3339);
         wb.member_add_string("time_group_condition", GroupCondition::name_of_id(row.time_group_condition as u8));
         wb.member_add_double("time_group_value", row.time_group_value);
         wb.member_add_string("dims_group", DimsGrouping::name_of_id(row.dims_group as u8));
         wb.member_add_string("data_source", DataSource::name_of_id(row.data_source as u8));
         wb.member_add_string_opt("method", column(&row.db_method));
         wb.member_add_string_opt("dimensions", column(&row.db_dimensions));
-        options_to_json_array(&mut wb, b"options", u64::from(row.db_options));
+        options_to_json_array(wb, b"options", u64::from(row.db_options));
         wb.object_close();
     }
-    if let Some(calc) = column(&row.calc) {
-        wb.member_add_string("calc", calc);
+    let calc = column(&row.calc);
+    if calc.is_some() || options.debug {
+        wb.member_add_string_opt("calc", calc);
     }
     wb.object_close();
 
     let (warn, crit) = (column(&row.warn), column(&row.crit));
-    if warn.is_some() || crit.is_some() {
+    if warn.is_some() || crit.is_some() || options.debug {
         wb.member_add_object("status");
         for (key, text) in [("green", &row.green), ("red", &row.red)] {
             let number = column(text).map_or(f64::NAN, |text| str2ndd(text).0);
-            if !number.is_nan() {
+            if !options.mcp && (!number.is_nan() || options.debug) {
                 wb.member_add_double(key, number);
             }
         }
         for (key, expression) in [("warn", warn), ("crit", crit)] {
-            if let Some(expression) = expression {
-                wb.member_add_string(key, expression);
+            if expression.is_some() || options.debug {
+                wb.member_add_string_opt(key, expression);
             }
         }
         wb.object_close();
@@ -457,7 +485,128 @@ pub fn alert_config_json(meta: Option<&MetaDb>, hash: &[u8], default_recipient: 
     wb.member_add_string_opt("type", column(&row.r#type));
     wb.member_add_string_opt("info", column(&row.info));
     wb.member_add_string_opt("summary", column(&row.summary));
-    wb.finalize();
-    ConfigAnswer::Found(wb.into_bytes())
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A rule with a name, units and an update frequency, and nothing else.
+    fn rule() -> AlertConfigRow {
+        AlertConfigRow {
+            hash_id: [0xa1; 16],
+            alarm: Some(b"the_rule".to_vec()),
+            template: None,
+            on_key: Some(b"system.cpu".to_vec()),
+            classification: None,
+            component: None,
+            r#type: None,
+            lookup: None,
+            every: None,
+            units: Some(b"%".to_vec()),
+            calc: None,
+            families: None,
+            green: None,
+            red: None,
+            warn: None,
+            crit: None,
+            exec: None,
+            to_key: None,
+            info: None,
+            delay: None,
+            options: None,
+            repeat: None,
+            host_labels: None,
+            db_dimensions: None,
+            db_method: None,
+            db_options: 0,
+            db_after: 0,
+            db_before: 0,
+            update_every: 10,
+            source: None,
+            chart_labels: None,
+            summary: None,
+            time_group_condition: 0,
+            time_group_value: 0.0,
+            dims_group: 0,
+            data_source: 0,
+        }
+    }
+
+    /// What `write` prints into an open object, minified, without the object's braces.
+    fn members(write: impl FnOnce(&mut JsonWriter)) -> String {
+        let mut wb = JsonWriter::new(JsonOptions::MINIFY);
+        write(&mut wb);
+        wb.finalize();
+        let text = String::from_utf8(wb.into_bytes()).unwrap();
+        text[1..text.len() - 1].to_owned()
+    }
+
+    fn printed(row: &AlertConfigRow, options: ConfigOptions) -> String {
+        members(|wb| alert_config_members(wb, row, b"sysadmin", options))
+    }
+
+    /// `contexts_v2_alert_config_to_json_from_sql_alert_config_data()` by the request's options. Plain: the
+    /// lookup, the calculation and the status object only when the rule has them, `green` and `red` only when
+    /// they are numbers. `debug`: all of them, a missing one as null. `mcp`: no `name`, no `green`, no `red`.
+    /// `rfc3339`: the lookup's ends through the time writer, where an end of 0 is null.
+    #[test]
+    fn a_rule_is_written_by_the_request_s_options() {
+        let (plain, debug) = (ConfigOptions::default(), ConfigOptions { debug: true, ..Default::default() });
+        let mcp = ConfigOptions { mcp: true, ..Default::default() };
+        let bare = rule();
+        let name = r#""name":"the_rule","#;
+        let value = r#""value":{"units":"%","update_every":10},"notification":{"#;
+        let text = printed(&bare, plain);
+        assert!(text.starts_with(&format!(r#"{name}"config_hash_id":"a1a1a1a1-"#)), "{text}");
+        assert!(text.contains(value), "{text}");
+        assert!(!text.contains(r#""status""#) && !text.contains(r#""db""#) && !text.contains(r#""calc""#), "{text}");
+        assert!(text.contains(r#""notification":{"type":"agent","exec":null,"to":"sysadmin","#), "{text}");
+
+        // `mcp` on the bare rule: the same without its name
+        assert_eq!(printed(&bare, mcp), text[name.len()..]);
+
+        // `debug` on the bare rule: the lookup with its zeros, a null calculation, the whole status object
+        let text = printed(&bare, debug);
+        assert!(text.contains(r#""update_every":10,"db":{"after":0,"before":0,"time_group_condition":"#), "{text}");
+        let status = r#""calc":null},"status":{"green":null,"red":null,"warn":null,"crit":null},"notification":{"#;
+        assert!(text.contains(status), "{text}");
+        // with `mcp` too: neither of the two thresholds
+        let text = printed(&bare, ConfigOptions { debug: true, mcp: true, rfc3339: false });
+        assert!(text.contains(r#""calc":null},"status":{"warn":null,"crit":null},"notification":{"#), "{text}");
+        assert!(text.starts_with(r#""config_hash_id":"#), "{text}");
+
+        // a rule with a lookup, a calculation, one threshold and one expression
+        let full = AlertConfigRow {
+            db_after: -600,
+            calc: Some(b"$this * 2".to_vec()),
+            green: Some(b"80.5".to_vec()),
+            warn: Some(b"$this > $green".to_vec()),
+            ..rule()
+        };
+        let green = members(|wb| wb.member_add_double("green", 80.5));
+        let text = printed(&full, plain);
+        assert!(text.contains(r#""db":{"after":-600,"before":0,"time_group_condition":"#), "{text}");
+        let status = format!(r#""calc":"$this * 2"}},"status":{{{green},"warn":"$this > $green"}},"notification":{{"#);
+        assert!(text.contains(&status), "{text}");
+        // `debug` adds what the rule lacks, as nulls: the other threshold, the other expression
+        let text = printed(&full, debug);
+        let status = format!(r#""status":{{{green},"red":null,"warn":"$this > $green","crit":null}},"#);
+        assert!(text.contains(&status), "{text}");
+        // `mcp` drops the thresholds and keeps the expression
+        let text = printed(&full, mcp);
+        assert!(text.contains(r#""calc":"$this * 2"},"status":{"warn":"$this > $green"},"notification":{"#), "{text}");
+        // `rfc3339`: a relative end stays a number, an end of 0 is null
+        let text = printed(&full, ConfigOptions { rfc3339: true, ..Default::default() });
+        assert!(text.contains(r#""db":{"after":-600,"before":null,"time_group_condition":"#), "{text}");
+    }
+
+    /// The statuses a table can hold, by their numbers; a number that is no status reads `UNKNOWN`.
+    #[test]
+    fn a_stored_status_has_c_s_name() {
+        let names: Vec<&str> = (-2..=4).map(status_name).collect();
+        assert_eq!(names, ["REMOVED", "UNDEFINED", "UNINITIALIZED", "CLEAR", "RAISED", "WARNING", "CRITICAL"]);
+        assert_eq!((status_name(5), status_name(-3)), ("UNKNOWN", "UNKNOWN"));
+    }
+}

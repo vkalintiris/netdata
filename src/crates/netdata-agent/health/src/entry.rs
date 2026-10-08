@@ -1,6 +1,7 @@
 //! An entry of the alert log: one status change of one alert (`ALARM_ENTRY`, `health_log.c`
 //! `health_create_alarm_entry()`).
 
+use netdata_agent_text::json::JsonWriter;
 use netdata_agent_text::units::format_value_and_unit;
 
 use crate::alert::{Alert, Run, Status};
@@ -18,6 +19,31 @@ pub mod entry_flags {
     pub const SAVED: u32 = 0x1000_0000;
     pub const ACLK_QUEUED: u32 = 0x2000_0000;
     pub const NO_CLEAR_NOTIFICATION: u32 = 0x8000_0000;
+}
+
+/// `health_entry_flags_to_json_array()`: the names of an entry's flags as the array member `key`, in C's order. A
+/// repeating entry reads `RECURRING`.
+pub fn entry_flags_to_json_array(wb: &mut JsonWriter, key: &str, flags: u32) {
+    const NAMES: [(u32, &str); 11] = [
+        (entry_flags::PROCESSED, "PROCESSED"),
+        (entry_flags::UPDATED, "UPDATED"),
+        (entry_flags::EXEC_RUN, "EXEC_RUN"),
+        (entry_flags::EXEC_FAILED, "EXEC_FAILED"),
+        (entry_flags::SILENCED, "SILENCED"),
+        (entry_flags::RUN_ONCE, "RUN_ONCE"),
+        (entry_flags::EXEC_IN_PROGRESS, "EXEC_IN_PROGRESS"),
+        (entry_flags::IS_REPEATING, "RECURRING"),
+        (entry_flags::SAVED, "SAVED"),
+        (entry_flags::ACLK_QUEUED, "ACLK_QUEUED"),
+        (entry_flags::NO_CLEAR_NOTIFICATION, "NO_CLEAR_NOTIFICATION"),
+    ];
+    wb.member_add_array(Some(key.as_bytes()));
+    for (flag, name) in NAMES {
+        if flags & flag != 0 {
+            wb.add_array_item_string(name);
+        }
+    }
+    wb.array_close();
 }
 
 /// What makes an entry (`health_create_alarm_entry()`'s arguments).
@@ -149,5 +175,37 @@ impl Entry {
             pending_save_count: 0,
             owed_saves: 0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use netdata_agent_text::json::JsonOptions;
+
+    use super::*;
+
+    /// `health_entry_flags_to_json_array()`: every flag's name in C's order, nothing for a bit that is no flag.
+    #[test]
+    fn an_entry_s_flags_are_named_in_c_s_order() {
+        use entry_flags::{EXEC_IN_PROGRESS, EXEC_RUN, PROCESSED, SAVED, UPDATED};
+        let printed = |flags: u32| {
+            let mut wb = JsonWriter::new(JsonOptions::MINIFY);
+            entry_flags_to_json_array(&mut wb, "flags", flags);
+            wb.finalize();
+            String::from_utf8(wb.into_bytes()).unwrap()
+        };
+        let all = concat!(
+            r#"{"flags":["PROCESSED","UPDATED","EXEC_RUN","EXEC_FAILED","SILENCED","RUN_ONCE","EXEC_IN_PROGRESS","#,
+            r#""RECURRING","SAVED","ACLK_QUEUED","NO_CLEAR_NOTIFICATION"]}"#
+        );
+        assert_eq!(printed(u32::MAX), all);
+        assert_eq!(printed(0), r#"{"flags":[]}"#);
+        // an entry whose notification runs, and one a later entry replaced
+        let running = r#"{"flags":["PROCESSED","EXEC_RUN","EXEC_IN_PROGRESS","SAVED"]}"#;
+        assert_eq!(printed(PROCESSED | EXEC_RUN | EXEC_IN_PROGRESS | SAVED), running);
+        let replaced = r#"{"flags":["PROCESSED","UPDATED","EXEC_RUN","SAVED"]}"#;
+        assert_eq!(printed(PROCESSED | UPDATED | EXEC_RUN | SAVED), replaced);
+        // the bits between the flags are no flags
+        assert_eq!(printed(0x0fff_ff00 | 0x4000_0000), r#"{"flags":[]}"#);
     }
 }

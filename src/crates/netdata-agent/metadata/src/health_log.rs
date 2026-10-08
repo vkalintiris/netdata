@@ -5,6 +5,9 @@
 //! Where C's SQL reads the wall clock itself (`UNIXEPOCH()`, `NOW_USEC(0)`) the caller's clock is bound instead, so
 //! that a caller with a scripted clock gets rows that follow it. The values are the same in a running agent.
 
+use std::borrow::Cow;
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use netdata_agent_log::netdata_log_error;
 use rusqlite::types::{ToSqlOutput, Value, ValueRef};
 use rusqlite::{Connection, Row, ToSql};
@@ -107,7 +110,50 @@ const SQL_DELETE_MISSING_CHART_ALERT: &str = "DELETE FROM health_log WHERE host_
      (SELECT type||'.'||id FROM chart WHERE host_id = @host_id)";
 const SQL_HEALTH_CHECK_ALL_HOSTS: &str = "SELECT host_id, hostname FROM host";
 
-// C selects through a temporary table `c_<pointer>` that holds the request's hash; no client can tell
+// sql_alert_transitions(): the 31 columns of an entry, its alarm and its alarm's rule
+macro_rules! sql_search_alert_transition_select {
+    () => {
+        "SELECT h.host_id, h.alarm_id, h.config_hash_id, h.name, h.chart, h.chart_name, h.family, h.recipient, \
+         h.units, h.exec, h.chart_context,  d.when_key, d.duration, d.non_clear_duration, d.flags, \
+         d.delay_up_to_timestamp, d.info, d.exec_code, d.new_status, d.old_status, d.delay, d.new_value, \
+         d.old_value, d.last_repeat, d.transition_id, d.global_id, ah.class, ah.type, ah.component, \
+         d.exec_run_timestamp, d.summary"
+    };
+}
+
+const SQL_SEARCH_ALERT_TRANSITION_DIRECT: &str = concat!(
+    sql_search_alert_transition_select!(),
+    " FROM health_log h, health_log_detail d, alert_hash ah  WHERE h.config_hash_id = ah.hash_id AND \
+     h.health_log_id = d.health_log_id AND transition_id = @transition "
+);
+
+/// `SQL_SEARCH_ALERT_TRANSITION` over the host list `table`, with the two optional tests and the order
+/// `sql_alert_transitions()` appends.
+fn sql_search_alert_transition(table: &str, context: bool, alert_name: bool) -> String {
+    let mut sql = String::from(sql_search_alert_transition_select!());
+    sql.push_str(" FROM health_log h, health_log_detail d, ");
+    sql.push_str(table);
+    sql.push_str(
+        " t, alert_hash ah  WHERE h.host_id = t.host_id AND h.config_hash_id = ah.hash_id AND h.health_log_id = \
+         d.health_log_id AND ( d.new_status > 2 OR d.old_status > 2 ) AND d.global_id BETWEEN @after AND @before ",
+    );
+    if context {
+        sql.push_str(" AND h.chart_context = @context");
+    }
+    if alert_name {
+        sql.push_str(" AND h.name = @alert_name");
+    }
+    sql.push_str(" ORDER BY d.global_id DESC");
+    sql
+}
+
+/// The temporary tables of the host lists, one name per call. C names each after the address of the request's
+/// node dictionary (`v_%p`); the table is the connection's own, so no client can tell.
+static HOST_LISTS: AtomicU64 = AtomicU64::new(0);
+
+const USEC_PER_SEC: i64 = 1_000_000;
+
+// C selects through a temporary table `c_<pointer>` that holds the request's hashes; this asks hash by hash
 const SQL_SEARCH_CONFIG_LIST: &str = "SELECT ah.hash_id, alarm, template, on_key, class, component, type, lookup, \
      every,  units, calc, families, green, red, warn, crit,  exec, to_key, info, delay, options, repeat, \
      host_labels, p_db_lookup_dimensions, p_db_lookup_method,  p_db_lookup_options, p_db_lookup_after, \
@@ -359,6 +405,181 @@ pub struct AlertOfTransition {
     pub alarm_id: i32,
 }
 
+/// A log entry as `sql_alert_transitions()` reads it and hands it to its callback: the entry's columns, its
+/// alarm's, and the class, type and component of the rule its alarm points at now. A text is the row's own bytes
+/// while the row stands, `None` for a NULL. The two statuses, the delay and the notifier's exit code are read as
+/// C's `int` (the statuses are REAL columns), a NULL value as 0.0, the flags and the times as 64 bits.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TransitionRow<'r> {
+    pub host_id: [u8; 16],
+    pub alarm_id: i64,
+    pub config_hash_id: [u8; 16],
+    pub alert_name: Option<Cow<'r, [u8]>>,
+    pub chart: Option<Cow<'r, [u8]>>,
+    pub chart_name: Option<Cow<'r, [u8]>>,
+    pub family: Option<Cow<'r, [u8]>>,
+    pub recipient: Option<Cow<'r, [u8]>>,
+    pub units: Option<Cow<'r, [u8]>>,
+    pub exec: Option<Cow<'r, [u8]>>,
+    pub chart_context: Option<Cow<'r, [u8]>>,
+    pub when_key: i64,
+    pub duration: i64,
+    pub non_clear_duration: i64,
+    pub flags: i64,
+    pub delay_up_to_timestamp: i64,
+    pub info: Option<Cow<'r, [u8]>>,
+    pub exec_code: i32,
+    pub new_status: i32,
+    pub old_status: i32,
+    pub delay: i32,
+    pub new_value: f64,
+    pub old_value: f64,
+    pub last_repeat: i64,
+    pub transition_id: [u8; 16],
+    pub global_id: i64,
+    pub classification: Option<Cow<'r, [u8]>>,
+    pub r#type: Option<Cow<'r, [u8]>>,
+    pub component: Option<Cow<'r, [u8]>>,
+    pub exec_run_timestamp: i64,
+    pub summary: Option<Cow<'r, [u8]>>,
+}
+
+/// What [`MetaDb::alert_transitions`] is asked for.
+#[derive(Debug, Clone, Copy)]
+pub enum TransitionsOf<'a> {
+    /// The entries with this transition id, whatever their host, their time and their statuses, in the table's
+    /// order.
+    Id(&'a [u8; 16]),
+    /// The entries of the hosts listed (each id as `health_log.host_id` holds it) that changed from or to WARNING
+    /// or CRITICAL, with a global id (the entry's time in microseconds) from `after_s` to `before_s`, in seconds
+    /// and both included; of one chart context and of one alert name when given, each compared whole and with its
+    /// case. Newest first.
+    Window {
+        hosts: &'a [[u8; 16]],
+        after_s: i64,
+        before_s: i64,
+        context: Option<&'a [u8]>,
+        alert_name: Option<&'a [u8]>,
+    },
+}
+
+/// The id of a transition's row that is no 16-byte blob, in the order C tests them. C skips such a row.
+#[derive(Clone, Copy)]
+enum BadId {
+    Host,
+    ConfigHash,
+    Transition,
+}
+
+/// One row of `sql_alert_transitions()`'s two statements.
+fn transition_row<'r>(row: &'r Row<'_>) -> Result<TransitionRow<'r>, BadId> {
+    let id = |i, bad| match uuid_column(row, i) {
+        Uuid::Valid(id) => Ok(id),
+        _ => Err(bad),
+    };
+    let host_id = id(0, BadId::Host)?;
+    let config_hash_id = id(2, BadId::ConfigHash)?;
+    let transition_id = id(24, BadId::Transition)?;
+    let text = |i| text_ref(row, i);
+    Ok(TransitionRow {
+        host_id,
+        alarm_id: int(row, 1),
+        config_hash_id,
+        alert_name: text(3),
+        chart: text(4),
+        chart_name: text(5),
+        family: text(6),
+        recipient: text(7),
+        units: text(8),
+        exec: text(9),
+        chart_context: text(10),
+        when_key: int(row, 11),
+        duration: int(row, 12),
+        non_clear_duration: int(row, 13),
+        flags: int(row, 14),
+        delay_up_to_timestamp: int(row, 15),
+        info: text(16),
+        // sqlite3_column_int(): the low 32 bits
+        exec_code: int(row, 17) as i32,
+        new_status: int(row, 18) as i32,
+        old_status: int(row, 19) as i32,
+        delay: int(row, 20) as i32,
+        new_value: double(row, 21),
+        old_value: double(row, 22),
+        last_repeat: int(row, 23),
+        transition_id,
+        global_id: int(row, 25),
+        classification: text(26),
+        r#type: text(27),
+        component: text(28),
+        exec_run_timestamp: int(row, 29),
+        summary: text(30),
+    })
+}
+
+/// The host list of a window as C fills it: one row per host; an insert that fails is reported and the others go
+/// on. False when the insert cannot be prepared (reported).
+fn fill_host_list(c: &Connection, table: &str, hosts: &[[u8; 16]]) -> bool {
+    let Ok(mut stmt) = c.prepare(&format!("INSERT INTO {table} (host_id) VALUES (@host_id)")) else {
+        netdata_log_error!("Failed to prepare statement to INSERT into {table}");
+        return false;
+    };
+    for host in hosts {
+        let params: [&dyn ToSql; 1] = [&&host[..]];
+        if conn::retry(|| stmt.execute(&params[..])).is_err() {
+            netdata_log_error!("Error while populating temp table");
+        }
+    }
+    true
+}
+
+/// One row of `SQL_SEARCH_CONFIG_LIST` as `sql_get_alert_configuration()` reads it; `None` when its hash is no
+/// 16-byte blob (C skips the row and counts it).
+fn alert_config_row(row: &Row<'_>) -> Option<AlertConfigRow> {
+    let Uuid::Valid(hash_id) = uuid_column(row, 0) else {
+        return None;
+    };
+    let text = |i| bytes_or_null(row, i);
+    Some(AlertConfigRow {
+        hash_id,
+        alarm: text(1),
+        template: text(2),
+        on_key: text(3),
+        classification: text(4),
+        component: text(5),
+        r#type: text(6),
+        lookup: text(7),
+        every: text(8),
+        units: text(9),
+        calc: text(10),
+        families: text(11),
+        green: text(12),
+        red: text(13),
+        warn: text(14),
+        crit: text(15),
+        exec: text(16),
+        to_key: text(17),
+        info: text(18),
+        delay: text(19),
+        options: text(20),
+        repeat: text(21),
+        host_labels: text(22),
+        db_dimensions: text(23),
+        db_method: text(24),
+        db_options: int(row, 25) as u32,
+        db_after: int(row, 26) as i32,
+        db_before: int(row, 27) as i32,
+        update_every: int(row, 28) as i32,
+        source: text(29),
+        chart_labels: text(30),
+        summary: text(31),
+        time_group_condition: int(row, 32) as i32,
+        time_group_value: double(row, 33),
+        dims_group: int(row, 34) as i32,
+        data_source: int(row, 35) as i32,
+    })
+}
+
 /// `SQLITE3_BIND_STRING_OR_NULL()`.
 fn text_or_null(value: Option<&[u8]>) -> ToSqlOutput<'_> {
     value.map_or(ToSqlOutput::Owned(Value::Null), text)
@@ -408,6 +629,14 @@ fn bytes_or_null(row: &Row<'_>, i: usize) -> Option<Vec<u8>> {
     }
 }
 
+/// `sqlite3_column_text()` without a copy: the column's bytes while the row stands, `None` for a NULL.
+fn text_ref<'r>(row: &'r Row<'_>, i: usize) -> Option<Cow<'r, [u8]>> {
+    match row.get_ref(i) {
+        Ok(ValueRef::Text(t) | ValueRef::Blob(t)) => Some(Cow::Borrowed(t)),
+        _ => bytes_or_null(row, i).map(Cow::Owned),
+    }
+}
+
 /// Whether a step failed because the database is busy or locked: `sqlite3_step_monitored()` makes such a step
 /// again, up to `MAX_RETRY` times.
 fn busy(err: &rusqlite::Error) -> bool {
@@ -429,7 +658,7 @@ fn rows_ended(
     function: &str,
     params: &[&dyn ToSql],
     end: End,
-    mut f: impl FnMut(&Row<'_>) -> bool,
+    f: impl FnMut(&Row<'_>) -> bool,
 ) -> bool {
     let mut stmt = match c.prepare(sql) {
         Ok(stmt) => stmt,
@@ -438,10 +667,22 @@ fn rows_ended(
             return false;
         }
     };
+    statement_rows(&mut stmt, function, params, end, f);
+    true
+}
+
+/// The rows of a statement that is prepared, as [`rows_ended`] hands them out.
+fn statement_rows(
+    stmt: &mut rusqlite::Statement<'_>,
+    function: &str,
+    params: &[&dyn ToSql],
+    end: End,
+    mut f: impl FnMut(&Row<'_>) -> bool,
+) {
     let mut attempt = 1;
     loop {
         let Ok(mut rows) = stmt.query(params) else {
-            return true;
+            return;
         };
         let mut seen = false;
         loop {
@@ -449,14 +690,14 @@ fn rows_ended(
                 Ok(Some(row)) => {
                     seen = true;
                     if !f(row) {
-                        return true;
+                        return;
                     }
                 }
-                Ok(None) => return true,
+                Ok(None) => return,
                 Err(err) if !seen && busy(&err) && attempt < conn::MAX_RETRY => break,
                 Err(err) => {
                     end.failed(conn::result_code(&err), function);
-                    return true;
+                    return;
                 }
             }
         }
@@ -1058,65 +1299,99 @@ impl MetaDb {
     /// prepared.
     #[allow(clippy::result_unit_err)]
     pub fn alert_config(&self, hash_id: &[u8; 16]) -> Result<Option<AlertConfigRow>, ()> {
+        let mut found = None;
+        // one hash, one row: the last one stands, as each row reaches C's callback
+        self.alert_configs(std::slice::from_ref(hash_id), |row| found = Some(row))?;
+        Ok(found)
+    }
+
+    /// `sql_get_alert_configuration()` for several hashes: every rule's row, hash by hash in the order given,
+    /// under one hold of the connection. C joins a temporary table of the hashes to `alert_hash` and takes the
+    /// rows as SQLite's plan gives them, which for a list of hashes beside a table keyed by the hash is the order
+    /// the hashes went in (decision D234 F5 in the status repository). A hash without a row gives nothing; a row
+    /// whose hash is no 16-byte blob is skipped, and one record counts them. `Err` when the statement cannot be
+    /// prepared.
+    #[allow(clippy::result_unit_err)]
+    pub fn alert_configs(&self, hashes: &[[u8; 16]], mut each: impl FnMut(AlertConfigRow)) -> Result<(), ()> {
         let c = self.lock();
         let mut stmt = c.prepare(SQL_SEARCH_CONFIG_LIST).map_err(|_| {
             netdata_log_error!("Failed to prepare statement sql_get_alert_configuration");
         })?;
-        let params: &[(&str, &dyn ToSql)] = &[("@hash_id", &&hash_id[..])];
-        let Ok(mut rows) = stmt.query(params) else {
-            return Ok(None);
-        };
-        let (mut found, mut invalid) = (None, 0usize);
-        while let Some(row) = next_row(&mut rows, End::Finalize, "sql_get_alert_configuration") {
-            let Uuid::Valid(hash_id) = uuid_column(row, 0) else {
-                invalid += 1;
+        let mut invalid = 0usize;
+        for hash_id in hashes {
+            let params: &[(&str, &dyn ToSql)] = &[("@hash_id", &&hash_id[..])];
+            let Ok(mut rows) = stmt.query(params) else {
                 continue;
             };
-            let text = |i| bytes_or_null(row, i);
-            // one hash, one row: the last one stands, as each row reaches C's callback
-            found = Some(AlertConfigRow {
-                hash_id,
-                alarm: text(1),
-                template: text(2),
-                on_key: text(3),
-                classification: text(4),
-                component: text(5),
-                r#type: text(6),
-                lookup: text(7),
-                every: text(8),
-                units: text(9),
-                calc: text(10),
-                families: text(11),
-                green: text(12),
-                red: text(13),
-                warn: text(14),
-                crit: text(15),
-                exec: text(16),
-                to_key: text(17),
-                info: text(18),
-                delay: text(19),
-                options: text(20),
-                repeat: text(21),
-                host_labels: text(22),
-                db_dimensions: text(23),
-                db_method: text(24),
-                db_options: int(row, 25) as u32,
-                db_after: int(row, 26) as i32,
-                db_before: int(row, 27) as i32,
-                update_every: int(row, 28) as i32,
-                source: text(29),
-                chart_labels: text(30),
-                summary: text(31),
-                time_group_condition: int(row, 32) as i32,
-                time_group_value: double(row, 33),
-                dims_group: int(row, 34) as i32,
-                data_source: int(row, 35) as i32,
-            });
+            while let Some(row) = next_row(&mut rows, End::Finalize, "sql_get_alert_configuration") {
+                match alert_config_row(row) {
+                    Some(config) => each(config),
+                    None => invalid += 1,
+                }
+            }
         }
         if invalid != 0 {
             netdata_log_error!("HEALTH: Ignored {invalid} alert configuration rows with invalid config_hash_id.");
         }
-        Ok(found)
+        Ok(())
+    }
+
+    /// `sql_alert_transitions()`: the log entries asked for, each handed to `each` as C hands it to its callback,
+    /// under one hold of the connection (decision D234 F8), so `each` must not ask the database. An entry shows
+    /// the rule its alarm points at now, and is absent when `alert_hash` has no row for that rule. A row whose
+    /// host id, rule hash or transition id is no 16-byte blob is skipped, and one record counts them.
+    ///
+    /// By id: nothing when the statement cannot be prepared (reported). By window: the hosts go into a temporary
+    /// table of the connection, which is dropped at the end; nothing when the table cannot be made, or when one
+    /// of the two statements cannot be prepared (each reported).
+    pub fn alert_transitions(&self, of: &TransitionsOf<'_>, mut each: impl FnMut(&TransitionRow<'_>)) {
+        const FUNCTION: &str = "sql_alert_transitions";
+        let c = self.lock();
+        let mut invalid = [0usize; 3];
+        let mut hand = |row: &Row<'_>| {
+            match transition_row(row) {
+                Ok(transition) => each(&transition),
+                Err(bad) => invalid[bad as usize] += 1,
+            }
+            true
+        };
+        match *of {
+            TransitionsOf::Id(id) => {
+                let params: [&dyn ToSql; 1] = [&&id[..]];
+                rows(&c, SQL_SEARCH_ALERT_TRANSITION_DIRECT, FUNCTION, &params, &mut hand);
+            }
+            TransitionsOf::Window { hosts, after_s, before_s, context, alert_name } => {
+                let markers = self.markers();
+                let table = format!("v_{}", HOST_LISTS.fetch_add(1, Ordering::Relaxed));
+                let create = format!("CREATE TEMP TABLE IF NOT EXISTS {table} (host_id blob)");
+                if conn::db_execute(&c, &create, &markers).is_err() {
+                    return;
+                }
+                if fill_host_list(&c, &table, hosts) {
+                    let sql = sql_search_alert_transition(&table, context.is_some(), alert_name.is_some());
+                    // (the statement is gone before the table is dropped)
+                    match c.prepare(&sql) {
+                        Ok(mut stmt) => {
+                            let after = after_s.wrapping_mul(USEC_PER_SEC);
+                            let before = before_s.wrapping_mul(USEC_PER_SEC);
+                            let texts = [context.map(text), alert_name.map(text)];
+                            let mut params: Vec<&dyn ToSql> = vec![&after, &before];
+                            params.extend(texts.iter().flatten().map(|bound| bound as &dyn ToSql));
+                            statement_rows(&mut stmt, FUNCTION, &params, End::Finalize, &mut hand);
+                        }
+                        Err(_) => netdata_log_error!("Failed to prepare statement sql_alert_transitions"),
+                    }
+                }
+                let _ = conn::db_execute(&c, &format!("DROP TABLE IF EXISTS {table}"), &markers);
+            }
+        }
+        if invalid.iter().any(|&count| count != 0) {
+            let [hosts, hashes, transitions] = invalid;
+            netdata_log_error!(
+                "HEALTH: Ignored invalid alert transition rows (host_id={hosts}, config_hash_id={hashes}, \
+                 transition_id={transitions})."
+            );
+        }
     }
 
     /// `process_alert_pending_queue()`'s statements: every row of the host's `alert_queue` that is due at `now`,
@@ -1334,6 +1609,257 @@ mod tests {
         assert_eq!(meta.find_alert_transition(&other), [alert(HOST, Some("ctx.a"), 7)]);
         assert!(meta.find_alert_transition(&[0x7c; 16]).is_empty());
         assert!(meta.find_alert_transition(&[0; 16]).is_empty());
+    }
+
+    /// The log of the transition reads. Two hosts and five alarms: `a_one` (HOST, rule HASH, every text set), with
+    /// entries at T+10 (to WARNING), T+20 (back to CLEAR), T+30 (UNINITIALIZED to CLEAR: no status above RAISED)
+    /// and T+60 (a transition id of 5 bytes); `a_two` (the second host, a rule without class, type and component,
+    /// every text NULL) at T+40; `a_orphan` (HOST, a rule `alert_hash` has no row for) at T+45; `a_bad_host` (a
+    /// host id of 5 bytes) at T+47; `a_bad_hash` (HOST, a rule hash of 3 bytes, which `alert_hash` has) at T+50.
+    /// The entries of `a_bad_host` and `a_bad_hash` carry the transition id of `a_one`'s first entry.
+    fn transitions_log(meta: &MetaDb) {
+        let c = meta.lock();
+        let (host2, hash2, bad_host, bad_hash) = ([0x22_u8; 16], [0xbb_u8; 16], [0x33_u8; 5], [1_u8, 2, 3]);
+        let rule = "INSERT INTO alert_hash (hash_id, class, type, component) VALUES (?1, ?2, ?3, ?4)";
+        let none: Option<&str> = None;
+        c.execute(rule, rusqlite::params![&HASH[..], "Errors", "System", "Disk"]).unwrap();
+        c.execute(rule, rusqlite::params![&hash2[..], none, none, none]).unwrap();
+        c.execute(rule, rusqlite::params![&bad_hash[..], none, none, none]).unwrap();
+        let log = "INSERT INTO health_log (health_log_id, host_id, alarm_id, config_hash_id, name, chart, \
+                   chart_name, family, recipient, units, exec, chart_context) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, \
+                   ?8, ?9, ?10, ?11, ?12)";
+        c.execute(
+            log,
+            rusqlite::params![
+                1, &HOST[..], 7, &HASH[..], "a_one", "t.c", "t.c_name", "fam", "sysadmin", "%", "/bin/x", "ctx.a"
+            ],
+        )
+        .unwrap();
+        c.execute(
+            log,
+            rusqlite::params![2, &host2[..], 8, &hash2[..], none, none, none, none, none, none, none, "ctx.b"],
+        )
+        .unwrap();
+        let rest = |id: i32, host: &[u8], alarm: i32, hash: &[u8], name: &str| {
+            let row = rusqlite::params![id, host, alarm, hash, name, "t.c", none, none, none, none, none, "ctx.a"];
+            c.execute(log, row).unwrap();
+        };
+        rest(3, &HOST, 9, &[0xcc; 16], "a_orphan");
+        rest(4, &bad_host, 10, &HASH, "a_bad_host");
+        rest(5, &HOST, 11, &bad_hash, "a_bad_hash");
+        let detail = "INSERT INTO health_log_detail (health_log_id, unique_id, new_status, old_status, \
+                      transition_id, global_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
+        let entry = |log_id: i32, unique_id: i32, new: f64, old: f64, transition: &[u8], second: i64| {
+            let global_id = (T + second) * USEC_PER_SEC;
+            c.execute(detail, rusqlite::params![log_id, unique_id, new, old, transition, global_id]).unwrap();
+        };
+        entry(1, 100, 3.0, 1.0, &[0x71; 16], 10);
+        entry(1, 101, 1.0, 3.0, &[0x72; 16], 20);
+        entry(1, 102, 1.0, 0.0, &[0x73; 16], 30);
+        entry(2, 103, 4.0, 3.0, &[0x74; 16], 40);
+        entry(3, 104, 4.0, 1.0, &[0x75; 16], 45);
+        entry(4, 105, 4.0, 1.0, &[0x71; 16], 47);
+        entry(5, 106, 4.0, 1.0, &[0x71; 16], 50);
+        entry(1, 107, 4.0, 3.0, &[0x76; 5], 60);
+        // every column of a_one's first entry; an exit code and flags beyond 32 bits; no old value
+        let filled = "UPDATE health_log_detail SET when_key = ?1, duration = 60, non_clear_duration = 30, flags = \
+                      ?2, exec_run_timestamp = ?3, delay_up_to_timestamp = ?4, info = 'the info', exec_code = ?5, \
+                      delay = 5, new_value = 91.5, last_repeat = ?6, summary = 'the summary' WHERE unique_id = 100";
+        c.execute(filled, rusqlite::params![T, 0x1_0000_0005_i64, T + 1, T + 2, 0x1_0000_0002_i64, T + 3]).unwrap();
+    }
+
+    /// The seconds after T of the entries a transitions read hands out, in its order, and the records it makes.
+    fn transitions(meta: &MetaDb, of: &TransitionsOf<'_>) -> (Vec<i64>, Vec<String>) {
+        let mut seconds = Vec::new();
+        let ((), records) = netdata_agent_log::capture(|| {
+            meta.alert_transitions(of, |row| seconds.push(row.global_id / USEC_PER_SEC - T));
+        });
+        (seconds, records.into_iter().filter_map(|record| record.message).collect())
+    }
+
+    /// `sql_alert_transitions()` by transition id: every entry with the id, whatever its host, its time and its
+    /// statuses, through its alarm and its alarm's rule; each column as C reads it. A row whose host id or rule
+    /// hash is no 16-byte blob is left out and counted in one record; an entry whose rule `alert_hash` does not
+    /// have is absent; an id no entry has gives nothing and no record.
+    #[test]
+    fn a_transition_s_entries_are_read_by_its_id() {
+        let (_dir, meta) = db();
+        transitions_log(&meta);
+        let mut found = Vec::new();
+        let ((), records) = netdata_agent_log::capture(|| {
+            meta.alert_transitions(&TransitionsOf::Id(&[0x71; 16]), |row| found.push(format!("{row:?}")));
+        });
+        let text = |text: &'static str| Some(Cow::Borrowed(text.as_bytes()));
+        let expected = TransitionRow {
+            host_id: HOST,
+            alarm_id: 7,
+            config_hash_id: HASH,
+            alert_name: text("a_one"),
+            chart: text("t.c"),
+            chart_name: text("t.c_name"),
+            family: text("fam"),
+            recipient: text("sysadmin"),
+            units: text("%"),
+            exec: text("/bin/x"),
+            chart_context: text("ctx.a"),
+            when_key: T,
+            duration: 60,
+            non_clear_duration: 30,
+            flags: 0x1_0000_0005,
+            delay_up_to_timestamp: T + 2,
+            info: text("the info"),
+            exec_code: 2,
+            new_status: 3,
+            old_status: 1,
+            delay: 5,
+            new_value: 91.5,
+            old_value: 0.0,
+            last_repeat: T + 3,
+            transition_id: [0x71; 16],
+            global_id: (T + 10) * USEC_PER_SEC,
+            classification: text("Errors"),
+            r#type: text("System"),
+            component: text("Disk"),
+            exec_run_timestamp: T + 1,
+            summary: text("the summary"),
+        };
+        assert_eq!(found, [format!("{expected:?}")]);
+        let messages: Vec<String> = records.into_iter().filter_map(|record| record.message).collect();
+        let ignored = "HEALTH: Ignored invalid alert transition rows (host_id=1, config_hash_id=1, transition_id=0).";
+        assert_eq!(messages, [ignored]);
+
+        // no status above RAISED on either side, and outside any window: found by its id all the same
+        assert_eq!(transitions(&meta, &TransitionsOf::Id(&[0x73; 16])), (vec![30], vec![]));
+        // the second host's, whose texts are all NULL and whose numbers are all 0
+        let mut found = Vec::new();
+        meta.alert_transitions(&TransitionsOf::Id(&[0x74; 16]), |row| found.push(format!("{row:?}")));
+        let bare = TransitionRow {
+            host_id: [0x22; 16],
+            alarm_id: 8,
+            config_hash_id: [0xbb; 16],
+            alert_name: None,
+            chart: None,
+            chart_name: None,
+            family: None,
+            recipient: None,
+            units: None,
+            exec: None,
+            chart_context: text("ctx.b"),
+            when_key: 0,
+            duration: 0,
+            non_clear_duration: 0,
+            flags: 0,
+            delay_up_to_timestamp: 0,
+            info: None,
+            exec_code: 0,
+            new_status: 4,
+            old_status: 3,
+            delay: 0,
+            new_value: 0.0,
+            old_value: 0.0,
+            last_repeat: 0,
+            transition_id: [0x74; 16],
+            global_id: (T + 40) * USEC_PER_SEC,
+            classification: None,
+            r#type: None,
+            component: None,
+            exec_run_timestamp: 0,
+            summary: None,
+        };
+        assert_eq!(found, [format!("{bare:?}")]);
+        // a rule `alert_hash` has no row for; an id no entry has
+        assert_eq!(transitions(&meta, &TransitionsOf::Id(&[0x75; 16])), (vec![], vec![]));
+        assert_eq!(transitions(&meta, &TransitionsOf::Id(&[0x7f; 16])), (vec![], vec![]));
+    }
+
+    /// `sql_alert_transitions()` over a window: the entries of the hosts listed that changed from or to WARNING or
+    /// CRITICAL, newest first, both ends of the window included, of one context and of one alert name when given
+    /// (whole, with their case). A row whose rule hash or transition id is no 16-byte blob is left out and counted
+    /// in one record. The host list is a temporary table that is gone after each read, so two reads do not mix.
+    #[test]
+    fn a_window_s_transitions_are_read_for_the_hosts_listed() {
+        let (_dir, meta) = db();
+        transitions_log(&meta);
+        fn window(hosts: &[[u8; 16]], after_s: i64, before_s: i64) -> TransitionsOf<'_> {
+            let (after_s, before_s) = (T + after_s, T + before_s);
+            TransitionsOf::Window { hosts, after_s, before_s, context: None, alert_name: None }
+        }
+        fn narrowed<'a>(
+            hosts: &'a [[u8; 16]],
+            context: Option<&'a str>,
+            alert_name: Option<&'a str>,
+        ) -> TransitionsOf<'a> {
+            TransitionsOf::Window {
+                hosts,
+                after_s: T,
+                before_s: T + 40,
+                context: context.map(str::as_bytes),
+                alert_name: alert_name.map(str::as_bytes),
+            }
+        }
+        let both = &[HOST, [0x22_u8; 16]][..];
+        let (first, second, ghosts) = (&both[..1], &both[1..], &[[0x44_u8; 16]][..]);
+        let bad = |hashes: u32, transitions: u32| {
+            vec![format!(
+                "HEALTH: Ignored invalid alert transition rows (host_id=0, config_hash_id={hashes}, \
+                 transition_id={transitions})."
+            )]
+        };
+        // both hosts, everything: the entry at T+30 has no status above RAISED, the one at T+45 no rule, the one
+        // at T+47 no host of the list; T+50's rule hash and T+60's transition id are no UUIDs
+        assert_eq!(transitions(&meta, &window(both, 0, 100)), (vec![40, 20, 10], bad(1, 1)));
+        // one host each, a host without entries, no host
+        assert_eq!(transitions(&meta, &window(first, 0, 100)), (vec![20, 10], bad(1, 1)));
+        assert_eq!(transitions(&meta, &window(second, 0, 100)), (vec![40], vec![]));
+        assert_eq!(transitions(&meta, &window(ghosts, 0, 100)), (vec![], vec![]));
+        assert_eq!(transitions(&meta, &window(&[], 0, 100)), (vec![], vec![]));
+        // both ends are included, to the second
+        assert_eq!(transitions(&meta, &window(both, 10, 40)), (vec![40, 20, 10], vec![]));
+        assert_eq!(transitions(&meta, &window(both, 11, 39)), (vec![20], vec![]));
+        assert_eq!(transitions(&meta, &window(both, 20, 20)), (vec![20], vec![]));
+        assert_eq!(transitions(&meta, &window(both, 21, 20)), (vec![], vec![]));
+        // a context and an alert name, each whole and with its case
+        assert_eq!(transitions(&meta, &narrowed(both, Some("ctx.b"), None)).0, [40]);
+        assert_eq!(transitions(&meta, &narrowed(both, Some("ctx.a"), None)).0, [20, 10]);
+        assert_eq!(transitions(&meta, &narrowed(both, Some("ctx"), None)).0, [0_i64; 0]);
+        assert_eq!(transitions(&meta, &narrowed(both, Some("CTX.A"), None)).0, [0_i64; 0]);
+        assert_eq!(transitions(&meta, &narrowed(both, None, Some("a_one"))).0, [20, 10]);
+        assert_eq!(transitions(&meta, &narrowed(both, None, Some("a_"))).0, [0_i64; 0]);
+        assert_eq!(transitions(&meta, &narrowed(both, None, Some("A_ONE"))).0, [0_i64; 0]);
+        assert_eq!(transitions(&meta, &narrowed(both, Some("ctx.a"), Some("a_one"))).0, [20, 10]);
+        assert_eq!(transitions(&meta, &narrowed(both, Some("ctx.b"), Some("a_one"))).0, [0_i64; 0]);
+        // no host list is left behind
+        assert!(dump(&meta, "SELECT name FROM sqlite_temp_master").is_empty());
+    }
+
+    /// `sql_get_alert_configuration()` for several hashes: the rules in the order asked, a hash without a rule
+    /// giving nothing, a hash asked twice giving its rule twice.
+    #[test]
+    fn several_rules_are_read_in_the_order_asked() {
+        let (_dir, meta) = db();
+        let (first, second, missing) = ([0xa1_u8; 16], [0xa2_u8; 16], [0xa3_u8; 16]);
+        {
+            let c = meta.lock();
+            let rule = "INSERT INTO alert_hash (hash_id, alarm, p_update_every) VALUES (?1, ?2, ?3)";
+            c.execute(rule, rusqlite::params![&first[..], "one", 10]).unwrap();
+            c.execute(rule, rusqlite::params![&second[..], "two", 20]).unwrap();
+        }
+        let read = |hashes: &[[u8; 16]]| {
+            let mut rules = Vec::new();
+            let seen = |row: AlertConfigRow| {
+                rules.push((row.hash_id[0], String::from_utf8(row.alarm.unwrap()).unwrap(), row.update_every));
+            };
+            meta.alert_configs(hashes, seen).unwrap();
+            rules
+        };
+        let (one, two) = ((0xa1, "one".to_owned(), 10), (0xa2, "two".to_owned(), 20));
+        assert_eq!(read(&[second, missing, first]), [two.clone(), one.clone()]);
+        assert_eq!(read(&[first, second, first]), [one.clone(), two, one.clone()]);
+        assert!(read(&[missing]).is_empty());
+        assert!(read(&[]).is_empty());
+        // the single read is the same lookup
+        assert_eq!(meta.alert_config(&first).unwrap().map(|row| row.update_every), Some(10));
+        assert_eq!(meta.alert_config(&missing), Ok(None));
     }
 
     const DETAIL: &str = "SELECT health_log_id, unique_id, alarm_event_id, updated_by_id, updates_id, when_key, \
