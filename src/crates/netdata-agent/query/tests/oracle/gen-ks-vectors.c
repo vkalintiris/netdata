@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// C oracle for netdata-agent-query's port of KSfbar() (src/weights/ks.rs): the production KolmogorovSmirnovDist.c,
-// included unchanged, answers pairs of a sample size and a statistic spread over every method the function selects,
-// and the bits of each answer are written out.
+// C oracle for netdata-agent-query's ports of KSfbar() (src/weights/ks.rs) and of ks_2samp() (src/weights/ks2.rs).
+//
+// The production KolmogorovSmirnovDist.c, included unchanged, answers pairs of a sample size and a statistic spread
+// over every method the function selects, and the bits of each answer are written out. The two-sample statistic's
+// own text, which gen-ks-vectors.sh cuts from weights.c by its boundaries (weights.c cannot be compiled alone),
+// answers the 20000 seeded trials of C's unit test ks2_cursor_unittest(), and calculate_pairs_diff() turns pairs of
+// doubles into its integers.
 //
 // The header names the glibc and the CPU class the answers were made on: glibc picks its exp(), log(), log1p() and
 // pow() by the CPU (FMA with AVX2, or not), and the variants' last bits differ.
@@ -10,6 +14,7 @@
 // Build and run: tests/oracle/gen-ks-vectors.sh
 
 #include <gnu/libc-version.h>
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -17,6 +22,12 @@
 #include <string.h>
 
 #include "web/api/queries/KolmogorovSmirnovDist.c"
+
+// what the text cut from weights.c needs of libnetdata; NETDATA_DOUBLE is double in the builds the agent ships
+#define likely(x) __builtin_expect(!!(x), 1)
+#define unlikely(x) __builtin_expect(!!(x), 0)
+typedef double NETDATA_DOUBLE;
+#include "weights-ks2.inc"
 
 typedef struct {
     int n;
@@ -148,15 +159,7 @@ static int compare(const void *l, const void *r) {
     return (a->x > b->x) - (a->x < b->x);
 }
 
-int main(int argc, char **argv) {
-    if (argc != 2) {
-        fprintf(stderr, "usage: %s OUTPUT\n", argv[0]);
-        return 2;
-    }
-
-    generate();
-    qsort(pairs, pairs_len, sizeof(*pairs), compare);
-
+static FILE *open_vector(const char *filename, const char *what, const char *columns) {
     const char *cpu = "other";
 #if defined(__x86_64__)
     __builtin_cpu_init();
@@ -164,16 +167,32 @@ int main(int argc, char **argv) {
         cpu = "fma+avx2";
 #endif
 
-    FILE *fp = fopen(argv[1], "w");
+    FILE *fp = fopen(filename, "w");
     if (!fp) {
-        perror(argv[1]);
-        return 1;
+        perror(filename);
+        exit(1);
     }
-    fprintf(fp, "# KSfbar(n, x) of src/web/api/queries/KolmogorovSmirnovDist.c; made by "
-                "tests/oracle/gen-ks-vectors.sh\n");
+    fprintf(fp, "# %s; made by tests/oracle/gen-ks-vectors.sh\n", what);
     fprintf(fp, "# glibc %s\n", gnu_get_libc_version());
     fprintf(fp, "# cpu %s\n", cpu);
-    fprintf(fp, "# n x answer (x and the answer as the bits of the doubles, in hex)\n");
+    fprintf(fp, "# %s\n", columns);
+    return fp;
+}
+
+static void close_vector(FILE *fp, const char *filename, size_t written) {
+    if (fclose(fp)) {
+        perror(filename);
+        exit(1);
+    }
+    fprintf(stderr, "%s: %zu lines\n", filename, written);
+}
+
+static void write_ksfbar(const char *filename) {
+    generate();
+    qsort(pairs, pairs_len, sizeof(*pairs), compare);
+
+    FILE *fp = open_vector(filename, "KSfbar(n, x) of src/web/api/queries/KolmogorovSmirnovDist.c",
+                           "n x answer (x and the answer as the bits of the doubles, in hex)");
     size_t written = 0;
     for (size_t i = 0; i < pairs_len; i++) {
         if (i && pairs[i].n == pairs[i - 1].n && pairs[i].x == pairs[i - 1].x)
@@ -183,10 +202,81 @@ int main(int argc, char **argv) {
                 (unsigned long long)to_bits(answer));
         written++;
     }
-    if (fclose(fp)) {
-        perror(argv[1]);
-        return 1;
+    close_vector(fp, filename, written);
+}
+
+// ks2_test_random() of weights.c
+static uint64_t ks2_random(uint64_t *state) {
+    *state ^= *state << 13;
+    *state ^= *state >> 7;
+    *state ^= *state << 17;
+    return *state;
+}
+
+// read at run time, so the compiler cannot make the casts itself
+static volatile double cast_values[] = {
+    0.0,     -0.0,    1.0,      -1.0,      0.5,      1e-5,     1.9e-5,   -1.9e-5,  2.5e-5,   0.99999e-5, 123.456789,
+    1e9,     1e13,    9.2e13,   9.22e13,   9.223e13, 9.224e13, 9.3e13,   1e14,     -9.2e13,  -9.224e13,  -1e14,
+    1e300,   -1e300,  INFINITY, -INFINITY, NAN,
+};
+#define CAST_VALUES (sizeof(cast_values) / sizeof(cast_values[0]))
+
+static void write_ks2samp(const char *filename) {
+    FILE *fp = open_vector(filename, "ks_2samp() and calculate_pairs_diff() of src/web/api/queries/weights.c",
+                           "`trial <answer>`: the trials of ks2_cursor_unittest(), in its order; then `diff <first> "
+                           "<second> <change>`: the integer made of two doubles (all as bits, in hex)");
+    size_t written = 0;
+
+    // the trials of ks2_cursor_unittest(), from its seed
+    const int max_points = 10000;
+    DIFFS_NUMBERS *base = malloc((size_t)max_points * sizeof(*base));
+    DIFFS_NUMBERS *high = malloc((size_t)max_points * sizeof(*high));
+    if (!base || !high)
+        abort();
+    uint64_t random = 0x9182abcd1234ULL;
+    for (size_t trial = 0; trial < 20000; trial++) {
+        int bs = 1 + (int)(ks2_random(&random) % 64);
+        int hs = 1 + (int)(ks2_random(&random) % 64);
+        uint32_t shifts = (uint32_t)(ks2_random(&random) % 10);
+        if (trial >= 19980) {
+            bs = max_points - 1;
+            hs = trial % 2 ? 14 : max_points - 1;
+            shifts = (uint32_t)(trial % 10);
+        }
+        for (int i = 0; i < bs; i++)
+            base[i] = (DIFFS_NUMBERS)(ks2_random(&random) % 17) - 8;
+        for (int i = 0; i < hs; i++)
+            high[i] = (DIFFS_NUMBERS)(ks2_random(&random) % 17) - 8;
+        if (trial % 3 == 0)
+            base[0] = LONG_MIN;
+        if (trial % 5 == 0)
+            high[0] = LONG_MAX;
+        fprintf(fp, "trial %016llx\n", (unsigned long long)to_bits(ks_2samp(base, bs, high, hs, shifts)));
+        written++;
     }
-    fprintf(stderr, "%zu pairs (glibc %s, cpu %s)\n", written, gnu_get_libc_version(), cpu);
+    free(base);
+    free(high);
+
+    // calculate_pairs_diff() of every pair of the values
+    for (size_t f = 0; f < CAST_VALUES; f++)
+        for (size_t s = 0; s < CAST_VALUES; s++) {
+            NETDATA_DOUBLE pair[2] = { cast_values[f], cast_values[s] };
+            DIFFS_NUMBERS change = 0;
+            if (calculate_pairs_diff(&change, pair, 2) != 1)
+                abort();
+            fprintf(fp, "diff %016llx %016llx %016llx\n", (unsigned long long)to_bits(pair[0]),
+                    (unsigned long long)to_bits(pair[1]), (unsigned long long)change);
+            written++;
+        }
+    close_vector(fp, filename, written);
+}
+
+int main(int argc, char **argv) {
+    if (argc != 3) {
+        fprintf(stderr, "usage: %s KSFBAR_OUTPUT KS2SAMP_OUTPUT\n", argv[0]);
+        return 2;
+    }
+    write_ksfbar(argv[1]);
+    write_ks2samp(argv[2]);
     return 0;
 }
