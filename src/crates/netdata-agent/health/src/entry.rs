@@ -200,6 +200,23 @@ mod tests {
         );
         assert_eq!(printed(u32::MAX), all);
         assert_eq!(printed(0), r#"{"flags":[]}"#);
+        // each name alone, by C's own bit (`health.h`)
+        let alone: [(u32, &str); 11] = [
+            (0x0000_0001, "PROCESSED"),
+            (0x0000_0002, "UPDATED"),
+            (0x0000_0004, "EXEC_RUN"),
+            (0x0000_0008, "EXEC_FAILED"),
+            (0x0000_0010, "SILENCED"),
+            (0x0000_0020, "RUN_ONCE"),
+            (0x0000_0040, "EXEC_IN_PROGRESS"),
+            (0x0000_0080, "RECURRING"),
+            (0x1000_0000, "SAVED"),
+            (0x2000_0000, "ACLK_QUEUED"),
+            (0x8000_0000, "NO_CLEAR_NOTIFICATION"),
+        ];
+        for (bit, name) in alone {
+            assert_eq!(printed(bit), format!(r#"{{"flags":["{name}"]}}"#), "{bit:#x}");
+        }
         // an entry whose notification runs, and one a later entry replaced
         let running = r#"{"flags":["PROCESSED","EXEC_RUN","EXEC_IN_PROGRESS","SAVED"]}"#;
         assert_eq!(printed(PROCESSED | EXEC_RUN | EXEC_IN_PROGRESS | SAVED), running);

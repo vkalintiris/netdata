@@ -338,7 +338,7 @@ pub struct AlarmLogRow {
 }
 
 /// A rule's row of `alert_hash` as `sql_get_alert_configuration()` hands it on. A `None` is a NULL.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct AlertConfigRow {
     pub hash_id: [u8; 16],
     /// An alarm's name; NULL for a template, whose name is in `template`.

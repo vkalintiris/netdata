@@ -590,6 +590,45 @@ mod tests {
         assert_eq!(after(3, 0, &[5, 9]), (vec![9, 5], [2, 2, 2, 3, 0, 0], [1, 1, 0, 0, 0, 0, 0, 0]));
     }
 
+    /// A rule in the answer is written by the request's options: `debug`, `mcp` and `rfc3339` each reach the rule
+    /// writer (whose own unit says what each does), with localhost's default recipient. The rule's lookup starts
+    /// at a wall-clock time, so the time writer prints it another way.
+    #[test]
+    fn a_rule_in_the_answer_is_written_by_the_request_s_options() {
+        let mut c = collector(&[], 1, 0);
+        c.row(&row(9));
+        let rule = AlertConfigRow {
+            hash_id: [0xaa; 16],
+            alarm: Some(b"cpu_high".to_vec()),
+            green: Some(b"10".to_vec()),
+            db_after: 1_700_000_000,
+            ..AlertConfigRow::default()
+        };
+        let written = |by: ConfigOptions| {
+            members(|w| {
+                w.member_add_array(Some(b"configurations"));
+                w.add_array_item_object();
+                alert_config_members(w, &rule, b"default-to", by);
+                w.object_close();
+                w.array_close();
+            })
+        };
+        let plain = written(ConfigOptions::default());
+        let by_option = [
+            (0, ConfigOptions::default()),
+            (DEBUG, ConfigOptions { debug: true, ..ConfigOptions::default() }),
+            (MCP, ConfigOptions { mcp: true, ..ConfigOptions::default() }),
+            (RFC3339, ConfigOptions { rfc3339: true, ..ConfigOptions::default() }),
+        ];
+        for (options, by) in by_option {
+            let expected = written(by);
+            // each option changes what the rule writer prints of this rule
+            assert!(options == 0 || expected != plain, "{options:#x}: {expected}");
+            let answer = printed(&c, options, Some(std::slice::from_ref(&rule)));
+            assert!(answer.contains(&expected), "{options:#x}: {answer}");
+        }
+    }
+
     /// A row that is newer than the place last added to (rows read by a transition's id come in no order): the
     /// search walks backwards from that place, and on a full list the oldest row falls off and the new one goes
     /// to the head, not to its place by id. C's results, walked by hand.

@@ -1797,8 +1797,11 @@ mod tests {
         let rows = |query: &[u8]| {
             let body = text(query);
             let ids = [(newer, "newer"), (older, "older")];
-            let has = |gi: i64| body.contains(&format!(r#"{{"gi":{gi},"alert":"a_one","#));
-            let kept: Vec<&str> = ids.iter().filter(|(gi, _)| has(*gi)).map(|id| id.1).collect();
+            // in the order answered
+            let at = |gi: i64| body.find(&format!(r#"{{"gi":{gi},"alert":"a_one","#));
+            let mut kept: Vec<(usize, &str)> = ids.iter().filter_map(|(gi, name)| Some((at(*gi)?, *name))).collect();
+            kept.sort_unstable();
+            let kept: Vec<&str> = kept.into_iter().map(|(_, name)| name).collect();
             let items = body[body.find(r#""items":{"#).expect("items")..].split('}').next().unwrap().to_owned();
             (kept, items)
         };
