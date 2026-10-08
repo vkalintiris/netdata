@@ -291,7 +291,9 @@ func runFnStream(t *testing.T, topo fnStreamTopo) {
 	}
 	// the access record of a call is written once its answer went out; the comparison's requests are not the cases'
 	time.Sleep(time.Second)
-	played0 := time.Now()
+	// cut at a whole millisecond: C stamps a record in milliseconds, so a record of this instant's own millisecond
+	// (the comparison's first request, sent right after) would read as before it and count as the cases'
+	played0 := time.Now().Truncate(time.Millisecond)
 	if topo.compare != nil {
 		topo.compare(t, p, sides)
 	}
