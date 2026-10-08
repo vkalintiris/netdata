@@ -287,7 +287,7 @@ pub enum Source<'a> {
 /// `key:value` patterns; the words stop at the first lone `*` or at the first word without `:`. C compiles each
 /// word again as a web pattern (`string_to_simple_pattern()`), so a separator that was escaped in the request
 /// separates at this second parse, and a word that is no pattern adds nothing.
-fn label_pattern_array(sp: &SimplePattern) -> PatternArray {
+pub fn label_pattern_array(sp: &SimplePattern) -> PatternArray {
     let mut array = PatternArray::default();
     for word in sp.words() {
         let Some(word) = word else { break };
