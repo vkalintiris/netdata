@@ -6,7 +6,10 @@ pub const REDIR_TEMP: u16 = 307;
 pub const BAD_REQUEST: u16 = 400;
 pub const FORBIDDEN: u16 = 403;
 pub const NOT_FOUND: u16 = 404;
+pub const CONFLICT: u16 = 409;
 pub const PRECOND_FAIL: u16 = 412;
+/// `HTTP_RESP_CONTENT_TOO_LONG`.
+pub const CONTENT_TOO_LONG: u16 = 413;
 pub const URI_TOO_LONG: u16 = 414;
 pub const UNAVAILABLE_FOR_LEGAL_REASONS: u16 = 451;
 /// `HTTP_RESP_CLIENT_CLOSED_REQUEST`.

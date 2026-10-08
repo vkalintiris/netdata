@@ -4,8 +4,8 @@
 //!
 //! Not ported yet: `/mcp` and `/sse`, and the API commands other than `info`, `chart`, `charts`, `context`,
 //! `contexts`, `registry`, `data`, `dbengine_stats`, `function`, `functions`, `manage`, `me`, `nodes`, `progress`,
-//! `stream_info`, `stream_path`, `versions`, `alerts`, `alert_transitions`, `q` and health's (`alarms`, `alarm_log`
-//! and the others of its block of the table, and `badge.svg`).
+//! `stream_info`, `stream_path`, `versions`, `alerts`, `alert_transitions`, `q`, `settings` and health's (`alarms`,
+//! `alarm_log` and the others of its block of the table, and `badge.svg`).
 //! `/netdata.conf` shows only the keys of the subsystems ported so far.
 
 use std::sync::Arc;
@@ -34,6 +34,7 @@ use crate::health_api;
 use crate::manage;
 use crate::registry;
 use crate::server::{self, Reply, Shared};
+use crate::settings;
 use crate::static_file;
 use crate::stream_info;
 use crate::v1_charts;
@@ -469,6 +470,14 @@ const API_V3: &[Command] = &[
         allow_subpaths: false,
         callback: config::call,
     },
+    // settings APIs: a dashboard feature, for a client with every feature of the dashboard's set
+    Command {
+        name: "settings",
+        acl: acl::bits::DASHBOARD,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: settings::settings,
+    },
     CLOUD_ONLY[0],
     CLOUD_ONLY[1],
     CLOUD_ONLY[2],
@@ -715,6 +724,7 @@ mod tests {
             management_key: b"5a1e0000-0000-4000-8000-00000000c0de".to_vec(),
             meta: None,
             user_config_dir: "/etc/netdata".into(),
+            varlib_dir: "/nonexistent-varlib-dir".into(),
             grouping_windows: Default::default(),
             gap_when_lost_iterations_above: 3,
             release_channel: "nightly",
@@ -1512,6 +1522,114 @@ mod tests {
             let (code, body) = asked_for(transition);
             assert_eq!(code, status::OK, "{transition}: {body}");
             assert!(body.starts_with(r#"{"api":2,"nodes":[],"alerts":[],"alerts_by_type":["#), "{transition}: {body}");
+        }
+    }
+
+    /// `/api/v3/settings` (`api_v3_settings()`), a command of v3 alone. The checks in C's order, each with C's text:
+    /// the file's name (the last `file=` counts), the routed host, the one file of a client without a bearer token,
+    /// the method, the payload. A GET reads without making anything; a PUT stores the next version and answers
+    /// `OK` with an expiry one second after its date; a client with a token may name any file. A client needs
+    /// every feature of the dashboard's set (C tests `(acl & set) == set`).
+    #[test]
+    fn settings_are_routed_in_v3() {
+        use netdata_agent_web::request::Mode;
+        use netdata_agent_web::url::Payload;
+        let top = tempfile::tempdir().unwrap();
+        let s = Shared { varlib_dir: top.path().to_str().unwrap().to_owned(), ..shared() };
+        let all = acl::bits::ALL_LISTENER_FEATURES;
+        let asks = |path: &[u8], query: &[u8], mode: Mode, body: Option<&[u8]>, features: u32, token: bool| {
+            let mut req = Request::default();
+            req.path = path.to_vec();
+            req.query = query.to_vec();
+            req.url_as_received = [path, b"?", query].concat();
+            req.payload = body.map(|body| Payload { body: body.to_vec(), content_type: ContentType::ApplicationJson });
+            let ctx = crate::access_log::RequestContext { mode: Some(mode), ..Default::default() };
+            if token {
+                ctx.auth.authorize_bearer(access::ANONYMOUS_DATA, access::role::ANY, "a token", [0; 16]);
+            }
+            process_request(&req, path, acl::bits::TRANSPORTS | features, &s, Instant::now(), &ctx, &|_| false)
+        };
+        let v3 = b"/api/v3/settings";
+        let ask = |query: &[u8], mode: Mode, body: Option<&[u8]>| {
+            let r = asks(v3, query, mode, body, all, false);
+            assert_eq!(r.content_type, ContentType::ApplicationJson);
+            (r.code, String::from_utf8(r.body).unwrap())
+        };
+        let refusal = |code: u16, text: &str| (code, format!(r#"{{"status":{code},"errorMessage":"{text}"}}"#));
+        let bad = |text: &str| refusal(status::BAD_REQUEST, text);
+
+        // a fresh agent: the initial document, and nothing made
+        assert_eq!(ask(b"file=default", Mode::Get, None), (status::OK, r#"{"version":1}"#.to_owned()));
+        assert!(!top.path().join("settings").exists());
+
+        // 1: the file's name, whatever the method and the host; the last `file=` counts
+        let invalid = bad("Invalid settings file given.");
+        for query in ["", "file=a.b", "file=../x", "file=default&file=a.b", "other=default"] {
+            assert_eq!(ask(query.as_bytes(), Mode::Get, None), invalid, "{query}");
+            assert_eq!(ask(query.as_bytes(), Mode::Post, Some(b"{}")), invalid, "{query}");
+        }
+        assert_eq!(ask(b"file=a.b&file=default", Mode::Get, None).0, status::OK);
+        // 2: the agent's own node alone
+        let mut info = s.hosts.localhost().info();
+        info.hostname = "child".into();
+        let guid = "22222222-2222-4222-8222-222222222222";
+        s.hosts.find_or_create(guid, netdata_agent_rrd::mode::DbMode::Ram, || info, |_| {}).expect("created");
+        let agent_only = bad("Settings API is only allowed for the agent node.");
+        for (query, mode) in [("file=default", Mode::Get), ("file=other", Mode::Delete)] {
+            let r = asks(b"/host/child/api/v3/settings", query.as_bytes(), mode, None, all, false);
+            assert_eq!((r.code, String::from_utf8(r.body).unwrap()), agent_only);
+        }
+        let r = asks(b"/host/child/api/v3/settings", b"file=a.b", Mode::Get, None, all, false);
+        assert_eq!((r.code, String::from_utf8(r.body).unwrap()), invalid);
+        // 3: without a token, the file `default` alone; before the method is looked at
+        let anonymous = bad("Only the 'default' settings file is allowed for anonymous users");
+        assert_eq!(ask(b"file=other", Mode::Get, None), anonymous);
+        assert_eq!(ask(b"file=other", Mode::Post, None), anonymous);
+        // 4: GET and PUT
+        let method = bad("Invalid HTTP mode. HTTP modes GET and PUT are supported.");
+        for mode in [Mode::Post, Mode::Delete, Mode::Options] {
+            assert_eq!(ask(b"file=default", mode, Some(b"{\"version\":1}")), method, "{mode:?}");
+        }
+        // 5: a PUT needs a payload
+        let payload = bad("Settings API PUT action requires a payload.");
+        assert_eq!(ask(b"file=default", Mode::Put, None), payload);
+        assert_eq!(ask(b"file=default", Mode::Put, Some(b"")), payload);
+        assert!(!top.path().join("settings").exists());
+
+        // a PUT stores the next version; its answer expires a second after its date
+        let r = asks(v3, b"file=default", Mode::Put, Some(br#"{"version":1,"a":[1,2]}"#), all, false);
+        let ok = refusal(status::OK, "OK");
+        assert_eq!((r.code, String::from_utf8(r.body.clone()).unwrap()), ok);
+        assert!(r.date != 0 && r.expires == r.date + 1 && r.no_cacheable, "{} {}", r.date, r.expires);
+        let stored = r#"{ "version": 2, "a": [ 1, 2 ] }"#;
+        assert_eq!(ask(b"file=default", Mode::Get, None), (status::OK, stored.to_owned()));
+        assert_eq!(std::fs::read(top.path().join("settings/default")).unwrap(), stored.as_bytes());
+        let conflict = "Payload version does not match the version of the stored object";
+        let stale = ask(b"file=default", Mode::Put, Some(br#"{"version":1}"#));
+        assert_eq!(stale, refusal(status::CONFLICT, conflict));
+        let unparsed = ask(b"file=default", Mode::Put, Some(b"not json"));
+        assert_eq!(unparsed, bad("Payload cannot be parsed as a JSON object"));
+        // an error is sent no-cache, without an expiry of its own
+        let r = asks(v3, b"file=other", Mode::Get, None, all, false);
+        assert_eq!((r.code, r.expires, r.no_cacheable), (status::BAD_REQUEST, 0, true));
+
+        // a client with a token names any file
+        let r = asks(v3, b"file=other", Mode::Put, Some(br#"{"version":1}"#), all, true);
+        assert_eq!((r.code, String::from_utf8(r.body).unwrap()), ok);
+        let r = asks(v3, b"file=other", Mode::Get, None, all, true);
+        assert_eq!((r.code, r.body.as_slice()), (status::OK, &br#"{ "version": 2 }"#[..]));
+
+        // the dashboard's access: every feature of its set; without them all, without one, or with one alone, no
+        let denied = server::permission_denied_acl();
+        for features in [all & !acl::bits::DASHBOARD, all & !acl::bits::NODES, acl::bits::NODES] {
+            let r = asks(v3, b"file=default", Mode::Get, None, features, false);
+            assert_eq!((r.code, &r.body), (denied.code, &denied.body), "{features:#x}");
+        }
+        assert_eq!(asks(v3, b"file=default", Mode::Get, None, acl::bits::DASHBOARD, false).code, status::OK);
+        // v1 and v2 have no such command
+        for path in [&b"/api/v1/settings"[..], b"/api/v2/settings"] {
+            let r = asks(path, b"file=default", Mode::Get, None, all, false);
+            assert_ne!(r.code, status::OK, "{}", String::from_utf8_lossy(path));
         }
     }
 

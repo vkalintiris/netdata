@@ -57,6 +57,8 @@ pub struct Shared {
     pub meta: Option<std::sync::Weak<netdata_agent_metadata::open::MetaDb>>,
     /// `netdata_configured_user_config_dir`: an alert's edit command names it.
     pub user_config_dir: String,
+    /// `netdata_configured_varlib_dir`: the settings files live in its `settings` directory.
+    pub varlib_dir: String,
     /// The time-grouping SES/DES window limits.
     pub grouping_windows: netdata_agent_query::grouping::Windows,
     /// `gap_when_lost_iterations_above` (`[db] gap when lost iterations above` plus 2): how many update-everys a

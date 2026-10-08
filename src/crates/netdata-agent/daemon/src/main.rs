@@ -46,6 +46,7 @@ mod registry;
 mod router;
 mod rrdcontext;
 mod server;
+mod settings;
 mod shutdown;
 mod startup;
 mod static_file;
@@ -953,6 +954,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         management_key,
         meta: meta.as_ref().map(Arc::downgrade),
         user_config_dir: conf.dirs.user_config.clone(),
+        varlib_dir: conf.dirs.varlib.clone(),
         grouping_windows,
         gap_when_lost_iterations_above: db.gap_when_lost_iterations_above,
         release_channel,
