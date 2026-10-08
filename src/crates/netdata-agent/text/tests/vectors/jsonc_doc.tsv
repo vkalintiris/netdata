@@ -130,11 +130,11 @@ R	1.	1	1.	0	0
 R	-.5	1	-.5	0	0	
 R	.5	0		0	0	
 R	{"version":1.}	1	{ "version": 1. }	1	1	{ "version": 7 }
-R	"\\ud83d"	1	"\xef\xbf\xbd"	0	0	
-R	"\\udc00"	1	"\xef\xbf\xbd"	0	0	
-R	"\\ud83dx"	1	"\xef\xbf\xbdx"	0	0	
-R	"\\ud83d\\u0041"	1	"\xef\xbf\xbdA"	0	0	
-R	{"a\\u0000b":1,"version":1}	1	{ "a": 1, "version": 1 }	1	1	{ "a": 1, "version": 7 }
+A	"\\ud83d"	1	"\xef\xbf\xbd"	0	0	
+A	"\\udc00"	1	"\xef\xbf\xbd"	0	0	
+A	"\\ud83dx"	1	"\xef\xbf\xbdx"	0	0	
+A	"\\ud83d\\u0041"	1	"\xef\xbf\xbdA"	0	0	
+A	{"a\\u0000b":1,"version":1}	1	{ "a": 1, "version": 1 }	1	1	{ "a": 1, "version": 7 }
 R	{	0		0	0	
 R	[	0		0	0	
 R	{"version"}	0		0	0	
@@ -195,3 +195,49 @@ R	[-]	0		0	0
 R	[.1]	0		0	0	
 R	{"version":1.0e}	1	{ "version": 1.0 }	1	1	{ "version": 7 }
 R	{"a":"x\x00y","version":1}	0		0	0	
+R	{"version":1}/	0		0	0	
+R	{"version":1} /x	0		0	0	
+R	1/	0		0	0	
+R	1/2	0		0	0	
+R	true/	0		0	0	
+R	"a"/	0		0	0	
+R	[1]/	0		0	0	
+R	{"version":1}/**//	0		0	0	
+R	{"version":1}\x0a/\x0a	0		0	0	
+R	{"version":1}/*	1	{ "version": 1 }	1	1	{ "version": 7 }
+R	{"version":1}/* c */	1	{ "version": 1 }	1	1	{ "version": 7 }
+R	{"version":1}//	1	{ "version": 1 }	1	1	{ "version": 7 }
+R	{"version":1}/**/x	1	{ "version": 1 }	1	1	{ "version": 7 }
+A	{"version":1}x/	1	{ "version": 1 }	1	1	{ "version": 7 }
+A	{"version":1} x	1	{ "version": 1 }	1	1	{ "version": 7 }
+A	{"version":1}]	1	{ "version": 1 }	1	1	{ "version": 7 }
+R	\xef\xbb\xbf{}	0		0	0	
+R	\x0b{}	0		0	0	
+R	\x0c{}	0		0	0	
+R	\xc2\xa0{}	0		0	0	
+R	[1x]	0		0	0	
+R	{"version":1x}	0		0	0	
+R	{"version":1.5.3}	0		0	0	
+R	[1.5x]	0		0	0	
+R	"\\ud83d\\x"	0		0	0	
+R	"\\u00"	0		0	0	
+A	{"version":"\\t7"}	1	{ "version": "\\t7" }	1	7	{ "version": 7 }
+A	{"version":"\x097"}	1	{ "version": "\\t7" }	1	7	{ "version": 7 }
+A	{"version":"\x0b7"}	1	{ "version": "\\u000b7" }	1	7	{ "version": 7 }
+A	{"version":"- 5"}	1	{ "version": "- 5" }	1	0	{ "version": 7 }
+A	{"version":"1e3"}	1	{ "version": "1e3" }	1	1	{ "version": 7 }
+A	{"version":2147483647.5}	1	{ "version": 2147483647.5 }	1	2147483647	{ "version": 7 }
+A	{"version":-2147483648.5}	1	{ "version": -2147483648.5 }	1	-2147483648	{ "version": 7 }
+A	{"version":2147483646.9}	1	{ "version": 2147483646.9 }	1	2147483646	{ "version": 7 }
+A	{"version":1E400}	1	{ "version": 1E400 }	1	2147483647	{ "version": 7 }
+A	{"a":1,"a":2,"a":3,"b":4}	1	{ "a": 3, "b": 4 }	0	0	{ "a": 3, "b": 4, "version": 7 }
+A	{"version":3}	1	{ "version": 3 }	1	3	{ "version": 7 }
+A	"\\ud83d\\ud83d\\ude00"	1	"\xef\xbf\xbd\xf0\x9f\x98\x80"	0	0	
+A	"\\ud83d\\n"	1	"\xef\xbf\xbd\\n"	0	0	
+A	"\\ud83d\\udc00\\udc00"	1	"\xf0\x9f\x90\x80\xef\xbf\xbd"	0	0	
+A	"\\udc00\\ud83d"	1	"\xef\xbf\xbd\xef\xbf\xbd"	0	0	
+A	{"\\ud83d":1,"version":2}	1	{ "\xef\xbf\xbd": 1, "version": 2 }	1	2	{ "\xef\xbf\xbd": 1, "version": 7 }
+A	{"a\\u0000b":1,"a":2}	1	{ "a": 2 }	0	0	{ "a": 2, "version": 7 }
+A	{"\\u0000":1,"version":1}	1	{ "": 1, "version": 1 }	1	1	{ "": 1, "version": 7 }
+A	{"a":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}	1	{ "a": [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ 1 ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] }	0	0	{ "a": [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ [ 1 ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ] ], "version": 7 }
+R	{"a":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}	0		0	0	

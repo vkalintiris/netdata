@@ -3,12 +3,15 @@
 //! `json_object_to_json_string()`). The bytes on disk are json-c's print of the document, so the members keep
 //! their order, a number with a fraction or an exponent keeps its source text, and strings are bytes, not UTF-8.
 //!
-//! The grammar read is strict JSON (RFC 8259) with what json-c's tokener adds that no strict writer can produce
-//! by accident: the text ends at its first NUL, whatever follows the root value is ignored, control bytes are taken
-//! raw inside a string, and no byte is checked for being UTF-8. What json-c reads beyond that (comments, single
-//! quotes, trailing commas, `NaN` and `Infinity`, leading zeros, literals in another case, `1.` and `-.5`, a lone
-//! surrogate escape) is refused here: decision D234 F10 in the status repository. A key with a NUL in it, which
-//! json-c cuts there, is refused too.
+//! The grammar read is JSON (RFC 8259) as json-c's tokener reads it where a strict writer can end up: the text
+//! ends at its first NUL; what follows the root value is ignored, unless it starts (after whitespace) with a `/`,
+//! where json-c looks for a comment and fails the text when there is none (and a comment is refused here);
+//! control bytes are taken raw inside a string, and no byte is checked for being UTF-8; a surrogate escape
+//! without its pair is U+FFFD; a key ends at a NUL an escape brought. What json-c reads beyond that (comments,
+//! single quotes, trailing commas, `NaN` and `Infinity`, leading zeros, literals in another case, `1.` and
+//! `-.5`) is refused here: decisions D234 F10 and D240 in the status repository.
+
+use std::collections::HashMap;
 
 use crate::c::c_str;
 
@@ -58,7 +61,13 @@ pub fn jsonc_string(out: &mut Vec<u8>, text: &[u8]) {
 pub fn parse(text: &[u8]) -> Option<Value> {
     let mut reader = Reader { text: c_str(text), at: 0 };
     reader.whitespace();
-    reader.value(1).filter(|root| *root != Value::Null)
+    let root = reader.value(1)?;
+    // after the root json-c reads on over whitespace and comments, and fails the text at a `/` that opens none
+    reader.whitespace();
+    if reader.peek() == Some(b'/') {
+        return None;
+    }
+    (root != Value::Null).then_some(root)
 }
 
 struct Reader<'t> {
@@ -127,22 +136,22 @@ impl Reader<'_> {
 
     fn object(&mut self, depth: usize) -> Option<Value> {
         self.at += 1;
-        let mut object = Value::Object(Vec::new());
+        // the members in their order, and where each key stands: a repeated key takes its new value there
+        let mut members: Vec<(Vec<u8>, Value)> = Vec::new();
+        let mut places: HashMap<Vec<u8>, usize> = HashMap::new();
         self.whitespace();
         if self.peek()? == b'}' {
             self.at += 1;
-            return Some(object);
+            return Some(Value::Object(members));
         }
         loop {
             self.whitespace();
             if self.peek()? != b'"' {
                 return None;
             }
-            let key = self.string()?;
-            // json-c cuts a key at a NUL (only an escape can bring one); such a text is refused
-            if key.contains(&0) {
-                return None;
-            }
+            // json-c holds a key as a C string: it ends at a NUL (only an escape can bring one)
+            let mut key = self.string()?;
+            key.truncate(c_str(&key).len());
             self.whitespace();
             if self.peek()? != b':' {
                 return None;
@@ -150,13 +159,19 @@ impl Reader<'_> {
             self.at += 1;
             self.whitespace();
             let value = self.value(depth + 1)?;
-            object.object_set(&key, value);
+            match places.get(&key) {
+                Some(&place) => members[place].1 = value,
+                None => {
+                    places.insert(key.clone(), members.len());
+                    members.push((key, value));
+                }
+            }
             self.whitespace();
             match self.peek()? {
                 b',' => self.at += 1,
                 b'}' => {
                     self.at += 1;
-                    return Some(object);
+                    return Some(Value::Object(members));
                 }
                 _ => return None,
             }
@@ -175,7 +190,8 @@ impl Reader<'_> {
     }
 
     /// A string, from its opening quote: its bytes, the escapes decoded (a `\u` escape to UTF-8, a surrogate pair
-    /// to its one character).
+    /// to its one character). A leading surrogate that no trailing one follows in the next `\u` escape is U+FFFD,
+    /// and what follows it is read as it stands; a trailing surrogate alone is U+FFFD.
     fn string(&mut self) -> Option<Vec<u8>> {
         self.at += 1;
         let mut out = Vec::new();
@@ -196,20 +212,22 @@ impl Reader<'_> {
                         b't' => out.push(b'\t'),
                         b'u' => {
                             let mut code = self.hex4()?;
-                            if (0xd800..0xdc00).contains(&code) {
-                                // a leading surrogate needs its trailing one
+                            while (0xd800..0xdc00).contains(&code) {
                                 if self.text.get(self.at..self.at + 2) != Some(b"\\u") {
-                                    return None;
+                                    code = 0xfffd;
+                                    break;
                                 }
                                 self.at += 2;
-                                let low = self.hex4()?;
-                                if !(0xdc00..0xe000).contains(&low) {
-                                    return None;
+                                let next = self.hex4()?;
+                                if (0xdc00..0xe000).contains(&next) {
+                                    code = 0x10000 + ((code - 0xd800) << 10) + (next - 0xdc00);
+                                    break;
                                 }
-                                code = 0x10000 + ((code - 0xd800) << 10) + (low - 0xdc00);
+                                out.extend_from_slice("\u{fffd}".as_bytes());
+                                code = next;
                             }
                             // (a trailing surrogate alone is no character)
-                            let ch = char::from_u32(code)?;
+                            let ch = char::from_u32(code).unwrap_or('\u{fffd}');
                             out.extend_from_slice(ch.encode_utf8(&mut [0; 4]).as_bytes());
                         }
                         _ => return None,
@@ -259,7 +277,9 @@ impl Reader<'_> {
             }
             is_double = true;
         }
-        // json-c's number goes on over these bytes where JSON's has ended (`0123`, `1.5.3`): refused, not cut
+        // where JSON's number has ended json-c reads on over digits (`0123` is 123), and at any other of these
+        // bytes stops: the rest is ignored at the root (`1.5.3` is 1.5) and an error in a container. Refused
+        // everywhere, so that no number is read differently
         if matches!(self.peek(), Some(b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-')) {
             return None;
         }

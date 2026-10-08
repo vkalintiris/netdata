@@ -1594,6 +1594,11 @@ mod tests {
         let payload = bad("Settings API PUT action requires a payload.");
         assert_eq!(ask(b"file=default", Mode::Put, None), payload);
         assert_eq!(ask(b"file=default", Mode::Put, Some(b"")), payload);
+        // and one of at most 20 MiB (the web server refuses a request long before that: the handler's own check)
+        let large = vec![b' '; 20 * 1024 * 1024 + 1];
+        let too_long = "Settings API PUT payload exceeds the maximum allowed size.";
+        let refused = refusal(status::CONTENT_TOO_LONG, too_long);
+        assert_eq!(ask(b"file=default", Mode::Put, Some(large.as_slice())), refused);
         assert!(!top.path().join("settings").exists());
 
         // a PUT stores the next version; its answer expires a second after its date
@@ -1629,7 +1634,8 @@ mod tests {
         // v1 and v2 have no such command
         for path in [&b"/api/v1/settings"[..], b"/api/v2/settings"] {
             let r = asks(path, b"file=default", Mode::Get, None, all, false);
-            assert_ne!(r.code, status::OK, "{}", String::from_utf8_lossy(path));
+            let answer = (r.code, String::from_utf8_lossy(&r.body).into_owned());
+            assert_eq!(answer, (status::NOT_FOUND, "Unsupported API command: settings".to_owned()));
         }
     }
 

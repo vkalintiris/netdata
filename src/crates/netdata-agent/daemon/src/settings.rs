@@ -2,13 +2,13 @@
 //! per file under `<varlib>/settings/`: a GET returns the stored bytes, a PUT stores json-c's print of its payload
 //! with `version` raised by one, when the payload names the version that is stored.
 
-use std::fs::File;
+use std::fs::{File, Metadata};
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::Path;
 use std::sync::{Arc, PoisonError, RwLock};
 
-use netdata_agent_log::{Priority, Source, nd_log};
+use netdata_agent_log::{Priority, Source, errno_of, nd_log};
 use netdata_agent_nrpc::reply::Reply as NrpcReply;
 use netdata_agent_query::request::pairs;
 use netdata_agent_rrd::host::Host;
@@ -17,6 +17,7 @@ use netdata_agent_text::jsonc_doc::{self, Value};
 use netdata_agent_web::content_type::ContentType;
 use netdata_agent_web::request::Mode;
 use netdata_agent_web::status;
+use nix::errno::Errno;
 use nix::fcntl::OFlag;
 
 use crate::functions::reply_of;
@@ -64,28 +65,31 @@ fn stored(dir: &str, file: &str) -> Vec<u8> {
 
 /// `settings_open_tmp_file()`: the `.new` file, opened for writing without following a link. One that does not
 /// exist is created (and must not appear meanwhile); a regular file that is there is reused and emptied, when
-/// what was opened is still that file; anything else there is refused.
-fn open_tmp(path: &Path) -> Option<File> {
+/// what was opened is still that file; anything else there is refused. A refusal is the `errno` C's record
+/// carries: the failing call's, or `EINVAL` for what is no regular file or no longer the file that was looked at.
+fn open_tmp(path: &Path) -> Result<File, i32> {
+    let invalid = Errno::EINVAL as i32;
     let before = match std::fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_file() => Some(meta),
-        Ok(_) => return None,
+        Ok(_) => return Err(invalid),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(_) => return None,
+        Err(e) => return Err(errno_of(&e)),
     };
     let mut options = File::options();
     options.write(true).mode(0o666).custom_flags((OFlag::O_NONBLOCK | OFlag::O_NOFOLLOW).bits());
     if before.is_none() {
         options.create_new(true);
     }
-    let file = options.open(path).ok()?;
-    let after = file.metadata().ok().filter(|meta| meta.file_type().is_file())?;
-    if let Some(before) = before {
-        if (before.dev(), before.ino()) != (after.dev(), after.ino()) {
-            return None;
-        }
-        file.set_len(0).ok()?;
+    let file = options.open(path).map_err(|e| errno_of(&e))?;
+    let after = file.metadata().map_err(|e| errno_of(&e))?;
+    let same = |before: &Metadata| (before.dev(), before.ino()) == (after.dev(), after.ino());
+    if !after.file_type().is_file() || !before.as_ref().is_none_or(same) {
+        return Err(invalid);
     }
-    Some(file)
+    if before.is_some() {
+        file.set_len(0).map_err(|e| errno_of(&e))?;
+    }
+    Ok(file)
 }
 
 /// `settings_put()`: under the one write lock, in C's order: the directory is made (before the payload is looked
@@ -117,21 +121,26 @@ fn put(dir: &str, file: &str, payload: &[u8]) -> Result<(), Refusal> {
     doc.print_spaced(&mut text);
 
     let tmp = filename_from_path_entry(dir, file, Some("new"));
-    let Some(mut fp) = open_tmp(Path::new(&tmp)) else {
-        nd_log!(Source::Daemon, Priority::Err, "cannot open/create settings file '{tmp}'");
-        return Err((status::INTERNAL_SERVER_ERROR, "Cannot create payload file"));
+    let mut fp = match open_tmp(Path::new(&tmp)) {
+        Ok(fp) => fp,
+        Err(errno) => {
+            nd_log!(Source::Daemon, Priority::Err, errno = errno; "cannot open/create settings file '{tmp}'");
+            return Err((status::INTERNAL_SERVER_ERROR, "Cannot create payload file"));
+        }
     };
-    let written = fp.write_all(&text);
-    drop(fp);
-    if written.is_err() {
+    // fwrite() then fclose(): either failing is a failed save, and the record's errno is the first failure's
+    let written = fp.write_all(&text).map_err(|e| errno_of(&e));
+    let closed = nix::unistd::close(fp).map_err(|e| e as i32);
+    if let Err(errno) = written.and(closed) {
         let _ = std::fs::remove_file(&tmp);
-        nd_log!(Source::Daemon, Priority::Err, "cannot save settings to file '{tmp}'");
+        nd_log!(Source::Daemon, Priority::Err, errno = errno; "cannot save settings to file '{tmp}'");
         return Err((status::INTERNAL_SERVER_ERROR, "Cannot save payload to file"));
     }
     let path = filename_from_path_entry(dir, file, None);
-    if std::fs::rename(&tmp, &path).is_err() {
-        let _ = std::fs::remove_file(&tmp);
-        nd_log!(Source::Daemon, Priority::Err, "cannot rename file '{tmp}' to '{path}'");
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        // the record's errno is the last failure's: the removal's, when that fails too
+        let errno = std::fs::remove_file(&tmp).err().map_or(errno_of(&e), |e| errno_of(&e));
+        nd_log!(Source::Daemon, Priority::Err, errno = errno; "cannot rename file '{tmp}' to '{path}'");
         return Err((status::INTERNAL_SERVER_ERROR, "Failed to move the payload file to its final location"));
     }
     Ok(())
@@ -320,13 +329,57 @@ mod tests {
         assert_eq!((get(&dir, "default"), new.exists()), (r#"{ "version": 3 }"#.to_owned(), false));
 
         let refused = Err((status::INTERNAL_SERVER_ERROR, "Cannot create payload file"));
+        // C's record of it: an error of the daemon with the errno of what is no regular file
+        let refused_with_its_record = || {
+            let (result, records) = netdata_agent_log::capture(|| put(&dir, "default", br#"{"version":3}"#));
+            assert_eq!(result, refused);
+            let seen: Vec<_> = records.iter().map(|r| (r.priority, r.errno, r.message.as_deref())).collect();
+            let message = format!("cannot open/create settings file '{dir}/default.new'");
+            assert_eq!(seen, [(Priority::Err, nix::errno::Errno::EINVAL as i32, Some(message.as_str()))]);
+        };
         let target = Path::new(&dir).join("elsewhere");
         std::os::unix::fs::symlink(&target, &new).unwrap();
-        assert_eq!(put(&dir, "default", br#"{"version":3}"#), refused);
+        refused_with_its_record();
         assert!(!target.exists() && new.is_symlink());
         std::fs::remove_file(&new).unwrap();
         std::fs::create_dir(&new).unwrap();
-        assert_eq!(put(&dir, "default", br#"{"version":3}"#), refused);
+        refused_with_its_record();
         assert_eq!(get(&dir, "default"), r#"{ "version": 3 }"#);
+    }
+
+    /// A rename that fails (the file's place is taken by a directory that is not empty): C's text, its record
+    /// with the rename's errno, and the `.new` file removed.
+    #[test]
+    fn a_failed_rename_removes_the_new_file() {
+        let (_top, dir) = dir();
+        std::fs::create_dir_all(Path::new(&dir).join("default").join("inside")).unwrap();
+        let (result, records) = netdata_agent_log::capture(|| put(&dir, "default", br#"{"version":1}"#));
+        let moved = "Failed to move the payload file to its final location";
+        assert_eq!(result, Err((status::INTERNAL_SERVER_ERROR, moved)));
+        let seen: Vec<_> = records.iter().map(|r| (r.priority, r.errno, r.message.as_deref())).collect();
+        let message = format!("cannot rename file '{dir}/default.new' to '{dir}/default'");
+        assert_eq!(seen, [(Priority::Err, nix::errno::Errno::EISDIR as i32, Some(message.as_str()))]);
+        assert!(!Path::new(&dir).join("default.new").exists());
+    }
+
+    /// The version at the limits of C's `int`: the next of the highest is the lowest, and the next of -1 is 0,
+    /// which then reads as a file without a version.
+    #[test]
+    fn the_next_version_wraps_as_c_int_does() {
+        let (_top, dir) = dir();
+        std::fs::create_dir(&dir).unwrap();
+        let file = Path::new(&dir).join("default");
+        std::fs::write(&file, r#"{"version":2147483647}"#).unwrap();
+        assert_eq!(put(&dir, "default", br#"{"version":2147483647,"a":1}"#), Ok(()));
+        assert_eq!(get(&dir, "default"), r#"{ "version": -2147483648, "a": 1 }"#);
+        // above the 32 bits, a payload's version reads as the highest: a conflict with the lowest that is stored
+        let conflict = (status::CONFLICT, "Payload version does not match the version of the stored object");
+        assert_eq!(put(&dir, "default", br#"{"version":2147483648}"#), Err(conflict));
+        assert_eq!(put(&dir, "default", br#"{"version":-2147483648}"#), Ok(()));
+        assert_eq!(get(&dir, "default"), r#"{ "version": -2147483647 }"#);
+        std::fs::write(&file, r#"{"version":-1}"#).unwrap();
+        assert_eq!(put(&dir, "default", br#"{"version":-1}"#), Ok(()));
+        assert_eq!(file_of(&dir, "default").as_deref(), Some(r#"{ "version": 0 }"#));
+        assert_eq!(get(&dir, "default"), r#"{"version":1}"#);
     }
 }

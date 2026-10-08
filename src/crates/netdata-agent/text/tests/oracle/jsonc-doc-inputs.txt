@@ -132,11 +132,11 @@ R 1.
 R -.5
 R .5
 R {"version":1.}
-R "\\ud83d"
-R "\\udc00"
-R "\\ud83dx"
-R "\\ud83d\\u0041"
-R {"a\\u0000b":1,"version":1}
+A "\\ud83d"
+A "\\udc00"
+A "\\ud83dx"
+A "\\ud83d\\u0041"
+A {"a\\u0000b":1,"version":1}
 R {
 R [
 R {"version"}
@@ -197,3 +197,49 @@ R [-]
 R [.1]
 R {"version":1.0e}
 R {"a":"x\x00y","version":1}
+R {"version":1}/
+R {"version":1} /x
+R 1/
+R 1/2
+R true/
+R "a"/
+R [1]/
+R {"version":1}/**//
+R {"version":1}\x0a/\x0a
+R {"version":1}/*
+R {"version":1}/* c */
+R {"version":1}//
+R {"version":1}/**/x
+A {"version":1}x/
+A {"version":1} x
+A {"version":1}]
+R \xef\xbb\xbf{}
+R \x0b{}
+R \x0c{}
+R \xc2\xa0{}
+R [1x]
+R {"version":1x}
+R {"version":1.5.3}
+R [1.5x]
+R "\\ud83d\\x"
+R "\\u00"
+A {"version":"\\t7"}
+A {"version":"\x097"}
+A {"version":"\x0b7"}
+A {"version":"- 5"}
+A {"version":"1e3"}
+A {"version":2147483647.5}
+A {"version":-2147483648.5}
+A {"version":2147483646.9}
+A {"version":1E400}
+A {"a":1,"a":2,"a":3,"b":4}
+A {"version":3}
+A "\\ud83d\\ud83d\\ude00"
+A "\\ud83d\\n"
+A "\\ud83d\\udc00\\udc00"
+A "\\udc00\\ud83d"
+A {"\\ud83d":1,"version":2}
+A {"a\\u0000b":1,"a":2}
+A {"\\u0000":1,"version":1}
+A {"a":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}
+R {"a":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}

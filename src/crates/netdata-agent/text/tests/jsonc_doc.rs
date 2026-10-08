@@ -57,6 +57,26 @@ fn documents_are_read_and_printed_as_json_c_does() {
     assert!(accepted >= 100 && refused >= 50, "{accepted} accepted, {refused} refused of {}", rows.len());
 }
 
+/// An object's members are indexed while it is read: one of 100,000 members takes a moment, where a search of the
+/// earlier members for each takes many seconds. A repeated key still takes its last value at its first place.
+#[test]
+fn a_large_object_is_read_without_a_search_per_member() {
+    let count = 100_000;
+    let mut text = String::from(r#"{"version":1"#);
+    for i in 0..count {
+        text.push_str(&format!(r#","k{i}":{i}"#));
+    }
+    text.push_str(r#","k0":"again"}"#);
+    let started = std::time::Instant::now();
+    let value = parse(text.as_bytes()).expect("an object");
+    let took = started.elapsed();
+    let Value::Object(members) = &value else { panic!("an object") };
+    assert_eq!(members.len(), count + 1);
+    assert_eq!(members[1], (b"k0".to_vec(), Value::String(b"again".to_vec())));
+    assert_eq!(value.object_get(b"k99999"), Some(&Value::Int(99_999)));
+    assert!(took < std::time::Duration::from_secs(5), "{took:?} for {count} members");
+}
+
 /// What the vectors cannot show: a member is found by its whole key; a set on what is no object does nothing.
 #[test]
 fn members_are_found_and_set_by_their_key() {
