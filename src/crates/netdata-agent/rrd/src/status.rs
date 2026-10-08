@@ -1,10 +1,11 @@
 //! A host's status (`rrdhost_status()`, `src/database/rrdhost-status.c`): whether its database is queryable, whether
 //! it is live, what feeds it and what it offers. [`Host::status_basic`] is C's `RRDHOST_STATUS_BASIC`, the six fields
-//! health and pulse ask on their own paths; [`Host::status`] is `RRDHOST_STATUS_ALL` without three parts: health's,
-//! which the daemon computes (health sits above this crate); what a child's receiver adds to `ingest` (its
-//! replication, capabilities and socket); and `stream`, the sender's. The last two are not ported yet.
+//! health and pulse ask on their own paths; [`Host::status`] is `RRDHOST_STATUS_ALL` without two parts: health's,
+//! which the daemon computes (health sits above this crate), and `stream`, the sender's, which is not ported yet.
 
-use crate::host::{Host, local_flags, netdata_start_time};
+use std::sync::Arc;
+
+use crate::host::{Host, ReceiverSlot, local_flags, netdata_start_time};
 use crate::mode::DbMode;
 
 /// `RRDHOST_DB_STATUS`.
@@ -209,8 +210,29 @@ pub struct Db {
     pub contexts: u64,
 }
 
-/// `RRDHOST_STATUS`' `ingest`, without what a child's receiver adds (the module's note).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// `SOCKET_PEERS`: the two ends of a socket as texts. The default is C's zeroed struct, what a host without an
+/// attached receiver has.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SocketPeers {
+    pub local_ip: String,
+    pub local_port: u16,
+    pub peer_ip: String,
+    pub peer_port: u16,
+}
+
+/// `RRDHOST_STATUS`' `replication`, of the receiver here.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Replication {
+    pub in_progress: bool,
+    /// Percent, as stored; nothing clamps it.
+    pub completion: f64,
+    /// The charts that replicate.
+    pub instances: u64,
+}
+
+/// `RRDHOST_STATUS`' `ingest`. Its last four fields are a child's: filled for a host that is not local and has a
+/// receiver while its collector is online, C's zeroes for any other.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Ingest {
     /// `host->stream.rcv.status.connections`: the receivers that attached to the host since the agent started.
     pub id: u32,
@@ -227,6 +249,13 @@ pub struct Ingest {
     pub metrics: u64,
     pub instances: u64,
     pub contexts: u64,
+    pub replication: Replication,
+    /// The attached receiver's negotiated capabilities.
+    pub capabilities: u32,
+    /// The two ends of its socket, as they were when it attached (C asks the socket at each status; D241 F4).
+    pub peers: SocketPeers,
+    /// Its connection has TLS.
+    pub tls: bool,
 }
 
 /// `RRDHOST_STATUS`' `ml`, without the counts of a host whose models run (no host's do: ML is not ported).
@@ -237,7 +266,7 @@ pub struct Ml {
 }
 
 /// `RRDHOST_STATUS` with `RRDHOST_STATUS_ALL`, without the parts the module's note names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Status {
     /// The clock the status was asked with: an online host's data ends there, and ages are counted from it.
     pub now: i64,
@@ -269,6 +298,7 @@ impl Host {
             || contexts.any_metric(),
             || contexts.any_metric_collected(),
         )
+        .basic
     }
 
     /// `rrdhost_status(host, now, &s, RRDHOST_STATUS_ALL)`, without the parts the module's note names. The host's
@@ -286,13 +316,22 @@ impl Host {
         let flags = self.local_flags();
         let counts = self.contexts().counts(|_| {});
         let receiver = self.receiver_status();
-        let basic = self.status_decided(
+        let Decided { basic, slot, replicating_charts } = self.status_decided(
             flags,
             now,
             || receiver.connections,
             || counts.metrics.available > 0,
             || counts.metrics.collected > 0,
         );
+        // rrdhost_status_ingest()'s second hold of the receiver lock: what an attached receiver adds, C's zeroes
+        // without one. The replicating charts are the decision's own load when it made one, as in C
+        let child = slot.map(|slot| {
+            let instances = u64::from(replicating_charts.unwrap_or_else(|| self.replicating_charts()));
+            let replication =
+                Replication { in_progress: instances > 0, completion: self.replication_percent(), instances };
+            (replication, slot.link.capabilities, slot.peers().clone(), slot.tls())
+        });
+        let (replication, capabilities, peers, tls) = child.unwrap_or_default();
         // rrdhost_status_ingest()'s `since`. A host is local when it is localhost or a vnode, and its type says so:
         // a vnode takes no receiver, so it is never a child
         let local = matches!(basic.ingest_type, IngestType::Localhost | IngestType::Virtual);
@@ -325,6 +364,10 @@ impl Host {
                 metrics: counts.metrics.collected,
                 instances: counts.instances.collected,
                 contexts: counts.contexts.collected,
+                replication,
+                capabilities,
+                peers,
+                tls,
             },
             // rrdhost_status_ml_internal() of a host without an ML host: no host has one here
             ml: Ml {
@@ -351,14 +394,14 @@ impl Host {
         connections: impl Fn() -> u32,
         has_metric: impl Fn() -> bool,
         has_collected_metric: impl Fn() -> bool,
-    ) -> HostStatus {
+    ) -> Decided {
         // with one load the type and the online state agree while a vnode's run ends (ORPHAN, a word of its own
         // here, is read apart)
         let is_virtual = flags & local_flags::VIRTUAL != 0;
         let is_local = self.is_localhost() || is_virtual;
         let collector_online = flags & local_flags::COLLECTOR_ONLINE != 0;
         // has_receiver: a host that is not local, with a receiver while its collector is online
-        let attached = !is_local && collector_online && self.receiver().is_some();
+        let slot = if !is_local && collector_online { self.receiver() } else { None };
         let online = is_local || (collector_online && !self.is_orphan());
         let (first_time_s, mut last_time_s) = self.contexts().retention();
         if online {
@@ -369,6 +412,7 @@ impl Host {
         } else {
             DbStatus::Queryable
         };
+        let mut replicating_charts = None;
         let ingest_status = if !online {
             if connections() == 0 {
                 IngestStatus::Archived
@@ -379,12 +423,16 @@ impl Host {
             IngestStatus::Initializing
         } else if is_local {
             IngestStatus::Online
-        } else if self.replicating_charts() > 0 || !has_collected_metric() {
-            IngestStatus::Replicating
         } else {
-            IngestStatus::Online
+            let charts = self.replicating_charts();
+            replicating_charts = Some(charts);
+            if charts > 0 || !has_collected_metric() {
+                IngestStatus::Replicating
+            } else {
+                IngestStatus::Online
+            }
         };
-        HostStatus {
+        let basic = HostStatus {
             db_status,
             db_liveness: if ingest_status == IngestStatus::Online {
                 DbLiveness::Live
@@ -393,7 +441,7 @@ impl Host {
             },
             ingest_type: if self.is_localhost() {
                 IngestType::Localhost
-            } else if attached {
+            } else if slot.is_some() {
                 IngestType::Child
             } else if is_virtual {
                 IngestType::Virtual
@@ -403,8 +451,18 @@ impl Host {
             ingest_status,
             first_time_s,
             last_time_s,
-        }
+        };
+        Decided { basic, slot, replicating_charts }
     }
+}
+
+/// What [`Host::status_decided`] found on its way that the full status reads too.
+struct Decided {
+    basic: HostStatus,
+    /// The attached receiver's slot: of a host that is not local, while its collector is online.
+    slot: Option<Arc<ReceiverSlot>>,
+    /// The receiver's replicating charts, when the decision loaded them.
+    replicating_charts: Option<u32>,
 }
 
 #[cfg(test)]
@@ -499,6 +557,10 @@ mod tests {
                 metrics: 0,
                 instances: 0,
                 contexts: 0,
+                replication: Replication::default(),
+                capabilities: 0,
+                peers: SocketPeers::default(),
+                tls: false,
             },
             ml: Ml {
                 status: MlStatus::Disabled,
@@ -519,7 +581,7 @@ mod tests {
             metrics: 1,
             instances: 1,
             contexts: 1,
-            ..nothing.ingest
+            ..nothing.ingest.clone()
         };
         assert_eq!(s.ingest, collected);
         assert_eq!((s.ml, s.dyncfg), (nothing.ml, DyncfgStatus::Available));
@@ -606,7 +668,15 @@ mod tests {
         let hosts = Hosts::new(Host::new("guid-l", true, info("l")));
         let child = hosts.find_or_create("guid-c", DbMode::Ram, || info("c"), |_| {}).expect("created");
         assert_eq!(full(&child, T0).ingest.reason, 0);
-        let attached = slot_with(0x41);
+        let peers = SocketPeers {
+            local_ip: "10.0.0.1".into(),
+            local_port: 19999,
+            peer_ip: "10.0.0.2".into(),
+            peer_port: 40000,
+        };
+        let link = ReceiverLink { capabilities: 0x41, ..ReceiverLink::default() };
+        let attached = ReceiverSlot::new(1, Default::default(), link, Box::new(|| {})).with_socket(peers.clone(), true);
+        let attached = Arc::new(attached);
         assert_eq!(child.set_receiver(Arc::clone(&attached)), Attach::Attached);
         let connected = child.receiver_last_connected_s();
         assert!(connected > START);
@@ -615,12 +685,25 @@ mod tests {
         assert_eq!((s.ingest.id, s.ingest.since_s, s.dyncfg), (1, connected, DyncfgStatus::Unavailable));
         // the stored reason of an attached receiver is its capabilities
         assert_eq!(s.ingest.reason, 0x41);
+        // a child's own part: its receiver's capabilities, the two ends of its socket, its TLS flag, and its
+        // replication, of which no chart is in progress
+        let idle = Replication { in_progress: false, completion: child.replication_percent(), instances: 0 };
+        assert_eq!((s.ingest.capabilities, &s.ingest.peers, s.ingest.tls), (0x41, &peers, true));
+        assert_eq!(s.ingest.replication, idle);
 
         collect(&child);
         let s = full(&child, connected + 5);
         assert_eq!((s.ingest.kind, s.ingest.status), (IngestType::Child, IngestStatus::Online));
         assert_eq!((s.db.liveness, s.db.last_time_s, s.ingest.since_s), (DbLiveness::Live, connected + 5, connected));
         assert_eq!((s.db.metrics, s.ingest.metrics), (1, 1));
+
+        // a chart of it replicates: the status says so, with the count, in the basic status too
+        child.replicating_charts_plus_one();
+        let s = full(&child, connected + 5);
+        assert_eq!(s.ingest.status, IngestStatus::Replicating);
+        assert_eq!((s.ingest.replication.in_progress, s.ingest.replication.instances), (true, 1));
+        child.replicating_charts_minus_one();
+        assert_eq!(full(&child, connected + 5).ingest.status, IngestStatus::Online);
 
         // the receiver says why it ends; the detach's own argument is not what the host keeps
         attached.set_exit_reason(-6, false);
@@ -631,6 +714,9 @@ mod tests {
         let s = full(&child, disconnected + 5);
         assert_eq!((s.ingest.kind, s.ingest.status), (IngestType::Archived, IngestStatus::Offline));
         assert_eq!(s.ingest.reason, -6);
+        // no receiver: C's zeroes
+        assert_eq!((s.ingest.capabilities, s.ingest.tls), (0, false));
+        assert_eq!((&s.ingest.peers, s.ingest.replication), (&SocketPeers::default(), Replication::default()));
         assert_eq!((s.ingest.id, s.ingest.since_s, s.db.liveness), (1, disconnected, DbLiveness::Stale));
         assert_eq!((s.db.metrics, s.db.instances, s.db.contexts), (1, 1, 1));
         assert_eq!((s.ingest.metrics, s.ingest.instances, s.ingest.contexts), (0, 0, 0));

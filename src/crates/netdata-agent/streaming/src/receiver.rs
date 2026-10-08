@@ -22,6 +22,7 @@ use netdata_agent_rrd::collection;
 use netdata_agent_rrd::contexts::Taker;
 use netdata_agent_rrd::host::{Attach, Host, HostInfo, Hosts, ReceiverLink, ReceiverSlot, StreamSend, receiver_op};
 use netdata_agent_rrd::mode::{DbMode, align_entries_to_pagesize};
+use netdata_agent_rrd::status::SocketPeers;
 use netdata_agent_rrd::upstream::Traffic;
 use netdata_agent_sys::now_monotonic_usec;
 use netdata_agent_text::duration::duration_to_string;
@@ -754,6 +755,11 @@ impl Receivers {
                 }
             }),
         );
+        // nd_sock_socket_peers() and nd_sock_is_ssl() of the accepted socket, asked once: the status reads them from
+        // the slot (D241 F4)
+        let [local, remote] = netdata_agent_tls::socket_peers(link.socket().map(std::os::fd::AsRawFd::as_raw_fd));
+        let peers = SocketPeers { local_ip: local.0, local_port: local.1, peer_ip: remote.0, peer_port: remote.1 };
+        let slot = slot.with_socket(peers, link.is_tls());
         // rpt->config.health.enabled, yes and auto alike: the detach then tells health (rrdcalc_child_disconnected())
         let slot = Arc::new(slot.with_health(config.health_enabled != netdata_agent_inicfg::BOOLEAN_NO));
         match host.set_receiver(Arc::clone(&slot)) {
@@ -2149,6 +2155,41 @@ mod tests {
             },
             accepted_s: 0,
         }
+    }
+
+    /// The slot takes the two ends of its accepted socket once, at the attach (C asks the socket at each status:
+    /// `rrdhost-status.c:219`; D241 F4): the local end is the listening one, the remote the child's own, and a plain
+    /// connection has no TLS. A unix socket has no such ends: `unknown`, port 0, for both (D107.10).
+    #[test]
+    fn a_slot_takes_its_socket_s_two_ends() {
+        let (r, _pool) = receivers();
+        let section = format!("[{ADMIT_KEY}]\n  enabled = yes\n");
+        r.conf.lock().unwrap().config.load_bytes(section.as_bytes(), "stream.conf", false, None);
+        let slot_of = |guid: &str| {
+            let host = r.hosts.find_by_guid(guid).expect("the child's host");
+            host.receiver().expect("the attached receiver")
+        };
+
+        let tcp = "5a1e0000-0000-4000-8000-0000000000d7";
+        let (client, server) = tcp_pair();
+        let (listening, child) = (server.local_addr().unwrap(), client.local_addr().unwrap());
+        assert!(r.admit(pending(tcp), Link::Plain(Conn::Tcp(server))));
+        let slot = slot_of(tcp);
+        let ends = SocketPeers {
+            local_ip: "127.0.0.1".into(),
+            local_port: listening.port(),
+            peer_ip: "127.0.0.1".into(),
+            peer_port: child.port(),
+        };
+        assert_eq!((slot.peers(), slot.tls()), (&ends, false));
+        assert_ne!(listening.port(), child.port());
+
+        let unix = "5a1e0000-0000-4000-8000-0000000000d8";
+        let (ours, _theirs) = mio::net::UnixStream::pair().unwrap();
+        assert!(r.admit(pending(unix), Link::Plain(Conn::Unix(ours))));
+        let slot = slot_of(unix);
+        let none = SocketPeers { local_ip: "unknown".into(), local_port: 0, peer_ip: "unknown".into(), peer_port: 0 };
+        assert_eq!((slot.peers(), slot.tls()), (&none, false));
     }
 
     /// `stream_receiver_send_first_response()` logs the negotiated capabilities while it builds the prompt, before the

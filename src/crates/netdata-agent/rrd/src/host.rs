@@ -17,6 +17,7 @@ use crate::index::Index;
 use crate::labels::Labels;
 use crate::mode::DbMode;
 use crate::storage::{HealthEvent, StorageLayout, TierHandle};
+use crate::status::SocketPeers;
 use crate::stream_buffer::CircularBuffer;
 use crate::stream_path::PathEntry;
 use crate::system_info::SystemInfo;
@@ -242,6 +243,11 @@ pub struct ReceiverSlot {
     health: bool,
     /// `rpt->exit.reason`: why the receiver ends, a `STREAM_HANDSHAKE` code; 0 until someone says.
     exit_reason: AtomicI32,
+    /// The two ends of the receiver's socket and whether its connection has TLS (`nd_sock_socket_peers()`,
+    /// `nd_sock_is_ssl()`), as they were when it attached: the ends of an accepted socket do not change, and C asks
+    /// the socket at each status (D241 F4).
+    peers: SocketPeers,
+    tls: bool,
 }
 
 impl std::fmt::Debug for ReceiverSlot {
@@ -271,6 +277,8 @@ impl ReceiverSlot {
             detaching: AtomicBool::new(false),
             health: false,
             exit_reason: AtomicI32::new(0),
+            peers: SocketPeers::default(),
+            tls: false,
         }
     }
 
@@ -283,6 +291,23 @@ impl ReceiverSlot {
     /// Whether health was on for this receiver's host.
     pub fn health(&self) -> bool {
         self.health
+    }
+
+    /// The accepted socket's two ends and its TLS flag, taken once where the slot is made.
+    pub fn with_socket(mut self, peers: SocketPeers, tls: bool) -> Self {
+        self.peers = peers;
+        self.tls = tls;
+        self
+    }
+
+    /// The two ends of the receiver's socket, as the slot took them.
+    pub fn peers(&self) -> &SocketPeers {
+        &self.peers
+    }
+
+    /// `nd_sock_is_ssl(&rpt->sock)`.
+    pub fn tls(&self) -> bool {
+        self.tls
     }
 
     /// `send_to_child()`: `bytes` for the child added to its buffer as `traffic`, the buffer autoscaled; their length,
