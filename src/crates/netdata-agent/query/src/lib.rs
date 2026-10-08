@@ -20,6 +20,7 @@ pub mod rrdr;
 pub mod tables;
 pub mod target;
 pub mod value;
+pub mod weights;
 #[cfg(test)]
 mod testing;
 pub mod window;
