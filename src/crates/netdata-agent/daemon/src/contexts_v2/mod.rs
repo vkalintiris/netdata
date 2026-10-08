@@ -1,14 +1,16 @@
 //! The contexts v2 engine, ported from `api_v2_contexts_internal()` (`src/web/api/v2/api_v2_contexts.c`),
 //! `rrdcontext_to_json_v2()` and its host walk (`src/database/contexts/api_v2_contexts.c`, `query_scope.c`) for the
 //! modes the agent serves so far: `/api/v3/stream_path`, `/api/v2/info` (`/api/v3/info`), `/api/v2/functions`
-//! (`/api/v3/functions`), `/api/v2/versions` (`/api/v3/versions`), `/api/v2/nodes` (`/api/v3/nodes`) and
-//! `/api/v2/contexts` (`/api/v3/contexts`) and `/api/v2/alerts` (`/api/v3/alerts`). Decisions D51, D92, D160, D231
-//! and D234 in the status repository.
+//! (`/api/v3/functions`), `/api/v2/versions` (`/api/v3/versions`), `/api/v2/nodes` (`/api/v3/nodes`),
+//! `/api/v2/contexts` (`/api/v3/contexts`), `/api/v2/alerts` (`/api/v3/alerts`) and `/api/v2/alert_transitions`
+//! (`/api/v3/alert_transitions`). Decisions D51, D92, D160, D231 and D234 in the status repository.
 
 use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::Instant;
 
+use netdata_agent_log::netdata_log_error;
+use netdata_agent_metadata::health_log::TransitionsOf;
 use netdata_agent_nrpc::catalog;
 
 use netdata_agent_query::jsonwrap_v2::{cloud_timings, version_hashes_v2};
@@ -17,15 +19,17 @@ use netdata_agent_query::request::pairs;
 use netdata_agent_query::tables::{
     alert_statuses_to_json_array,
     contexts_options::{
-        CONFIGURATIONS, DEBUG, FAMILY, JSON_LONG_KEYS, LIVENESS, MCP, MINIFY, PRIORITIES, RETENTION, RFC3339, UNITS,
+        CONFIGURATIONS, DEBUG, FAMILY, INSTANCES, JSON_LONG_KEYS, LIVENESS, MCP, MINIFY, PRIORITIES, RETENTION,
+        RFC3339, UNITS,
     },
     contexts_options_to_json_array, parse_alert_statuses, parse_contexts_options,
 };
 use netdata_agent_query::target::{Versions, foreach_context, foreach_host, matches_retention};
 use netdata_agent_rrd::clock::now_realtime_s;
 use netdata_agent_rrd::contexts::{Context, ContextState};
+use netdata_agent_rrd::host::Host;
 use netdata_agent_text::json::{JsonOptions, JsonWriter};
-use netdata_agent_text::parse::{str2l, str2ul, uuid_parse_flexi};
+use netdata_agent_text::parse::{str2l, str2uint64, str2ul, strtoul0, uuid_parse_flexi};
 use netdata_agent_text::print::uuid_lower_text;
 use netdata_agent_text::simple_pattern::SimplePattern;
 use netdata_agent_text::time_window::relative_window_to_absolute_query;
@@ -42,6 +46,7 @@ mod contexts;
 mod functions;
 mod labels;
 mod nodes;
+mod transitions;
 
 use agents::agents;
 use contexts::ContextsDict;
@@ -99,6 +104,12 @@ struct Request {
     transition: Option<Vec<u8>>,
     /// `status`: the bits of the status words an alerts request keeps; 0 keeps every alert.
     status: u64,
+    /// `last`: how many transitions an `alert_transitions` request keeps; 1 when it is 0 or not given.
+    last: u32,
+    /// `anchor_gi`: the global id the kept transitions are newer than.
+    anchor_gi: u64,
+    /// The request's text for each facet of `alert_transitions`, in the order of `transitions::FACETS`.
+    facets: [Option<Vec<u8>>; 9],
 }
 
 /// `api_v2_contexts_internal()`'s parameter loop: the last occurrence of a value wins, options accumulate.
@@ -127,8 +138,22 @@ fn parse(query: &[u8], mode: u32, options: u64) -> Request {
             b"transition" if mode & alert_modes != 0 => req.transition = Some(value.to_vec()),
             // the words of one `status` add up; a later `status` replaces an earlier one
             b"status" if mode & mode::ALERTS != 0 => req.status = parse_alert_statuses(value),
+            // the transitions' own: `last` as `strtoul(value, NULL, 0)` cut to 32 bits; `context` writes the
+            // request's `contexts`, so the later of the two wins; a facet's name is its parameter
+            b"last" if mode & mode::ALERT_TRANSITIONS != 0 => req.last = strtoul0(value).0 as u32,
+            b"context" if mode & mode::ALERT_TRANSITIONS != 0 => req.contexts = Some(value.to_vec()),
+            b"anchor_gi" if mode & mode::ALERT_TRANSITIONS != 0 => req.anchor_gi = str2uint64(value).0,
+            name if mode & mode::ALERT_TRANSITIONS != 0 => {
+                let facet = transitions::FACETS.iter().position(|(id, _, _)| id.as_bytes() == name);
+                if let Some(facet) = facet {
+                    req.facets[facet] = Some(value.to_vec());
+                }
+            }
             _ => {}
         }
+    }
+    if mode & mode::ALERT_TRANSITIONS != 0 && req.last == 0 {
+        req.last = 1;
     }
     req
 }
@@ -189,6 +214,11 @@ fn request_to_json(w: &mut JsonWriter, req: &Request, mode: u32) {
         if mode & mode::ALERTS != 0 {
             alert_statuses_to_json_array(w, b"status", req.status);
         }
+        if mode & mode::ALERT_TRANSITIONS != 0 {
+            w.member_add_string_opt("context", text(&req.contexts).as_deref());
+            w.member_add_uint64("anchor_gi", req.anchor_gi);
+            w.member_add_uint64("last", u64::from(req.last));
+        }
         w.member_add_string_opt("alert", text(&req.alert).as_deref());
         w.member_add_string_opt("transition", text(&req.transition).as_deref());
         w.object_close();
@@ -199,7 +229,62 @@ fn request_to_json(w: &mut JsonWriter, req: &Request, mode: u32) {
     w.member_add_time_t_formatted("after", req.after, rfc3339);
     w.member_add_time_t_formatted("before", req.before, rfc3339);
     w.object_close();
+    if mode & mode::ALERT_TRANSITIONS != 0 {
+        w.member_add_object("facets");
+        for ((id, _, _), value) in transitions::FACETS.iter().zip(&req.facets) {
+            w.member_add_string_opt(id, value.as_deref());
+        }
+        w.object_close();
+    }
     w.object_close();
+}
+
+/// `contexts_v2_alert_transitions_to_json()` with its query (`sql_alert_transitions()`): the alert log's
+/// transitions of the hosts selected, inside the window's two ends (none given: both 0, which no entry meets), of
+/// the request's `contexts` text as one chart context and of its `alert` text as one alert name, each compared
+/// whole; or, with `transition=`, the entries with that id whatever their host and time (a text that is no UUID is
+/// reported and finds nothing). Without a metadata database there is no entry. The rules of `options=config` are
+/// read after the rows, as C reads them.
+fn alert_transitions_to_json(
+    w: &mut JsonWriter,
+    shared: &Shared,
+    req: &Request,
+    selected: &[Arc<Host>],
+    ends: Option<(i64, i64)>,
+) {
+    let defaults = shared.health.host_defaults(shared.hosts.localhost());
+    let mut collector = transitions::Collector::new(&req.facets, defaults.1, req.last, req.anchor_gi);
+    let meta = shared.meta.as_ref().and_then(std::sync::Weak::upgrade);
+    let hosts: Vec<[u8; 16]> = selected.iter().filter_map(|host| crate::meta_store::host_id(host)).collect();
+    let (after_s, before_s) = ends.unwrap_or((0, 0));
+    let id = req.transition.as_deref().map(uuid_parse_flexi);
+    let of = match &id {
+        None => Some(TransitionsOf::Window {
+            hosts: &hosts,
+            after_s,
+            before_s,
+            context: req.contexts.as_deref(),
+            alert_name: req.alert.as_deref(),
+        }),
+        Some(Some(id)) => Some(TransitionsOf::Id(id)),
+        Some(None) => {
+            let text = String::from_utf8_lossy(req.transition.as_deref().unwrap_or_default());
+            netdata_log_error!("Invalid transition given {text}");
+            None
+        }
+    };
+    if let (Some(of), Some(meta)) = (&of, &meta) {
+        meta.alert_transitions(of, |row| collector.row(row));
+    }
+    let rules = (req.options & CONFIGURATIONS != 0).then(|| {
+        let mut rules = Vec::new();
+        if let Some(meta) = &meta {
+            let _ = meta.alert_configs(&collector.config_hashes(), |rule| rules.push(rule));
+        }
+        rules
+    });
+    let host = |guid: &str| shared.hosts.find_by_guid(guid).map(|host| (host.hostname(), host.node_id()));
+    collector.to_json(w, req.options, host, defaults, rules.as_deref());
 }
 
 /// `rrdcontext_to_json_v2()` for the modes served.
@@ -242,17 +327,16 @@ fn render(shared: &Shared, req: &Request, mode: u32, wall_s: i64) -> Reply {
     let alert_name = pattern(&req.alert);
     let filters = alerts::Filters { name: alert_name.as_ref(), alarm_id, status: req.status };
     let mut alerts = (mode & mode::ALERTS != 0).then(|| alerts::Collector::new(req.options));
-    let window = if req.after != 0 || req.before != 0 {
+    // The window's two ends as the request means them. The transitions' statement reads them; for that mode C
+    // leaves its window disabled, so no host and no context is tested against them.
+    let ends = (req.after != 0 || req.before != 0).then(|| {
         let (after, before, _) = relative_window_to_absolute_query(req.after, req.before, wall_s);
-        Window {
-            range: Some((after, before)),
-            now: wall_s - 1,
-        }
-    } else {
-        Window {
-            range: None,
-            now: wall_s,
-        }
+        (after, before)
+    });
+    let transitions_mode = mode & mode::ALERT_TRANSITIONS != 0;
+    let window = Window {
+        range: ends.filter(|_| !transitions_mode),
+        now: if ends.is_some() { wall_s - 1 } else { wall_s },
     };
     // query_scope_foreach_host() with rrdcontext_to_json_v2_add_host()
     let mut selected = Vec::new();
@@ -357,7 +441,11 @@ fn render(shared: &Shared, req: &Request, mode: u32, wall_s: i64) -> Reply {
     if debug {
         request_to_json(&mut w, req, mode);
     }
-    if mode & mode::NODES != 0 {
+    if transitions_mode {
+        // the transitions' answer has nothing of the other modes': the nodes select the hosts and are not listed
+        alert_transitions_to_json(&mut w, shared, req, &selected, ends);
+    }
+    if mode & mode::NODES != 0 && !transitions_mode {
         let k = Keys::with_long(req.options & JSON_LONG_KEYS != 0);
         w.member_add_array(Some(b"nodes"));
         for (ni, host) in selected.iter().enumerate() {
@@ -433,6 +521,20 @@ pub fn alerts(route: &Route<'_>, query: &[u8]) -> Reply {
     render(route.shared, &req, alerts_mode, now_realtime_s())
 }
 
+/// `api_v2_alert_transitions()` (`/api/v2/alert_transitions`, `/api/v3/alert_transitions`): the alert log's
+/// transitions of the hosts in scope inside the request's window, newest first: the nine facets with every value
+/// the window's rows show and how many rows each would give, the `last` rows the facets select that are newer than
+/// `anchor_gi`, with `options=config` their rules, and the counts of what was evaluated, matched and left before
+/// and after. `transition=` asks for one transition by its id. No nodes, no versions and no agents. The host in the
+/// URL does not matter.
+pub fn alert_transitions(route: &Route<'_>, query: &[u8]) -> Reply {
+    let transitions_mode = mode::ALERT_TRANSITIONS | mode::NODES;
+    let mut req = parse(query, transitions_mode, 0);
+    // rrdcontext_to_json_v2() strips `instances` for this mode before anything reads the options, the echo too
+    req.options &= !INSTANCES;
+    render(route.shared, &req, transitions_mode, now_realtime_s())
+}
+
 /// `api_v2_contexts()` (`/api/v2/contexts`, `/api/v3/contexts`): the contexts of the hosts in scope, merged by id,
 /// with the nodes (every host in scope that `nodes` selects while no context pattern and no window is given, else
 /// those of them with a context that counts), the versions and the agent; the dashboard's chart menu. `options`
@@ -490,6 +592,35 @@ mod tests {
         );
         // scope_contexts and contexts are read only by the modes that have them
         assert_eq!(parse(b"contexts=x", mode::VERSIONS, 0).contexts, None);
+    }
+
+    /// The parameters of `alert_transitions` alone: `last` in any of C's bases, 1 when it is 0 or missing;
+    /// `context` and `contexts` write one field, the later one wins; `anchor_gi`; a facet's name is its parameter.
+    /// `status` is not read in this mode, and the alerts mode reads none of these.
+    #[test]
+    fn the_transitions_parameters_as_c_reads_them() {
+        let transitions_mode = mode::ALERT_TRANSITIONS | mode::NODES;
+        let query = b"last=0x10&anchor_gi=12&context=a&contexts=b&f_status=warning|critical&f_context=x&status=clear\
+                      &alert=n&transition=t&f_node=&f_bogus=1";
+        let mut facets: [Option<Vec<u8>>; 9] = Default::default();
+        facets[0] = Some(b"warning|critical".to_vec());
+        facets[8] = Some(b"x".to_vec());
+        let expected = Request {
+            contexts: Some(b"b".to_vec()),
+            alert: Some(b"n".to_vec()),
+            transition: Some(b"t".to_vec()),
+            last: 16,
+            anchor_gi: 12,
+            facets,
+            ..Request::default()
+        };
+        assert_eq!(parse(query, transitions_mode, 0), expected);
+        assert_eq!(parse(b"contexts=b&context=a", transitions_mode, 0).contexts, Some(b"a".to_vec()));
+        for (query, last) in [("", 1), ("last=0", 1), ("last=x", 1), ("last=010", 8), ("last=4294967297", 1)] {
+            assert_eq!(parse(query.as_bytes(), transitions_mode, 0).last, last, "{query}");
+        }
+        let alerts = parse(b"last=5&anchor_gi=7&context=a&f_status=clear", mode::ALERTS | mode::NODES, 0);
+        assert_eq!(alerts, Request::default());
     }
 
     #[test]

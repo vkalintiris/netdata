@@ -4,8 +4,8 @@
 //!
 //! Not ported yet: `/mcp` and `/sse`, and the API commands other than `info`, `chart`, `charts`, `context`,
 //! `contexts`, `registry`, `data`, `dbengine_stats`, `function`, `functions`, `manage`, `me`, `nodes`, `progress`,
-//! `stream_info`, `stream_path`, `versions`, `alerts` and health's (`alarms`, `alarm_log` and the others of its
-//! block of the table, and `badge.svg`).
+//! `stream_info`, `stream_path`, `versions`, `alerts`, `alert_transitions` and health's (`alarms`, `alarm_log` and
+//! the others of its block of the table, and `badge.svg`).
 //! `/netdata.conf` shows only the keys of the subsystems ported so far.
 
 use std::sync::Arc;
@@ -246,6 +246,13 @@ const API_V2: &[Command] = &[
         callback: |route, _, query| contexts_v2::alerts(route, query),
     },
     Command {
+        name: "alert_transitions",
+        acl: acl::bits::ALERTS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: |route, _, query| contexts_v2::alert_transitions(route, query),
+    },
+    Command {
         name: "alert_config",
         acl: acl::bits::ALERTS,
         access: access::ANONYMOUS_DATA,
@@ -347,6 +354,13 @@ const API_V3: &[Command] = &[
         access: access::ANONYMOUS_DATA,
         allow_subpaths: false,
         callback: |route, _, query| contexts_v2::alerts(route, query),
+    },
+    Command {
+        name: "alert_transitions",
+        acl: acl::bits::ALERTS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: |route, _, query| contexts_v2::alert_transitions(route, query),
     },
     Command {
         name: "alert_config",
@@ -1446,6 +1460,196 @@ mod tests {
             assert_eq!(code, status::OK, "{transition}: {body}");
             assert!(body.starts_with(r#"{"api":2,"nodes":[],"alerts":[],"alerts_by_type":["#), "{transition}: {body}");
         }
+    }
+
+    /// `/api/v2/alert_transitions` and `/api/v3/alert_transitions` (`api_v2_alert_transitions()`). With an empty
+    /// alert log, and without a database: the nine facets without options, no transition, the counts (C's answers
+    /// on a fresh agent with health off). With two entries of one alert: both, newest first, inside the window
+    /// alone; a facet's counts when its own value rejects every row; `last` and `anchor_gi`; the request's
+    /// `context` as an exact test, and as what keeps a host without any context out; one transition by its id,
+    /// whatever the window; a text that is no id; the rules with `options=config`; the echo of `debug`.
+    #[test]
+    fn alert_transitions_are_routed_in_v2_and_v3() {
+        use netdata_agent_metadata::open::MetaDb;
+        let dir = tempfile::tempdir().unwrap();
+        let meta = Arc::new(MetaDb::open(dir.path(), &Default::default()).unwrap());
+        let s = Shared { meta: Some(Arc::downgrade(&meta)), ..shared() };
+        let all = acl::bits::ALL_LISTENER_FEATURES;
+        let asked_of = |s: &Shared, path: &[u8], query: &[u8]| {
+            let r = asked(s, path, query, all);
+            let shown = String::from_utf8_lossy(query).into_owned();
+            assert_eq!((r.code, r.content_type), (status::OK, ContentType::ApplicationJson), "{shown}");
+            assert!(r.no_cacheable, "{shown}");
+            String::from_utf8(r.body).unwrap()
+        };
+        let text = |query: &[u8]| asked_of(&s, b"/api/v3/alert_transitions", query);
+        let facet = |(id, name, order): (&str, &str, u32)| {
+            format!(r#"{{"id":"{id}","name":"{name}","order":{order},"options":[]}}"#)
+        };
+        let facets = [
+            ("f_status", "Alert Status", 1),
+            ("f_class", "Alert Class", 4),
+            ("f_type", "Alert Type", 2),
+            ("f_component", "Alert Component", 5),
+            ("f_role", "Recipient Role", 3),
+            ("f_node", "Alert Node", 6),
+            ("f_alert", "Alert Name", 7),
+            ("f_instance", "Instance Name", 8),
+            ("f_context", "Context", 9),
+        ]
+        .map(facet)
+        .join(",");
+        let empty = |last: u32| {
+            format!(
+                concat!(
+                    r#"{{"api":2,"facets":[{facets}],"transitions":[],"items":{{"evaluated":0,"matched":0,"#,
+                    r#""returned":0,"max_to_return":{last},"before":0,"after":0}},"timings":{{"#
+                ),
+                facets = facets,
+                last = last
+            )
+        };
+        let nothing = shared();
+        for path in [&b"/api/v2/alert_transitions"[..], b"/api/v3/alert_transitions"] {
+            let shown = String::from_utf8_lossy(path).into_owned();
+            for agent in [&s, &nothing] {
+                // the dashboard's Events tab, and a transition no entry has
+                let body = asked_of(agent, path, b"after=-600&last=200&anchor_gi=&options=minify&scope_nodes=*");
+                assert!(body.starts_with(&empty(200)), "{shown}: {body}");
+                let body = asked_of(agent, path, b"options=minify&transition=7d7d7d7d-7d7d-7d7d-7d7d-7d7d7d7d7d7d");
+                assert!(body.starts_with(&empty(1)), "{shown}: {body}");
+            }
+            let body = asked_of(&s, path, b"");
+            assert_eq!(members(&body), ["api", "facets", "transitions", "items", "timings"], "{shown}");
+            let denied = server::permission_denied_acl();
+            let r = asked(&s, path, b"", all & !acl::bits::ALERTS);
+            assert_eq!((r.code, &r.body), (denied.code, &denied.body), "{shown}");
+            assert_eq!(asked(&s, path, b"", acl::bits::ALERTS).code, status::OK, "{shown}");
+        }
+
+        // two entries of one alert of localhost, a minute and two minutes ago: to WARNING, then back to CLEAR
+        let now = netdata_agent_rrd::clock::now_realtime_s();
+        let host_id = crate::meta_store::host_id(s.hosts.localhost()).unwrap();
+        let hex = |bytes: &[u8]| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        let (older, newer) = ((now - 120) * 1_000_000, (now - 60) * 1_000_000);
+        {
+            let c = meta.lock();
+            let rule = format!(
+                "INSERT INTO alert_hash (hash_id, alarm, class) VALUES (X'{}', 'a_one', 'Errors')",
+                hex(&[0xaa; 16])
+            );
+            c.execute(&rule, ()).unwrap();
+            let log = format!(
+                "INSERT INTO health_log (health_log_id, host_id, alarm_id, config_hash_id, name, chart, \
+                 chart_context) VALUES (1, X'{}', 7, X'{}', 'a_one', 't.c', 't.ctx')",
+                hex(&host_id),
+                hex(&[0xaa; 16])
+            );
+            c.execute(&log, ()).unwrap();
+            for (unique_id, new, old, byte, global_id) in [(100, 3, 1, 0x7a_u8, older), (101, 1, 3, 0x7b, newer)] {
+                let detail = format!(
+                    "INSERT INTO health_log_detail (health_log_id, unique_id, alarm_id, when_key, new_status, \
+                     old_status, transition_id, global_id) VALUES (1, {unique_id}, 7, {}, {new}.0, {old}.0, X'{}', \
+                     {global_id})",
+                    global_id / 1_000_000,
+                    hex(&[byte; 16])
+                );
+                c.execute(&detail, ()).unwrap();
+            }
+        }
+        let rows = |query: &[u8]| {
+            let body = text(query);
+            let ids = [(newer, "newer"), (older, "older")];
+            let has = |gi: i64| body.contains(&format!(r#"{{"gi":{gi},"alert":"a_one","#));
+            let kept: Vec<&str> = ids.iter().filter(|(gi, _)| has(*gi)).map(|id| id.1).collect();
+            let items = body[body.find(r#""items":{"#).expect("items")..].split('}').next().unwrap().to_owned();
+            (kept, items)
+        };
+        let counts = |evaluated: u32, matched: u32, returned: u32, last: u32, before: u32, after: u32| {
+            format!(
+                concat!(
+                    r#""items":{{"evaluated":{},"matched":{},"returned":{},"max_to_return":{},"before":{},"#,
+                    r#""after":{}"#
+                ),
+                evaluated, matched, returned, last, before, after
+            )
+        };
+        // both inside the window, newest first; the host is known, so it has its name
+        let body = text(b"after=-600&last=200&options=minify");
+        let first = format!(r#""transitions":[{{"gi":{newer},"alert":"a_one","transition_id":"7b7b7b7b-"#);
+        assert!(body.contains(&first), "{body}");
+        let members_of_it = concat!(
+            r#""config_hash_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","hostname":"box","instance":"t.c","#,
+            r#""instance_n":"t.c","context":"t.ctx","component":null,"classification":"Errors","type":null,"#
+        );
+        assert!(body.contains(members_of_it), "{body}");
+        let node = concat!(
+            r#"{"id":"f_node","name":"Alert Node","order":6,"options":["#,
+            r#"{"id":"0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e","name":"box","count":2}]}"#
+        );
+        assert!(body.contains(node), "{body}");
+        let both = || vec!["newer", "older"];
+        assert_eq!(rows(b"after=-600&last=200&options=minify"), (both(), counts(2, 2, 2, 200, 0, 0)));
+        // the window alone decides what is evaluated: none given, one that ends before them, one around the older
+        assert_eq!(rows(b"last=200&options=minify"), (vec![], counts(0, 0, 0, 200, 0, 0)));
+        assert_eq!(rows(b"after=-600&before=-300&options=minify"), (vec![], counts(0, 0, 0, 1, 0, 0)));
+        assert_eq!(rows(b"after=-150&before=-90&last=9&options=minify"), (vec!["older"], counts(1, 1, 1, 9, 0, 0)));
+        // `last` and `anchor_gi`
+        assert_eq!(rows(b"after=-600&options=minify"), (vec!["newer"], counts(2, 2, 1, 1, 0, 1)));
+        let anchored = format!("after=-600&last=9&anchor_gi={older}&options=minify");
+        assert_eq!(rows(anchored.as_bytes()), (vec!["newer"], counts(2, 2, 1, 9, 1, 0)));
+        // a facet whose value rejects both rows still counts them, on itself alone
+        let body = text(b"after=-600&last=9&f_status=critical&options=minify");
+        let status = concat!(
+            r#"{"id":"f_status","name":"Alert Status","order":1,"options":["#,
+            r#"{"id":"CLEAR","name":"CLEAR","count":1},{"id":"WARNING","name":"WARNING","count":1}]},"#,
+            r#"{"id":"f_class","name":"Alert Class","order":4,"options":[{"id":"Errors","name":"Errors","count":0}]},"#
+        );
+        assert!(body.contains(status), "{body}");
+        assert!(body.contains(&format!(r#""transitions":[],{}"#, counts(2, 0, 0, 9, 0, 0))), "{body}");
+        // a facet that selects one
+        let narrowed = rows(b"after=-600&last=9&f_status=Warning&options=minify");
+        assert_eq!(narrowed, (vec!["older"], counts(2, 1, 1, 9, 0, 0)));
+        // `alert` is an exact test in the statement
+        assert_eq!(rows(b"after=-600&last=9&alert=a_one&options=minify"), (both(), counts(2, 2, 2, 9, 0, 0)));
+        assert_eq!(rows(b"after=-600&last=9&alert=a_*&options=minify"), (vec![], counts(0, 0, 0, 9, 0, 0)));
+        // `context` given: a host without any context is not asked for at all
+        assert_eq!(rows(b"after=-600&last=9&context=t.ctx&options=minify"), (vec![], counts(0, 0, 0, 9, 0, 0)));
+        // one transition by its id, whatever the window, with or without its dashes; a text that is no id
+        for transition in ["7a7a7a7a-7a7a-7a7a-7a7a-7a7a7a7a7a7a", "7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a"] {
+            let query = format!("transition={transition}&options=minify");
+            assert_eq!(rows(query.as_bytes()), (vec!["older"], counts(1, 1, 1, 1, 0, 0)), "{transition}");
+        }
+        let (body, records) = netdata_agent_log::capture(|| text(b"transition=zz&options=minify"));
+        assert!(body.starts_with(&empty(1)), "{body}");
+        let messages: Vec<String> = records.into_iter().filter_map(|record| record.message).collect();
+        assert!(messages.iter().any(|message| message == "Invalid transition given zz"), "{messages:?}");
+        // the rules of the returned rows, once each
+        let body = text(b"after=-600&last=9&options=minify,config");
+        let rules = concat!(
+            r#"}],"configurations":[{"name":"a_one","config_hash_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","#,
+            r#""selectors":{"#
+        );
+        assert!(body.contains(rules) && body.matches(r#""selectors":{"#).count() == 1, "{body}");
+        // the echo: the transitions' own selectors and the facets, no contexts
+        let body = text(b"options=debug&last=3&anchor_gi=5&context=t.ctx&f_node=x&alert=a");
+        let echo: String = body.split_whitespace().collect();
+        let selectors = concat!(
+            r#""scope":{"scope_nodes":null},"selectors":{"nodes":null,"alerts":{"context":"t.ctx","anchor_gi":5,"#,
+            r#""last":3,"alert":"a","transition":null}},"filters":{"after":0,"before":0},"facets":{"f_status":null,"#,
+            r#""f_class":null,"f_type":null,"f_component":null,"f_role":null,"f_node":"x","f_alert":null,"#,
+            r#""f_instance":null,"f_context":null}},"facets":["#
+        );
+        assert!(echo.contains(r#""mode":["nodes","alert_transitions"],"options":["debug"],"#), "{echo}");
+        assert!(echo.contains(selectors), "{echo}");
+        assert!(echo.contains(r#""stats":{"first":0,"prepend":0,"append":0,"#), "{echo}");
+
+        // once the host has a context, `context` is the statement's exact test
+        let (_rules, _chart, _linked) = two_alerts(&s);
+        assert_eq!(rows(b"after=-600&last=9&context=t.ctx&options=minify"), (both(), counts(2, 2, 2, 9, 0, 0)));
+        assert_eq!(rows(b"after=-600&last=9&context=t.&options=minify"), (vec![], counts(0, 0, 0, 9, 0, 0)));
+        let scoped = rows(b"after=-600&last=9&scope_contexts=nope&options=minify");
+        assert_eq!(scoped, (vec![], counts(0, 0, 0, 9, 0, 0)));
     }
 
     /// `/api/v2/contexts` and `/api/v3/contexts` (`api_v2_contexts()`): the nodes, the contexts, the versions and the
