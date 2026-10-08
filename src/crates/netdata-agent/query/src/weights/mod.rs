@@ -2,7 +2,7 @@
 //! scope stands out in a highlighted window. For now the statistics of the `ks2` method (the two-sample
 //! Kolmogorov-Smirnov test and the distribution it ends in), the four methods on one metric, their results, the
 //! walk over the hosts, contexts and metrics of a request, the request as its handler reads it, the engine that
-//! takes it to its results, and the two formats of version 1.
+//! takes it to its results, the two formats of version 1 and the two of the later versions.
 
 pub mod engine;
 pub mod ks;
@@ -11,6 +11,7 @@ pub mod methods;
 pub mod parse;
 pub mod results;
 pub mod v1;
+pub mod v2;
 pub mod walk;
 
 use netdata_agent_text::c::double_to_i64;

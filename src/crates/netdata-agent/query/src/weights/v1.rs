@@ -10,7 +10,8 @@ use super::Method;
 use super::engine::Finished;
 use crate::tables::{options, options_to_json_array};
 
-fn writer(finished: &Finished) -> JsonWriter {
+/// The writer of every format: minified when the request says so.
+pub(super) fn writer(finished: &Finished) -> JsonWriter {
     let minify = finished.request.options & options::MINIFY != 0;
     JsonWriter::new(if minify { JsonOptions::MINIFY } else { JsonOptions::DEFAULT })
 }
@@ -30,9 +31,19 @@ fn header(w: &mut JsonWriter, finished: &Finished, storage_tiers: usize) {
         w.member_add_time_t("baseline_duration", req.baseline_before - req.baseline_after);
         w.member_add_uint64("baseline_points", req.points.checked_shl(finished.shifts).unwrap_or(0));
     }
-    let stats = &finished.stats;
     w.member_add_object("statistics");
     w.member_add_double("query_time_ms", finished.duration_us as f64 / 1000.0);
+    db_counters(w, finished, storage_tiers);
+    w.object_close();
+    w.member_add_string("group", req.time_group.name());
+    w.member_add_string("method", req.method.name());
+    options_to_json_array(w, b"options", req.options);
+}
+
+/// What the queries read: the members of version 1's `statistics` after its time, and all of the later
+/// versions' `db`.
+pub(super) fn db_counters(w: &mut JsonWriter, finished: &Finished, storage_tiers: usize) {
+    let stats = &finished.stats;
     w.member_add_uint64("db_queries", stats.db_queries as u64);
     w.member_add_uint64("query_result_points", stats.result_points as u64);
     w.member_add_uint64("binary_searches", stats.binary_searches as u64);
@@ -42,25 +53,22 @@ fn header(w: &mut JsonWriter, finished: &Finished, storage_tiers: usize) {
         w.add_array_item_uint64(*points as u64);
     }
     w.array_close();
-    w.object_close();
-    w.member_add_string("group", req.time_group.name());
-    w.member_add_string("method", req.method.name());
-    options_to_json_array(w, b"options", req.options);
 }
 
-/// `weights_result_limit_to_json()` for dimensions, and the two counts before it.
-fn footer(w: &mut JsonWriter, finished: &Finished, returned: usize) {
-    let total = finished.results.len() as u64;
-    w.member_add_uint64("correlated_dimensions", total);
+/// What every format ends with: how many results there are and how many metrics were examined, then
+/// `weights_result_limit_to_json()` when the request has a limit: how many of `total` (dimensions, or groups:
+/// the `unit`) were returned.
+pub(super) fn footer(w: &mut JsonWriter, finished: &Finished, unit: &str, total: usize, returned: usize) {
+    w.member_add_uint64("correlated_dimensions", finished.results.len() as u64);
     w.member_add_uint64("total_dimensions_count", finished.examined as u64);
     let limit = finished.request.cardinality_limit;
     if limit != 0 {
         w.member_add_object("result_limit");
         w.member_add_uint64("limit", limit);
-        w.member_add_uint64("total", total);
+        w.member_add_uint64("total", total as u64);
         w.member_add_uint64("returned", returned as u64);
-        w.member_add_string("unit", "dimensions");
-        w.member_add_boolean("truncated", total > returned as u64);
+        w.member_add_string("unit", unit);
+        w.member_add_boolean("truncated", total > returned);
         w.member_add_string("summary_scope", "all");
         w.object_close();
     }
@@ -99,7 +107,7 @@ pub fn charts(finished: &Finished, storage_tiers: usize) -> (Vec<u8>, usize) {
         w.object_close();
     }
     w.object_close();
-    footer(&mut w, finished, dimensions);
+    footer(&mut w, finished, "dimensions", finished.results.len(), dimensions);
     w.finalize();
     (w.into_bytes(), dimensions)
 }
@@ -174,7 +182,7 @@ pub fn contexts(finished: &Finished, storage_tiers: usize) -> (Vec<u8>, usize) {
         w.object_close();
     }
     w.object_close();
-    footer(&mut w, finished, dimensions);
+    footer(&mut w, finished, "dimensions", finished.results.len(), dimensions);
     w.finalize();
     (w.into_bytes(), dimensions)
 }
@@ -187,6 +195,7 @@ mod tests {
     use super::*;
     use crate::target::Versions;
     use crate::testing::weights_host_as;
+    use std::time::Instant;
 
     /// A finished request of `method` with results of the fixture's metrics on two hosts: (host, metric, value).
     fn finished(method: Method, query: &str, values: &[(usize, &str, f64)]) -> Finished {
@@ -211,7 +220,8 @@ mod tests {
         }
         stats = Stats { db_points: 484, result_points: 4, db_queries: 4, ..Stats::default() };
         stats.db_points_per_tier[0] = 484;
-        Finished { request, shifts: 2, results, stats, examined: 10, duration_us: 2500, versions: Versions::default() }
+        let (received, versions) = (Instant::now(), Versions::default());
+        Finished { request, shifts: 2, results, stats, examined: 10, received, duration_us: 2500, versions }
     }
 
     fn text((body, dimensions): (Vec<u8>, usize)) -> (String, usize) {

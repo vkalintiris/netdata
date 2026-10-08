@@ -114,6 +114,23 @@ pub fn weights_host_as(guid: &str, hostname: &str) -> Arc<Host> {
     h
 }
 
+/// A host whose chart and dimension have names that are not their ids: chart `t.n` named `t.named` of `ctx.n`
+/// (units `things`), its dimension `d` named `dee`, with one point at `T0+1`.
+pub fn weights_named_host(guid: &str, hostname: &str) -> Arc<Host> {
+    let h = Arc::new(Host::new(guid, false, info(hostname, 1, DbMode::Ram)));
+    let (chart, _) = h.charts().create(&ChartSpec {
+        id: "n",
+        name: Some("named"),
+        context: Some("ctx.n"),
+        units: "things",
+        ..ram_chart(3600)
+    });
+    let (dim, _) = chart.dim_add("d", Some("dee"), 1, 1, Algorithm::Absolute);
+    dim.store_metric((T0 + 1) as u64 * 1_000_000, 1.0, SN_FLAG_NOT_ANOMALOUS);
+    h.contexts().process_queued();
+    h
+}
+
 /// What health would show of [`host`]'s chart: three alerts, one in each of three classes, in link order, with
 /// the values 12.5, 0 and none.
 struct ThreeAlerts;

@@ -55,15 +55,17 @@ impl Refusal {
 
 /// A request's results, ready for its format's writer.
 pub struct Finished {
-    /// The request as the engine leaves it: the windows absolute, the points settled, the options as they are
-    /// printed (`nonzero` back in, the anomaly bit added for the anomaly-rate method), the group-by stripped of
-    /// what the weights do not group by.
+    /// The request as the engine leaves it: the windows absolute, the points and the timeout settled, the
+    /// options as they are printed (`nonzero` back in, the anomaly bit added for the anomaly-rate method), the
+    /// group-by stripped of what the weights do not group by.
     pub request: WeightsRequest,
     pub shifts: u32,
     pub results: Vec<Registered>,
     pub stats: Stats,
     /// `examined_dimensions`.
     pub examined: usize,
+    /// When the engine started (`timings.received_ut`).
+    pub received: Instant,
     /// From the engine's start to the end of its work, before the writer.
     pub duration_us: u64,
     /// Zeros on the one-query path.
@@ -118,6 +120,7 @@ pub fn run(mut req: WeightsRequest, env: &Env) -> Outcome {
     (req.after, req.before, req.baseline_after, req.baseline_before) =
         (w.after, w.before, w.baseline_after, w.baseline_before);
     req.points = w.points;
+    req.timeout_ms = timeout;
 
     // the queries run without `nonzero`: zeros are then no results. The echo gets it back
     let register_zero = req.options & options::NONZERO == 0;
@@ -180,7 +183,8 @@ pub fn run(mut req: WeightsRequest, env: &Env) -> Outcome {
         select(&mut results, limit, normalized);
     }
     let duration_us = u64::try_from(received.elapsed().as_micros()).unwrap_or(u64::MAX);
-    let finished = Finished { request: req, shifts: w.shifts, results, stats, examined, duration_us, versions };
+    let (request, shifts) = (req, w.shifts);
+    let finished = Finished { request, shifts, results, stats, examined, received, duration_us, versions };
     Outcome { cacheable, result: Ok(finished) }
 }
 
@@ -286,6 +290,11 @@ mod tests {
         let stripped = finished(request(2, Method::Value, Format::Multinode, "limit=1&group_by=label"));
         assert_eq!(stripped.request.group_by.group_by, group_by::NONE);
         assert_eq!(stripped.results.iter().filter(|t| t.selected).count(), 1);
+        // the timeout the later versions echo: five minutes when none is given, a second at least
+        assert_eq!(unlimited.request.timeout_ms, 300_000);
+        let hurried = finished(request(2, Method::Value, Format::Multinode, "timeout=5"));
+        assert_eq!(hurried.request.timeout_ms, 1000);
+        assert!(hurried.received.elapsed().as_micros() >= u128::from(hurried.duration_us));
     }
 
     /// The refusals: C's status and text for a window that is none, a baseline that is none, too few points, a
