@@ -610,6 +610,8 @@ func healthChildTwoHostsCase() healthCase {
 			v.processed("at 70", name, "WARNING")
 			h.compareNow(t, "at 70: the notifier's calls for localhost", mine, localCalls("WARNING"))
 			h.compareNow(t, "at 70: the notifier's calls for the child", v.calls, healthChildCalls(name, "WARNING"))
+			// each host's alert is WARNING and notified: the alerts endpoint over two hosts (D234 F3, alerts_v2_test.go)
+			alertsV2TwoHosts(t, h, v.cn)
 
 			// the child's alerts are silenced, by its hostname
 			h.manageStep(t, healthSaved("cmd=SILENCE&hosts="+healthChild.Hostname, healthMsgSilence+healthMsgAdded, silencers).

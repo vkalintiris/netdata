@@ -53,8 +53,9 @@ func (r v2Req) targetOf(i int) string {
 type v2Family struct {
 	masks     []Mask
 	unordered []string
-	// flat says that every unordered path names a map of scalars (a label map): its layout does not change with its
-	// members' order, so the two bodies' layouts are compared whole, as an ordered family's (v2Layouts).
+	// flat says that every unordered path names a map or a list of scalars (a label map, a set of names): its layout
+	// does not change with its members' order, so the two bodies' layouts are compared whole, as an ordered family's
+	// (v2Layouts).
 	flat bool
 	// settle, when non-zero, asks both agents again each second until their answers agree or the time passes (the
 	// guard is judged on each of the oracle's answers).

@@ -12,6 +12,7 @@ import (
 func TestDashNorm(t *testing.T) {
 	t.Run("contexts", testDashNormContexts)
 	t.Run("alerts", testDashNormAlerts)
+	t.Run("alerts-rows", testDashNormAlertsRows)
 	t.Run("weights", testDashNormWeights)
 	t.Run("web", testDashNormWeb)
 	t.Run("info", testDashNormInfo)
