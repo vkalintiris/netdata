@@ -352,9 +352,11 @@ mod tests {
     use super::*;
     use crate::testing::host_info;
 
-    /// The last second of the fixture's data, and the walk's clock.
+    /// The last second of the fixture's data, and the walk's clock some seconds later: a collected context's last
+    /// entry is the clock, not its data's end.
     const T: i64 = 1_700_000_060;
-    const NO_WINDOW: Window = Window { range: None, now: T };
+    const NOW: i64 = T + 7;
+    const NO_WINDOW: Window = Window { range: None, now: NOW };
 
     /// A chart of a test host: its id and name under type `q`, the words of its CHART line that reach its context,
     /// its update every, its dimensions as (id, name) and its labels.
@@ -465,7 +467,7 @@ mod tests {
 
     fn printed(dict: &ContextsDict, req: &Request, layout: JsonOptions) -> String {
         let mut w = JsonWriter::new(layout);
-        dict.to_json(&mut w, req, T);
+        dict.to_json(&mut w, req, NOW);
         w.finalize();
         String::from_utf8(w.into_bytes()).unwrap()
     }
@@ -492,7 +494,7 @@ mod tests {
             "            \"units\":\"units\",",
             "            \"priority\":1000,",
             &format!("            \"first_entry\":{first},"),
-            &format!("            \"last_entry\":{T},"),
+            &format!("            \"last_entry\":{NOW},"),
             "            \"live\":true,",
             "            \"dimensions\":[\"alpha\",\"b\",\"z\",\"inc\",\"h\",\"a\"],",
             "            \"labels\":{",
@@ -518,7 +520,7 @@ mod tests {
                     r#"{{"contexts":{{"q.ctx":{{"family":"fam","units":"units","priority":1000,"first_entry":{},"#,
                     r#""last_entry":{},"live":true}}}}}}"#
                 ),
-                first, T
+                first, NOW
             )
         );
 
@@ -641,7 +643,7 @@ mod tests {
                     r#""labels":{{"_collect_plugin":["fixture-pusher","p"],"_collect_module":["corpus","[none]"],"#,
                     r#""k":["v1","v2","v3"],"extra":["e"]}},"instances":["q.q_a_name","q.two","q.q_a_other"]}}"#
                 ),
-                f, T
+                f, NOW
             )
         );
         let r_ctx = r#","r.ctx":{"title":"r title","family":"rfam","units":"runits","priority":1100,"#;
