@@ -642,13 +642,18 @@ func TestHealthLoop(t *testing.T) {
 					// hf_before matches `*` before hf_base could be refused
 					{"alerts=!hf_base%7C*", true},
 					{"instances=nomatch", false},
-					// the label filter, judged before the alerts (query_target.c:833-845): every label key it names
+					// the label filter, judged before the alerts (query_target.c:836-840, :842-845): every label key it names
 					// must match (pattern-array.c:46-79). C labels every chart `_collect_plugin` with its plugin, here
-					// the fake plugin's file (rrdset-index-id.c:23-26), and none `nolabel`; a word's asterisks are lost
-					// on the way into the pattern array (simple_pattern.c:414-420 hands back the word without them,
-					// pattern-array.c:112 makes it an exact pattern), so `*` matches nothing there
+					// the fake plugin's file (rrdset-index-id.c:23-26), and none `nolabel`; a word's wildcards are lost
+					// on the way into the pattern array (simple_pattern.c:414-420 hands back the word's first piece,
+					// which for these words, none starting with an asterisk, is their text before the first one;
+					// pattern-array.c:112 makes that an exact pattern), so `*` matches nothing there, a value that
+					// ends at the asterisk is matched whole, where a literal match would not find it, and one that
+					// the asterisk cuts short is not matched, where a wildcard would be
 					{"labels=_collect_plugin:difftest.plugin", true},
 					{"labels=_collect_plugin:*", false},
+					{"labels=_collect_plugin:difftest.plugin*", true},
+					{"labels=_collect_plugin:difftest.*", false},
 					{"labels=nolabel:x", false},
 				} {
 					h.compareNow(t, "the alert members of /api/v2/data, "+k.q, func(i int) string {

@@ -12,7 +12,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -23,23 +22,6 @@ import (
 
 // The shipped dashboard against both agents (milestone 10): every file of the web directory (`web.dashboard-files`)
 // and the requests the local dashboard sends, in its order (`web.dashboard-replay`).
-
-// walkExpiresRe is a static answer's expiry: now + 86400 (web_client.c:628).
-var walkExpiresRe = regexp.MustCompile(`(?m)^Expires: ([^\r]*)`)
-
-// walkMask hides what differs between two answers for one static file: the transaction id, and an expiry of now +
-// 86400 within the seconds [from, to] the request was in flight, which reads `now+86400` (another expiry is kept).
-// The Date of a static answer is the file's modification time (web_client.c:623-627): it is not masked.
-func walkMask(b []byte, from, to int64) []byte {
-	b = rawTransactionRe.ReplaceAll(b, []byte("X-Transaction-ID: <masked>"))
-	return walkExpiresRe.ReplaceAllFunc(b, func(m []byte) []byte {
-		e, err := time.Parse(http.TimeFormat, string(walkExpiresRe.FindSubmatch(m)[1]))
-		if err != nil || e.Unix() < from+86400 || e.Unix() > to+86400 {
-			return m
-		}
-		return []byte("Expires: now+86400")
-	})
-}
 
 // walkTypes are C's content types by the served file's last extension (http_defs.c:180-204, the header texts
 // content_type.c:13-43, 77-99); any other extension, or none, is `application/octet-stream` (http_defs.c:225-258).
@@ -147,8 +129,11 @@ func walkPrintable(s string) string {
 }
 
 // walkFile asks both agents for the web path target, plain or asking for gzip, one connection each, and judges the
-// answers: the oracle's must be the file served (walkGuard), then the two must agree after walkMask. It returns the
-// oracle's problem or the difference (both empty when the answers agree).
+// answers: the oracle's must be the file served (walkGuard), then the two must agree after maskAnswer: the
+// transaction id masked, and an expiry of now + 86400 for a second the request was in flight written `now+86400`
+// (web_client.c:628; another expiry is kept); the Date of a static answer is the file's modification time
+// (web_client.c:623-627), which no flight holds: it is compared. It returns the oracle's problem or the difference
+// (both empty when the answers agree).
 func walkFile(t *testing.T, p *Pair, webDir, target, served string, gz bool) (oracle, differ string) {
 	t.Helper()
 	want, err := os.ReadFile(filepath.Join(webDir, served))
@@ -170,7 +155,7 @@ func walkFile(t *testing.T, p *Pair, webDir, target, served string, gz bool) (or
 		if raw[i], err = rawExchange(side.Daemon.Addr, request, 10*time.Second); err != nil {
 			t.Fatalf("%s: %s: %v", target, side.Role, err)
 		}
-		got[i] = walkMask(raw[i], from, time.Now().Unix())
+		got[i] = maskAnswer(raw[i], [2]int64{from, time.Now().Unix()})
 	}
 	if err := walkGuard(raw[0], served, want, st.ModTime(), gz); err != nil {
 		return err.Error(), ""
@@ -183,7 +168,7 @@ func walkFile(t *testing.T, p *Pair, webDir, target, served string, gz bool) (or
 
 // TestDashboardFiles (check `web.dashboard-files`) asks both agents, which serve the oracle's web directory, for
 // every file in it, plain and with gzip, one connection each, and compares the whole answers byte for byte after
-// walkMask (Date compared: the file's modification time). The oracle is held to the file first (walkGuard). A gzip
+// maskAnswer (Date compared: the file's modification time). The oracle is held to the file first (walkGuard). A gzip
 // answer is compared as sent: both agents deflate through the system zlib at C's settings.
 func TestDashboardFiles(t *testing.T) {
 	webDir := oracleWebDir(t)
@@ -228,10 +213,10 @@ type dashKind int
 const (
 	// dashStatic: a file of the web directory (walkFile); the oracle serves `file`.
 	dashStatic dashKind = iota
-	// dashExact: compareExact (maskRaw, then the row's mask), the oracle judged by want, holds and guard.
+	// dashExact: compareExact (maskAnswer, then the row's mask), the oracle judged by want, holds and guard.
 	dashExact
-	// dashMasked: as dashExact after the data masks (dataMask: the clock, the timings, the last entries of now), the
-	// labels' order no contract (dataJudge).
+	// dashMasked: as dashExact after the data masks (dataMask: the head's clock and expiry, the timings, the last
+	// entries of now), the labels' order no contract (dataJudge).
 	dashMasked
 	// dashSame: a POST whose payload C does not read: the oracle answers it as its GET of the target; then judged
 	// as a dashMasked row (dataSame).
@@ -256,8 +241,21 @@ type dashReq struct {
 	holds   []string  // dashExact, dashMasked, dashSame: parts the oracle's answer holds
 	status  string    // dashV2: the oracle's status
 	guard   func(Value) error
-	fam     v2Family            // dashV2
-	mask    func([]byte) []byte // dashExact: what is hidden after maskRaw
+	fam     v2Family // dashV2
+	// dashExact: what is hidden after maskAnswer, given the seconds the request was in flight (exactReq.mask)
+	mask func(answer []byte, flight [2]int64) []byte
+}
+
+// judged tells whether the row names what the oracle's answer must be: its file, the start and the end of its
+// answer, or its guard. A row without it would compare the two agents' answers whatever they are.
+func (r dashReq) judged() bool {
+	switch r.kind {
+	case dashStatic:
+		return r.file != ""
+	case dashV2:
+		return r.status != "" && r.guard != nil
+	}
+	return r.want[0] != "" && r.want[1] != ""
 }
 
 // v2 is the row's request for compareV2 and v2Exchange.
@@ -332,7 +330,7 @@ func dashboardRequests(base int64) []dashReq {
 				"\r\n\r\nFile does not exist, or is not accessible: favicon.ico"}},
 		// a file never saved is at version 1 (api_v3_settings.c:75-79, :108)
 		{name: "settings-get", source: "app @1630935", commit: 7, kind: dashExact,
-			target: "/api/v3/settings?file=default", headers: app, want: [2]string{dashOK, "\r\n\r\n{\"version\":1}"}},
+			target: setPath + "?file=default", headers: app, want: [2]string{dashOK, "\r\n\r\n" + setFresh}},
 		{name: "nodes", source: "app @1840461", commit: 2, kind: dashV2, target: "/api/v3/nodes", headers: app,
 			status: "200", fam: nodesFamily,
 			guard: dashHolds(`{"mg":"`+parent+`","nm":"parity-parent","ni":0`, childNode)},
@@ -357,22 +355,24 @@ func dashboardRequests(base int64) []dashReq {
 		// health off: no alert, the hosts listed (api_v2_contexts_alerts.c:628; api_v2_contexts.c:1472-1480)
 		{name: "alerts-raised", source: "app @140438", commit: 4, kind: dashV2,
 			target: "/api/v3/alerts?options=summary,values,instances,minify&status=raised", headers: app,
-			status: "200", fam: alertsV2Family([2]*healthNorm{}), guard: dashHolds(childNode, `"alerts":[]`)},
+			status: "200", fam: alertsV2Family([2]*healthNorm{}, nil), guard: dashHolds(childNode, `"alerts":[]`)},
 		{name: "alerts-configs", source: "app @142618", commit: 4, kind: dashV2,
 			target: "/api/v3/alerts?options=minify,summary", headers: app, status: "200",
-			fam: alertsV2Family([2]*healthNorm{}), guard: dashHolds(childNode, `"alerts":[]`)},
+			fam: alertsV2Family([2]*healthNorm{}, nil), guard: dashHolds(childNode, `"alerts":[]`)},
 		{name: "alerts-named", source: "app @143067", commit: 4, kind: dashV2,
 			target: "/api/v3/alerts?options=summary,values,instances,minify&alert=nope", headers: app, status: "200",
-			fam: alertsV2Family([2]*healthNorm{}), guard: dashHolds(childNode, `"alerts":[]`)},
+			fam: alertsV2Family([2]*healthNorm{}, nil), guard: dashHolds(childNode, `"alerts":[]`)},
 		// health off: no transition; the request's `last` (api_v2_contexts_alert_transitions.c:393, :507)
 		{name: "events-feed", source: "app @~1600400", commit: 5, kind: dashV2,
 			target:  "/api/v2/alert_transitions?" + win + "&last=200&anchor_gi=&options=minify&scope_nodes=*",
-			headers: app, status: "200", fam: alertsV2Family([2]*healthNorm{}),
+			headers: app, status: "200", fam: alertsV2Family([2]*healthNorm{}, nil),
 			guard: dashHolds(`"transitions":[]`, `"max_to_return":200,`)},
-		// one transition asked, none found (as events-feed)
-		{name: "transition", source: "app @141327", commit: 5, kind: dashMasked,
+		// one transition asked, none found (as events-feed; `last` is 1 without the parameter,
+		// web/api/v2/api_v2_contexts.c:70-71)
+		{name: "transition", source: "app @141327", commit: 5, kind: dashV2,
 			target:  "/api/v3/alert_transitions?options=minify&transition=00000000-0000-4000-8000-000000000001",
-			headers: app, want: [2]string{dashOK, "}}"}, holds: []string{`"transitions":[]`, `"max_to_return":1,`}},
+			headers: app, status: "200", fam: alertsV2Family([2]*healthNorm{}, nil),
+			guard: dashHolds(`"transitions":[]`, `"max_to_return":1,`)},
 		// api_v2_contexts_alert_config.c:133
 		{name: "alert-config", source: "app @144364", kind: dashExact,
 			target: "/api/v3/alert_config?options=minify&config=00000000-0000-4000-8000-000000000001", headers: app,
@@ -393,10 +393,11 @@ func dashboardRequests(base int64) []dashReq {
 			target: "/api/v3/progress?transaction=00000000-0000-4000-8000-000000000002", headers: app,
 			want: [2]string{"HTTP/1.1 404 Not Found\r\n",
 				"\r\n\r\n{\"status\":404,\"message\":\"Transaction not found\"}"}},
-		// no plugin: an empty tree; the agent's clock (dyncfg-tree.c:112-162; api_v2_contexts_agents.c:25), masked
+		// no plugin: an empty tree; the agent's clock (dyncfg-tree.c:112-162; api_v2_contexts_agents.c:12-13, :25),
+		// written NOW only where it is a second the request was in flight (exactNow)
 		{name: "config-tree", source: "3738.*.chunk.js @279651", kind: dashExact,
-			target: "/api/v1/config?timeout=120&action=tree&path=%2Fcollectors", headers: app, mask: maskClock,
-			want:  [2]string{dashOK, `"nm":"parity-parent","now":"<masked>"}}`},
+			target: "/api/v1/config?timeout=120&action=tree&path=%2Fcollectors", headers: app, mask: exactNow,
+			want:  [2]string{dashOK, `"nm":"parity-parent","now":"NOW"}}`},
 			holds: []string{"\r\n\r\n{\"version\":1,\"tree\":{},"}},
 		// the fixture's context, its 7 dimensions examined (weights.c:1484-1509)
 		{name: "weights-anomalies", source: "app @190306, @1629832", commit: 10, kind: dashV2,
@@ -416,13 +417,10 @@ func dashboardRequests(base int64) []dashReq {
 		// settings' PUT changes what the next GET answers: it comes last. The stored version matches, C saves version 2
 		// (api_v3_settings.c:223-235, :285).
 		{name: "settings-put", source: "app @1631343", commit: 7, kind: dashExact, method: "PUT",
-			target: "/api/v3/settings?file=default", headers: app,
-			body: []byte(`{"version":1,"value":{"preferred_node_ids":["` + child + `"]}}`),
-			want: [2]string{dashOK, "\r\n\r\n{\"status\":200,\"errorMessage\":\"OK\"}"}},
+			target: setPath + "?file=default", headers: app, body: setPutV1,
+			want: [2]string{dashOK, "\r\n\r\n" + setOK}},
 		{name: "settings-reget", source: "app @1630935", commit: 7, kind: dashExact,
-			target: "/api/v3/settings?file=default", headers: app,
-			want: [2]string{dashOK,
-				"\r\n\r\n{ \"version\": 2, \"value\": { \"preferred_node_ids\": [ \"" + child + "\" ] } }"}},
+			target: setPath + "?file=default", headers: app, want: [2]string{dashOK, "\r\n\r\n" + setV2}},
 	}
 }
 
@@ -443,7 +441,13 @@ func TestDashboardReplay(t *testing.T) {
 	p := dashPair(t, daemon.Options{WebDir: webDir})
 	base := dashBase()
 	dashChild(t, p, base)
-	for _, r := range dashboardRequests(base) {
+	rows := dashboardRequests(base)
+	for _, r := range rows {
+		if !r.judged() {
+			t.Fatalf("harness: %s has no guard", r.name)
+		}
+	}
+	for _, r := range rows {
 		t.Run(r.name, func(t *testing.T) {
 			defer func() {
 				if t.Failed() && r.commit > 0 {

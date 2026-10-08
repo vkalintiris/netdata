@@ -171,8 +171,8 @@ func TestLocalhostIdentity(t *testing.T) {
 const infoTailAge = 12 * time.Second
 
 // infoTailFamily compares `/api/v1/info` whole: its host labels as a map (C adds them from concurrent startup threads,
-// `null.streamed-chart`'s rule).
-var infoTailFamily = v2Family{unordered: []string{"host_labels"}}
+// `null.streamed-chart`'s rule; a label map is flat, so the layout is compared whole).
+var infoTailFamily = v2Family{unordered: []string{"host_labels"}, flat: true}
 
 // infoTailGuard checks the oracle's members after `functions` (api_v1_info.c:134-171) in the 12-115 s phase: no
 // collector (localhost's charts' plugin and module pairs, api_v1_info.c:5-18: no chart with the pulse off and no

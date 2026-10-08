@@ -97,16 +97,6 @@ func weightsEqual(got, want map[string]float64, tol float64) error {
 	return nil
 }
 
-// weightsText is a guard of a non-200 answer: its body exactly.
-func weightsText(want string) func(Value) error {
-	return func(v Value) error {
-		if v.Text != want {
-			return fmt.Errorf("body is not %q", want)
-		}
-		return nil
-	}
-}
-
 // weightsV1Family compares the v1 answers: every member but the query's duration (weights.c:326, the walk's
 // monotonic span, weights.c:2826-2844).
 var weightsV1Family = v2Family{masks: []Mask{{"statistics.query_time_ms", "the query's duration"}}}
@@ -118,14 +108,15 @@ var weightsStatusMsRe = regexp.MustCompile(`("msg":\s*"")\s*,\s*"ms":\s*-?[0-9][
 // weightsRender drops a node's status duration on both sides: a mask replaces only a member that exists, and C
 // leaves this one out when it is 0. The trade-off, accepted: whether the member is there is not compared, so an agent
 // that never writes it passes; its value is a duration either way (0.007 against 0.006 C against C).
-func weightsRender(_ int, body []byte) []byte {
+func weightsRender(_ int, _ [2]int64, body []byte) []byte {
 	return weightsStatusMsRe.ReplaceAll(body, []byte("$1"))
 }
 
 // weightsFamily compares the v2 and v3 answers but for the envelope's clocks and durations (infoV2Volatile) and each
 // node's status duration (weightsRender), asked again while they differ (dashSettle, as the other v2 families). The
-// `versions` hashes are compared: they held C against C, the two hosts' walk included.
-var weightsFamily = v2Family{masks: infoV2Volatile, settle: dashSettle, render: weightsRender}
+// `versions` hashes are compared: they held C against C, the two hosts' walk included. The agent's clock is the wall
+// clock though every row asks a window (`wall`: weights.c:1352, :1507 pass the agents' writer no clock).
+var weightsFamily = v2Family{masks: infoV2Volatile, settle: dashSettle, wall: true, render: weightsRender}
 
 // weightsV2Dims are a multinode answer's dimension rows (`[0, ni, ci, ii, di, weight, …]`, weights.c:890-948) as
 // dimension id → weight, the ids from `dictionaries.dimensions` (weights.c:1279-1350).
@@ -204,10 +195,10 @@ func weightsV2Holds(in, out []string, n int) func(Value) error {
 	}
 }
 
-// weightsV1Dims is a guard of a v1 answer of the weights context: its dimensions weigh want (within 1e-6).
-func weightsV1Dims(want map[string]float64) func(Value) error {
+// weightsV1Weigh is a guard of a v1 answer: the dimensions object at path weighs want, each within tol.
+func weightsV1Weigh(want map[string]float64, tol float64, path ...string) func(Value) error {
 	return func(v Value) error {
-		dims, err := dashMember(v, "contexts", fixture.WeightsContext, "charts", fixture.WeightsContext, "dimensions")
+		dims, err := dashMember(v, path...)
 		if err != nil {
 			return err
 		}
@@ -215,8 +206,13 @@ func weightsV1Dims(want map[string]float64) func(Value) error {
 		if err != nil {
 			return err
 		}
-		return weightsEqual(got, want, 1e-6)
+		return weightsEqual(got, want, tol)
 	}
+}
+
+// weightsV1Dims is a guard of a v1 answer of the weights context: its dimensions weigh want (within 1e-6).
+func weightsV1Dims(want map[string]float64) func(Value) error {
+	return weightsV1Weigh(want, 1e-6, "contexts", fixture.WeightsContext, "charts", fixture.WeightsContext, "dimensions")
 }
 
 // weightsV1Requests are the v1 rows.
@@ -235,31 +231,35 @@ func weightsV1Requests() []v2Req {
 		// ks2 (the deprecated route's default, api_v1_weights.c:5-7) through the per-metric walk, raw: identical diff
 		// distributions weigh 0, fully one-sided ones 1 (KSfbar's exact ends)
 		{name: "mc", target: "/api/v1/metric_correlations?context=" + fixture.WeightsKS2Context + "&" + weightsHighlight +
-			"&" + weightsBaseline + "&options=raw", status: "200", guard: func(v Value) error {
-			dims, err := dashMember(v, "correlated_charts", fixture.WeightsKS2Context, "dimensions")
-			if err != nil {
-				return err
-			}
-			got, err := weightsNumbers(dims)
-			if err != nil {
-				return err
-			}
-			return weightsEqual(got, map[string]float64{"flat2": 0, "jump": 1}, 0)
-		}},
+			"&" + weightsBaseline + "&options=raw", status: "200", guard: weightsV1Weigh(
+			map[string]float64{"flat2": 0, "jump": 1}, 0, "correlated_charts", fixture.WeightsKS2Context, "dimensions")},
 		// v1 with nothing emitted answers 404 (weights.c:2883-2886) with the engine's error shape (weights.c:2909-2912)
 		{name: "no-context", target: "/api/v1/weights?context=no.such.ctx&" + weightsHighlight, status: "404",
-			guard: weightsText(`{"error": "no results produced." }`)},
+			guard: dashText(`{"error": "no results produced." }`)},
 	}
 }
 
 // weightsAnomaly is C's whole `result` for the default anomaly-rate request on the fixture child (R93): `anom`'s
 // dimension row and its instance, context and node rollups (weights.c:890-948, :718-735), each weighing 0 (the
 // default rank normalization of the one result, 1 - 1/1: spread_results_evenly, weights.c:2079-2138, run unless raw,
-// :2803-2807) with its timeframe, the window's merged storage point (weights.c:923-934: minimum, average, maximum,
+// :2803-2807) with its timeframe, the window's merged storage point (weights.c:927-934: minimum, average, maximum,
 // sum, count and anomalous count; the value 20 at each of the 121 points, 120 of them anomalous), where the rate
 // stays readable (120 x 100 / 121).
 const weightsAnomaly = `[[0,0,0,0,0,0,[20,20,20,2420,121,120]],[1,0,0,0,null,0,[20,20,20,2420,121,120]],` +
 	`[2,0,0,null,null,0,[20,20,20,2420,121,120]],[3,0,null,null,null,0,[20,20,20,2420,121,120]]]`
+
+// weightsContextsHash is the contexts' version of a weights answer (`versions.contexts_hard_hash`), a whole number.
+func weightsContextsHash(v Value) (int64, error) {
+	hash, err := dashAt(v, "versions", "contexts_hard_hash")
+	if err != nil {
+		return 0, err
+	}
+	n, err := strconv.ParseInt(hash.Text, 10, 64)
+	if hash.Kind != KindNumber || err != nil {
+		return 0, fmt.Errorf("versions.contexts_hard_hash is %s", hash)
+	}
+	return n, nil
+}
 
 // weightsRequests are the v2 and v3 rows.
 func weightsRequests() []v2Req {
@@ -268,11 +268,21 @@ func weightsRequests() []v2Req {
 		weightsV2Holds([]string{"anom"}, []string{"flat", "level", "split", "flat2", "jump"}, 1),
 		dashIs(weightsAnomaly, "result"),
 	})
+	// the child's contexts' version as the one host's serial walk of `anomaly` counted it, once (weights.c:674-675):
+	// what `two-hosts` reads its own against. Above 0: the child has contexts.
+	serial := int64(0)
 	return []v2Req{
 		// the per-metric walk of one host (no context scope, weights.c:2779-2780); the default options drop zero weights
 		// (api_v2_weights.c:130-133, weights.c:2760-2765), so `anom` alone remains, normalized (weightsAnomaly)
 		{name: "anomaly", target: "/api/v3/weights?method=anomaly-rate&" + weightsHighlight + child, status: "200",
-			guard: anomaly},
+			guard: func(v Value) error {
+				hash, err := weightsContextsHash(v)
+				if err != nil || hash <= 0 {
+					return fmt.Errorf("versions.contexts_hard_hash is %d (%v), want a number above 0", hash, err)
+				}
+				serial = hash
+				return anomaly(v)
+			}},
 		// the same walk with `options=raw`: any option given adds only unaligned and null2zero
 		// (api_v2_weights.c:133-135), so the zero weights stay, and raw skips the normalization (weights.c:2803-2807):
 		// each dimension's anomaly rate, the average of its points' 0 or 100 (storage-point.h:120-121), `anom`
@@ -280,11 +290,27 @@ func weightsRequests() []v2Req {
 		{name: "anomaly-raw", target: "/api/v3/weights?method=anomaly-rate&options=raw&" + weightsHighlight + child,
 			status: "200", guard: dashGuard([]dashFact{weightsV2Holds(nil, nil, 6), weightsV2Weigh(map[string]float64{
 				"flat": 0, "level": 0, "split": 0, "anom": 12000.0 / 121, "flat2": 0, "jump": 0}, 1e-6)})},
-		// the dashboard's default scope: both hosts are queryable, so C walks them in parallel (weights.c:2543-2607),
-		// and its counting pass and its threads each add the hosts' context versions (weights.c:2543, :674-675,
-		// :2600-2601); localhost has no data, so the answer is the child's (weightsAnomaly)
+		// the dashboard's default scope: both hosts are queryable, so on a box with two or more CPUs C walks them in
+		// parallel (weights.c:2543-2607; with one CPU it walks them as `anomaly` does, :2546-2561), and its counting
+		// pass and its threads each add the hosts' context versions (weights.c:2543, :674-675, :2600-2601): twice the
+		// child's, which is what tells that the parallel walk ran (localhost has no context). localhost has no data,
+		// so the answer is the child's (weightsAnomaly)
 		{name: "two-hosts", target: "/api/v3/weights?method=anomaly-rate&" + weightsHighlight, status: "200",
-			guard: anomaly},
+			guard: func(v Value) error {
+				hash, err := weightsContextsHash(v)
+				switch {
+				case err != nil:
+					return err
+				case serial == 0:
+					return fmt.Errorf("harness: the `anomaly` row did not run before this one: no serial walk to " +
+						"read the parallel walk's hash against")
+				case hash != 2*serial:
+					return fmt.Errorf("versions.contexts_hard_hash is %d, want %d, twice what the one host's walk of "+
+						"`anomaly` read (%d): the oracle did not walk the hosts in parallel (it needs two or more CPUs), "+
+						"or the child's contexts changed between the two rows", hash, 2*serial, serial)
+				}
+				return anomaly(v)
+			}},
 		{name: "ks2", target: "/api/v3/weights?method=ks2&" + weightsHighlight + "&" + weightsBaseline + child,
 			status: "200", guard: weightsV2Holds([]string{"jump"}, []string{"flat", "flat2", "anom"}, -1)},
 		// volume skips a metric whose two averages are equal (weights.c:1890-1892)
@@ -299,10 +325,10 @@ func weightsRequests() []v2Req {
 			weightsT(fixture.WeightsSplit), status: "200", guard: weightsSwapped},
 		// an empty window is refused (weights.c:2692-2696) with the engine's error shape (weights.c:2909-2912)
 		{name: "empty-window", target: "/api/v3/weights?after=" + weightsT(fixture.WeightsRows) + "&before=" +
-			weightsT(fixture.WeightsRows), status: "400", guard: weightsText(`{"error": "Invalid selected time-range." }`)},
+			weightsT(fixture.WeightsRows), status: "400", guard: dashText(`{"error": "Invalid selected time-range." }`)},
 		// a limit that is not a number is refused while the parameters are parsed (api_v2_weights.c:69-75)
 		{name: "bad-limit", target: "/api/v3/weights?cardinality_limit=x", status: "400",
-			guard: weightsText(`{"error":"Weights limits must be nonnegative integers within the supported range."}`)},
+			guard: dashText(`{"error":"Weights limits must be nonnegative integers within the supported range."}`)},
 	}
 }
 

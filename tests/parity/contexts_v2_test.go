@@ -20,23 +20,18 @@ import (
 // routes: web/api/v2/api_v2_contexts.c:78-83, web/api/v2/api_v2_q.c:5-11). Unless a cite names web/api/v2/, an
 // `api_v2_contexts.c` below is database/contexts/'s. The fixture is dashPair's parent, which has no context with the
 // pulse off, and dashChild's child, whose one context `q.ctx` holds charts q.a and q.two (streamDataFixture); the
-// `merge` and `merge-gone` subtests add a second child (child2Host).
+// `merge`, `merge-gone` and `merge-keep` subtests add a second child (child2Host).
 
 var (
 	// contextsFamily compares `/api/v2|v3/contexts`: the request's durations masked (infoV2Volatile), and a collected
-	// context's `last_entry` as NOW when it is a second of the request's flight (`now`; C prints the walk's clock
-	// there, api_v2_contexts.c:1213).
+	// context's `last_entry` as NOW when it is a second of the agent's clock (`now`; C prints the walk's clock there,
+	// api_v2_contexts.c:1213, which with a window is the second before the wall's: v2Clock).
 	contextsFamily = v2Family{masks: infoV2Volatile, settle: dashSettle, now: []string{"last_entry"}}
 
 	// contextsLabelsFamily is contextsFamily with each context's aggregated labels a set, its keys and each key's
 	// values (C walks them in the order of their strings' heap addresses, rrdlabels-aggregated.c:130-173; D220 fork 9).
 	contextsLabelsFamily = v2Family{masks: infoV2Volatile, settle: dashSettle, now: []string{"last_entry"},
 		unordered: []string{"contexts.*.labels", "contexts.*.labels.*[]"}}
-
-	// contextsWindowFamily compares `/api/v2|v3/contexts` asked with a window: contextsFamily without `now`, since
-	// C's walk then takes the second before its clock (libnetdata.c:549-555, api_v2_contexts.c:1368-1374) and prints
-	// it as the agent's `now` (masked, infoV2Volatile).
-	contextsWindowFamily = v2Family{masks: infoV2Volatile, settle: dashSettle}
 
 	// contextsMCPFamily is contextsFamily with the MCP texts compared as each agent wrote them, not as the strings
 	// they decode to (mcpTextRender; D232). C writes a control byte, a quote and a backslash escaped, and every other
@@ -58,7 +53,7 @@ var mcpTextRe = regexp.MustCompile(`"(info|help)":(\s*)"((?:[^"\\]|\\.)*)"`)
 // the literal escaped once more. The string the comparison decodes is then the text as the agent wrote it, so two
 // answers agree there only byte for byte: `\u2022` for C's raw bullet, or `\u0022` for its `\"`, is a difference
 // (decoded, as compareV2 compares any other string, they are the same text).
-func mcpTextRender(_ int, body []byte) []byte {
+func mcpTextRender(_ int, _ [2]int64, body []byte) []byte {
 	escape := strings.NewReplacer(`\`, `\\`, `"`, `\"`)
 	return mcpTextRe.ReplaceAllFunc(body, func(m []byte) []byte {
 		g := mcpTextRe.FindSubmatch(m)
@@ -177,8 +172,9 @@ var contextsNone = []dashFact{dashKeys("api nodes contexts versions agents timin
 // than the limit, and then after limit - 1 items: api_v2_contexts.c:1228-1234, :1257-1263,
 // rrdlabels-aggregated.c:157-163); a context filter that matches nothing (it filters no context but drops a host
 // without one, api_v2_contexts.c:270, :656-658, :663-674), a context scope that matches nothing, a window before the
-// fixture (:636, :275); and the options debug (the request, :1382-1441) and mcp (no api and no timings, the nodes'
-// MCP form and the next steps, :321-334, :1283-1285; the next steps compared as written, contextsMCPFamily).
+// fixture (:636, :275); the options debug (the request, :1382-1441) and mcp (no api and no timings, the nodes' MCP
+// form and the next steps, :321-334, :1283-1285; the next steps compared as written, contextsMCPFamily); and a
+// context scope and a host selector with no word in them (D233).
 func contextsOptionRows(base int64) []contextsRow {
 	full := `{"_collect_plugin":["fixture-pusher"],"_collect_module":["corpus"],"k":["v1","v2"]}`
 	return []contextsRow{
@@ -197,11 +193,19 @@ func contextsOptionRows(base int64) []contextsRow {
 		{v2Req{name: "scope-miss", target: "/api/v2/contexts?scope_nodes=*&scope_contexts=nomatch", status: "200",
 			guard: dashGuard(contextsNone)}, contextsFamily},
 		{v2Req{name: "window-miss", target: fmt.Sprintf("/api/v2/contexts?scope_nodes=*&after=%d&before=%d",
-			base-600, base-300), status: "200", guard: dashGuard(contextsNone)}, contextsWindowFamily},
+			base-600, base-300), status: "200", guard: dashGuard(contextsNone)}, contextsFamily},
 		{v2Req{name: "debug", target: "/api/v2/contexts?scope_nodes=*&options=debug", status: "200",
 			guard: dashGuard(contextsDebugFacts, dashWalkNodes(true), contextsQDefaults)}, contextsFamily},
 		{v2Req{name: "mcp", target: "/api/v2/contexts?scope_nodes=*&options=mcp", status: "200",
 			guard: dashGuard(contextsMCPFacts, contextsQDefaults)}, contextsMCPFamily},
+		// a selector with no word in it is no pattern (D233): C's constructor returns NULL for a text of separators or
+		// a lone `!` (string_to_simple_pattern, simple_pattern.h:57-59; simple_pattern.c:107-118, :141-143), which the
+		// walk reads as no filter (query_scope.c:52, :115; api_v2_contexts.c:658-659), so each answers as `v2-all`
+		// does: every host and the child's context (C's answers, H35's probe P2)
+		{v2Req{name: "scope-wordless", target: "/api/v2/contexts?scope_nodes=*&scope_contexts=%7C", status: "200",
+			guard: dashGuard(dashWalkNodes(true), contextsFacts)}, contextsFamily},
+		{v2Req{name: "nodes-wordless", target: "/api/v2/contexts?scope_nodes=*&nodes=!", status: "200",
+			guard: dashGuard(dashWalkNodes(true), contextsFacts)}, contextsFamily},
 	}
 }
 
@@ -397,11 +401,7 @@ func contextsBothGoneRows(base int64) []contextsRow {
 	q := []string{"contexts", "q.ctx"}
 	last2 := dashSecs(base - child2Earlier + 60)
 	return []contextsRow{
-		{v2Req{name: "both-child2", target: "/api/v2/contexts?options=titles&scope_nodes=" + child2Host.Hostname,
-			status: "200", guard: dashGuard(contextsOwn(child2Host, "q.ctx r.ctx"),
-				dashMembers(q, "title", `"other [x]"`, "family", `"fam2"`, "units", `"units2"`, "priority", "900",
-					"first_entry", dashSecs(base-child2Earlier), "last_entry", last2, "live", "false"),
-				contextsChild2R(base, last2, "false"))}, contextsFamily},
+		contextsChild2Gone("both-child2", base),
 		{v2Req{name: "both-titles", target: contextsTitles, status: "200", guard: dashGuard(contextsMergeNodes,
 			[]dashFact{
 				dashKeys("api nodes contexts versions agents timings"),
@@ -413,12 +413,52 @@ func contextsBothGoneRows(base int64) []contextsRow {
 	}
 }
 
+// contextsChild2Gone is the row of the second child's own contexts once it is gone: no longer collected, their last
+// entry its data's end (the fixture child's base less child2Earlier, plus 60: base), which the row settles on
+// (dashGone).
+func contextsChild2Gone(name string, base int64) contextsRow {
+	last2 := dashSecs(base - child2Earlier + 60)
+	return contextsRow{v2Req{name: name, target: "/api/v2/contexts?options=titles&scope_nodes=" + child2Host.Hostname,
+		status: "200", guard: dashGuard(contextsOwn(child2Host, "q.ctx r.ctx"),
+			dashMembers([]string{"contexts", "q.ctx"}, "title", `"other [x]"`, "family", `"fam2"`, "units", `"units2"`,
+				"priority", "900", "first_entry", dashSecs(base-child2Earlier), "last_entry", last2, "live", "false"),
+			contextsChild2R(base, last2, "false"))}, contextsFamily}
+}
+
+// contextsKeepRows are the `merge-keep` subtest's rows, once the second child is gone and the fixture child still
+// streams (D238 point 2), the fixture child's base being base; C's answers are H35's probe P2's (and H34's p1's).
+//
+//   - `child2`, the second child's own contexts: no longer collected (contextsChild2Gone), which the row settles on.
+//     It is what the merge reads as "the newcomer is not collected".
+//   - `titles`, every host's. The first host's q.ctx is collected and the newcomer's is not: the one input for which
+//     C's rules take their first branch and keep the first host's title, family, units and priority as they are
+//     (api_v2_contexts.c:843, :862, :881, :897). The flags are ORed (:837), so q.ctx is collected: its last entry is
+//     the walk's now and it is live; the retention is still merged (:909-919), so its first entry is the newcomer's,
+//     the earlier one. r.ctx, the second child's alone, is not collected: its last entry is its data's end. A port
+//     that always merges would print `[x] [x]`, `fam[x]` and the lower priority 900 (`merge`'s facts); one that took
+//     the newcomer's flags instead of ORing them would print q.ctx not live, its last entry the fixture's end. As in
+//     `merge-gone`, the row judges this merge only where `child2` agreed.
+func contextsKeepRows(base int64) []contextsRow {
+	return []contextsRow{
+		contextsChild2Gone("child2", base),
+		{v2Req{name: "titles", target: contextsTitles, status: "200", guard: dashGuard(contextsMergeNodes,
+			[]dashFact{
+				dashKeys("api nodes contexts versions agents timings"),
+				dashKeys("q.ctx r.ctx", "contexts"),
+			},
+			dashMembers([]string{"contexts", "q.ctx"}, "title", `"title [x]"`, "family", `"fam"`, "units", `"units"`,
+				"priority", "1000", "first_entry", dashSecs(base-child2Earlier), "last_entry", `"NOW"`, "live", "true"),
+			contextsChild2R(base, dashSecs(base-child2Earlier+60), "false"))}, contextsFamily},
+	}
+}
+
 // TestContextsV2API compares `/api/v2|v3/contexts` (check `api.v2-contexts`, D224) on a parent with the fixture
-// child: the dashboard's calls, then the options, limits and filters beyond them (D231 F6); `merge`: on a parent
-// with the fixture child and a second child that brings q.ctx again, over an earlier window, and r.ctx (D231 F6 B,
-// D232); `merge-gone`: the same parent once the fixture child is gone, then once both are (D232); then `access`: the
-// METRICS ACL's refusal (451) and bearer protection (412) of both routes (web_api_v2.c:30-36, web_api_v3.c:56-62). Red
-// on Rust until commit 3.
+// child: the dashboard's calls, then the options, limits and filters beyond them (D231 F6) and the selectors with no
+// word in them (D233); `merge`: on a parent with the fixture child and a second child that brings q.ctx again, over
+// an earlier window, and r.ctx (D231 F6 B, D232); `merge-gone`: the same parent once the fixture child is gone, then
+// once both are (D232); `merge-keep`: the same parent once the second child alone is gone (D238); then `access`: the
+// METRICS ACL's refusal (451) and bearer protection (412) of both routes (web_api_v2.c:30-36, web_api_v3.c:56-62).
+// Green on Rust since milestone 10 commit 3.
 func TestContextsV2API(t *testing.T) {
 	t.Run("data", func(t *testing.T) {
 		p := dashPair(t, daemon.Options{})
@@ -451,6 +491,16 @@ func TestContextsV2API(t *testing.T) {
 		}
 		dashGone(t, p, child2Host, second)
 		for _, r := range contextsBothGoneRows(base) {
+			t.Run(r.req.name, func(t *testing.T) { compareV2(t, p, r.req, r.fam) })
+		}
+	})
+	t.Run("merge-keep", func(t *testing.T) {
+		p := dashPair(t, daemon.Options{})
+		base := dashBase()
+		dashChild(t, p, base)
+		second := dashChildAs(t, p, base-child2Earlier, child2Host, qOtherCharts, rCharts)
+		dashGone(t, p, child2Host, second)
+		for _, r := range contextsKeepRows(base) {
 			t.Run(r.req.name, func(t *testing.T) { compareV2(t, p, r.req, r.fam) })
 		}
 	})

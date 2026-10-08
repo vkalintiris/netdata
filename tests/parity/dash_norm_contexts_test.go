@@ -62,8 +62,9 @@ func testDashNormContexts(t *testing.T) {
 			""},
 		"a flight over two seconds": {strings.Replace(ctx, `"last_entry":1791312192`, `"last_entry":1791312191`, 1),
 			[2]int64{1791312191, 1791312192}, strings.Replace(ctx, `"last_entry":1791312192`, `"last_entry":"NOW"`, 1)},
-		"the body's clock, out of flight": {ctx, [2]int64{1791312195, 1791312196}, ""},
-		"another member":                  {strings.Replace(ctx, `"last_entry"`, `"last_seen"`, 1), flight, ""},
+		"the body's clock, out of flight":     {ctx, [2]int64{1791312195, 1791312196}, ""},
+		"the body's clock, before the flight": {ctx, [2]int64{1791312190, 1791312191}, ""},
+		"another member":                      {strings.Replace(ctx, `"last_entry"`, `"last_seen"`, 1), flight, ""},
 		"pretty": {"\"last_entry\":1791312192,\n    \"now\":1791312192", flight,
 			"\"last_entry\":\"NOW\",\n    \"now\":1791312192"},
 	} {
@@ -71,7 +72,7 @@ func testDashNormContexts(t *testing.T) {
 		if want == "" {
 			want = c.in
 		}
-		if got := string(contextsFamily.normalise(0, c.flight, []byte(c.in))); got != want {
+		if got := string(contextsFamily.normalise(0, c.flight, c.flight, []byte(c.in))); got != want {
 			t.Errorf("contextsFamily's now, %s: %s, want %s", name, got, want)
 		}
 	}
@@ -122,48 +123,140 @@ func testDashNormContexts(t *testing.T) {
 	}
 	niO := ni("38929", "34050", "1791312184", "8", "1791312187", "5", "655360", "7d15h")
 	niC := ni("42091", "39074", "1791312187", "5", "1791312190", "2", "262144", "3d1h")
+	// each side's own run, as that round had it: the port each agent listened on, its start, and the child's
+	// connection opened in the second its ingestion began
+	niFam := nodeInstancesFamily([2]niSide{
+		{listen: "38929", started: [2]int64{1791312184, 1791312186}, opened: [2]int64{1791312190, 1791312190}},
+		{listen: "42091", started: [2]int64{1791312187, 1791312189}, opened: [2]int64{1791312190, 1791312190}},
+	})
+	localIngest := `"status":"initializing","since":1791312187,"age":5,`
+	childIngest := `"since":1791312190,"age":2,`
+	if strings.Count(niC, localIngest) != 1 || strings.Count(niC, childIngest) != 1 {
+		t.Fatalf("the recorded answer does not hold each ingestion once: %s", niC)
+	}
 	for name, c := range map[string]struct {
 		candidate string
 		fam       v2Family
 		masks     []Mask
 		want      string
 	}{
-		// what differs once the envelope's clocks are masked: the family masks exactly that
+		// what differs once the envelope's clocks are masked: each is the side's own, which the family names or masks
 		"the envelope's masks alone": {niC, v2Family{}, infoV2Volatile,
 			"$.nodes[0].instances[0].ingest.since $.nodes[0].instances[0].ingest.age " +
 				"$.nodes[1].instances[0].ingest.source.local $.nodes[1].instances[0].ingest.source.remote " +
 				"$.agents[0].db_size[0].from $.agents[0].db_size[0].retention " +
 				"$.agents[0].db_size[0].expected_retention $.agents[0].db_size[0].expected_retention_human"},
-		"the family": {niC, nodeInstancesFamily, nodeInstancesFamily.masks, ""},
-		"a child's metrics": {strings.Replace(niC, `"metrics":7`, `"metrics":8`, 1), nodeInstancesFamily,
-			nodeInstancesFamily.masks, "$.nodes[1].instances[0].db.metrics"},
+		"the family": {niC, niFam, niFam.masks, ""},
+		"a child's metrics": {strings.Replace(niC, `"metrics":7`, `"metrics":8`, 1), niFam,
+			niFam.masks, "$.nodes[1].instances[0].db.metrics"},
 		"a child's last time a second behind": {strings.Replace(niC, `"last_time":1791312192,"metrics":7`,
-			`"last_time":1791312191,"metrics":7`, 1), nodeInstancesFamily, nodeInstancesFamily.masks,
+			`"last_time":1791312191,"metrics":7`, 1), niFam, niFam.masks,
 			"$.nodes[1].instances[0].db.last_time"},
 		"a capability, compared by name": {strings.Replace(niC, `"name":"funcs","version":0,"enabled":false`,
-			`"name":"funcs","version":1,"enabled":true`, 1), nodeInstancesFamily, nodeInstancesFamily.masks, ""},
+			`"name":"funcs","version":1,"enabled":true`, 1), niFam, niFam.masks, ""},
+		// only a capability's values are compared by name: its members' order is compared here (D6)
+		"a capability's members in another order": {strings.Replace(niC, `{"name":"funcs","version":0,"enabled":false}`,
+			`{"version":0,"name":"funcs","enabled":false}`, 1), niFam, niFam.masks,
+			"$.nodes[1].instances[0].capabilities[4].<members>"},
 		// the ingestion's source and age: only the port and the start are each side's
 		"a source without its brackets": {strings.Replace(niC, `"local":"[127.0.0.1]:`, `"local":"127.0.0.1:`, 1),
-			nodeInstancesFamily, nodeInstancesFamily.masks, "$.nodes[1].instances[0].ingest.source.local"},
+			niFam, niFam.masks, "$.nodes[1].instances[0].ingest.source.local"},
 		"a source on another address": {strings.Replace(niC, `"remote":"[127.0.0.1]:`, `"remote":"[::1]:`, 1),
-			nodeInstancesFamily, nodeInstancesFamily.masks, "$.nodes[1].instances[0].ingest.source.remote"},
+			niFam, niFam.masks, "$.nodes[1].instances[0].ingest.source.remote"},
 		"a source with a suffix": {strings.Replace(niC, `"remote":"[127.0.0.1]:39074"`,
-			`"remote":"[127.0.0.1]:39074:SSL"`, 1), nodeInstancesFamily, nodeInstancesFamily.masks,
+			`"remote":"[127.0.0.1]:39074:SSL"`, 1), niFam, niFam.masks,
 			"$.nodes[1].instances[0].ingest.source.remote"},
-		"an age that is not now - since": {strings.Replace(niC, `"since":1791312190,"age":2,`,
-			`"since":1791312190,"age":3,`, 1), nodeInstancesFamily, nodeInstancesFamily.masks,
-			"$.nodes[1].instances[0].ingest.age"},
+		"an age that is not now - since": {strings.Replace(niC, childIngest, `"since":1791312190,"age":3,`, 1), niFam,
+			niFam.masks, "$.nodes[1].instances[0].ingest.age"},
+		// D3: a port is LISTEN or PEER only where it is that side's own
+		"a port of 0": {strings.Replace(niC, `"remote":"[127.0.0.1]:39074"`, `"remote":"[127.0.0.1]:0"`, 1), niFam,
+			niFam.masks, "$.nodes[1].instances[0].ingest.source.remote"},
+		"a local port of 0": {strings.Replace(niC, `"local":"[127.0.0.1]:42091"`, `"local":"[127.0.0.1]:0"`, 1), niFam,
+			niFam.masks, "$.nodes[1].instances[0].ingest.source.local"},
+		"the two ports swapped": {strings.Replace(niC, `"local":"[127.0.0.1]:42091","remote":"[127.0.0.1]:39074"`,
+			`"local":"[127.0.0.1]:39074","remote":"[127.0.0.1]:42091"`, 1), niFam, niFam.masks,
+			"$.nodes[1].instances[0].ingest.source.local $.nodes[1].instances[0].ingest.source.remote"},
+		"the oracle's listening port": {strings.Replace(niC, `"local":"[127.0.0.1]:42091"`,
+			`"local":"[127.0.0.1]:38929"`, 1), niFam, niFam.masks, "$.nodes[1].instances[0].ingest.source.local"},
+		"a remote port that is the agent's own": {strings.Replace(niC, `"remote":"[127.0.0.1]:39074"`,
+			`"remote":"[127.0.0.1]:42091"`, 1), niFam, niFam.masks, "$.nodes[1].instances[0].ingest.source.remote"},
+		"a remote port past the last": {strings.Replace(niC, `"remote":"[127.0.0.1]:39074"`,
+			`"remote":"[127.0.0.1]:65536"`, 1), niFam, niFam.masks, "$.nodes[1].instances[0].ingest.source.remote"},
+		"a remote port with a leading 0": {strings.Replace(niC, `"remote":"[127.0.0.1]:39074"`,
+			`"remote":"[127.0.0.1]:039074"`, 1), niFam, niFam.masks, "$.nodes[1].instances[0].ingest.source.remote"},
+		"another remote port": {strings.Replace(niC, `"remote":"[127.0.0.1]:39074"`, `"remote":"[127.0.0.1]:39075"`, 1),
+			niFam, niFam.masks, ""},
+		// D2: a start is START or CONNECTED only where it is that side's own
+		"a start of 0, its age the clock": {strings.Replace(niC, localIngest,
+			`"status":"initializing","since":0,"age":1791312192,`, 1), niFam, niFam.masks,
+			"$.nodes[0].instances[0].ingest.since"},
+		"a start a second before the launch": {strings.Replace(niC, localIngest,
+			`"status":"initializing","since":1791312186,"age":6,`, 1), niFam, niFam.masks,
+			"$.nodes[0].instances[0].ingest.since"},
+		"a child that began when the agent started": {strings.Replace(niC, childIngest, `"since":1791312187,"age":5,`, 1),
+			niFam, niFam.masks, "$.nodes[1].instances[0].ingest.since"},
+		"localhost begun when the child connected": {strings.Replace(niC, localIngest,
+			`"status":"initializing","since":1791312190,"age":2,`, 1), niFam, niFam.masks,
+			"$.nodes[0].instances[0].ingest.since"},
+		"a child begun a second after its handshake": {strings.Replace(niC, childIngest, `"since":1791312191,"age":1,`, 1),
+			niFam, niFam.masks, "$.nodes[1].instances[0].ingest.since"},
+		"a child begun a second before it": {strings.Replace(niC, childIngest, `"since":1791312189,"age":3,`, 1),
+			niFam, niFam.masks, "$.nodes[1].instances[0].ingest.since"},
+		"a child begun at 0": {strings.Replace(niC, childIngest, `"since":0,"age":1791312192,`, 1),
+			niFam, niFam.masks, "$.nodes[1].instances[0].ingest.since"},
+		// the cloud status' start and age are named as an ingestion's are, and not masked in this family
+		"the cloud status begun at 0": {strings.Replace(niC, `"status":"available","since":1791312187,"age":5,`,
+			`"status":"available","since":0,"age":1791312192,`, 1), niFam, niFam.masks, "$.agents[0].cloud.since"},
+		"the cloud status' age off by one": {strings.Replace(niC, `"status":"available","since":1791312187,"age":5,`,
+			`"status":"available","since":1791312187,"age":6,`, 1), niFam, niFam.masks, "$.agents[0].cloud.age"},
 	} {
 		if got := dashNormDiffs(t, c.fam, c.masks, flight, niO, c.candidate); got != c.want {
 			t.Errorf("node_instances, %s: differences at %q, want %q", name, got, c.want)
 		}
 	}
-	got := string(nodeInstancesFamily.normalise(0, flight, []byte(niO)))
+	got := string(niFam.normalise(0, flight, flight, []byte(niO)))
 	if strings.Count(got, `"last_time":"NOW"`) != 2 || !strings.Contains(got, `"first_time":1791312060`) ||
-		!strings.Contains(got, `"local":"[127.0.0.1]:PORT"`) ||
-		!strings.Contains(got, `"since":1791312190,"age":"NOW-SINCE"`) ||
-		!strings.Contains(got, `"since":1791312184,"age":"NOW-SINCE"`) {
+		!strings.Contains(got, `"source":{"local":"[127.0.0.1]:LISTEN","remote":"[127.0.0.1]:PEER",`) ||
+		!strings.Contains(got, `"since":"CONNECTED","age":"NOW-SINCE"`) ||
+		strings.Count(got, `"since":"START","age":"NOW-SINCE"`) != 2 {
 		t.Errorf("node_instances' normalisation: %s", got)
+	}
+	// the guards read what the render names: C's answer holds them, an answer whose start or port is not the side's
+	// own does not
+	niDoc := func(b string) Value {
+		t.Helper()
+		// the recorded answers were trimmed of each instance's functions: the child's are none, as C printed them
+		b = strings.Replace(b, `"health":{"status":"disabled"},"capabilities":`+capsChild,
+			`"health":{"status":"disabled"},"functions":{},"capabilities":`+capsChild, 1)
+		v, err := ParseJSON(niFam.normalise(0, flight, flight, []byte(b)))
+		if err != nil {
+			t.Fatalf("%v: %s", err, b)
+		}
+		return v
+	}
+	niGuard := dashGuard(niChildFacts(1, 1), niLocalIngest([]string{"nodes", "[0]", "instances", "[0]"}),
+		dashMembers([]string{"agents", "[0]", "cloud"}, "since", `"START"`, "age", `"NOW-SINCE"`))
+	for name, c := range map[string]struct {
+		in  string
+		bad bool
+	}{
+		"C's answer": {niO, false},
+		"the cloud status begun at 0": {strings.Replace(niO, `"status":"available","since":1791312184,"age":8,`,
+			`"status":"available","since":0,"age":1791312192,`, 1), true},
+		"the cloud status' age off by one": {strings.Replace(niO, `"status":"available","since":1791312184,"age":8,`,
+			`"status":"available","since":1791312184,"age":9,`, 1), true},
+		"a start of 0": {strings.Replace(niO, `"since":1791312184,"age":8,"metrics":0`, `"since":0,"age":1791312192,"metrics":0`, 1), true},
+		"localhost's age off by one": {strings.Replace(niO, `"since":1791312184,"age":8,"metrics":0`,
+			`"since":1791312184,"age":9,"metrics":0`, 1), true},
+		"a child's start":      {strings.Replace(niO, childIngest, `"since":1791312184,"age":8,`, 1), true},
+		"the ports swapped":    {strings.Replace(niO, `:38929","remote":"[127.0.0.1]:34050"`, `:34050","remote":"[127.0.0.1]:38929"`, 1), true},
+		"a remote port of 0":   {strings.Replace(niO, `"remote":"[127.0.0.1]:34050"`, `"remote":"[127.0.0.1]:0"`, 1), true},
+		"an age off by one":    {strings.Replace(niO, childIngest, `"since":1791312190,"age":3,`, 1), true},
+		"the other side's own": {niC, true},
+	} {
+		if err := niGuard(niDoc(c.in)); (err != nil) != c.bad {
+			t.Errorf("the node-instance guards, %s: %v", name, err)
+		}
 	}
 
 	// `/api/v3/nodes` (localhost's labels and system info trimmed): the labels a set, the capabilities by name
@@ -189,6 +282,19 @@ func testDashNormContexts(t *testing.T) {
 		"a capability, compared by name":   {mlOn, nodesFamily, ""},
 		"a capability, without the family": {mlOn, v2Family{}, "$.nodes[0].capabilities[1].enabled"},
 		"the child's version":              {strings.Replace(nodes, `"v":"1.0"`, `"v":"1.1"`, 1), nodesFamily, "$.nodes[1].v"},
+		// only a capability's values are compared by name (D6): its members' order, its name and a member more are
+		// compared here
+		"a capability with a member more": {strings.Replace(nodes, `{"name":"proto","version":1,"enabled":true}`,
+			`{"name":"proto","version":1,"enabled":true,"since":1}`, 1), nodesFamily, "$.nodes[0].capabilities[0].<members>"},
+		"a capability's members in another order": {strings.Replace(nodes, `{"name":"proto","version":1,"enabled":true}`,
+			`{"version":1,"name":"proto","enabled":true}`, 1), nodesFamily, "$.nodes[0].capabilities[0].<members>"},
+		"a capability's name": {strings.Replace(nodes, `{"name":"proto",`, `{"name":"proto2",`, 1), nodesFamily,
+			"$.nodes[0].capabilities[0].name"},
+		// the labels alone are a set: another object's members are in C's order
+		"the system info in another order": {strings.Replace(nodes, `"hw":{"architecture":"","cpu_frequency":"",`,
+			`"hw":{"cpu_frequency":"","architecture":"",`, 1), nodesFamily, "$.nodes[1].hw.<members>"},
+		"a node's members in another order": {strings.Replace(nodes, `"ni":1,"v":"1.0",`, `"v":"1.0","ni":1,`, 1),
+			nodesFamily, "$.nodes[1].<members>"},
 	} {
 		if got := dashNormDiffs(t, c.fam, c.fam.masks, flight, nodes, c.candidate); got != c.want {
 			t.Errorf("nodes, %s: differences at %q, want %q", name, got, c.want)
@@ -216,11 +322,12 @@ func testDashNormContexts(t *testing.T) {
 	}
 
 	// the facts' paths: keys with dots, items, and what is not there
-	v, err := ParseJSON(contextsFamily.normalise(0, flight, []byte(ctx)))
+	v, err := ParseJSON(contextsFamily.normalise(0, flight, flight, []byte(ctx)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	alone, err := ParseJSON(contextsFamily.normalise(0, [2]int64{1791312190, 1791312190}, []byte(ctxAlone)))
+	alone, err := ParseJSON(contextsFamily.normalise(0, [2]int64{1791312190, 1791312190},
+		[2]int64{1791312190, 1791312190}, []byte(ctxAlone)))
 	if err != nil {
 		t.Fatal(err)
 	}

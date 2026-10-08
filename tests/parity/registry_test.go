@@ -86,11 +86,12 @@ func regOff(name, target, action string, headers ...string) exactReq {
 }
 
 // TestRegistryAPI (check `api.registry`, M10 commit 1, D223, D224, D226): `/api/v1/registry` with the registry
-// disabled, C's default. Every answer is compared raw after maskRaw: the bodies hold no clock and nothing random
-// (registry.c:58-80, :178-226), the hosts are fixed and there is no node id on a fresh run directory. Configurations:
-// `default` (then a connected child, then the same child gone: its host stays in the index), `custom` (the
-// registry's hostname and announce URL), `dnt` (the Do Not Track policy), `reload` (cloud.conf's URL changed, then a
-// claim reload) and `access` (the handler's own ACL checks and bearer protection). Red on Rust until commit 1.
+// disabled, C's default. Every answer is compared raw after maskAnswer (each side's clock and expiry read against its
+// own flight): the bodies hold no clock and nothing random (registry.c:58-80, :178-226), the hosts are fixed and there
+// is no node id on a fresh run directory. Configurations: `default` (then a connected child, then the same child
+// gone: its host stays in the index), `custom` (the registry's hostname and announce URL), `dnt` (the Do Not Track
+// policy), `reload` (cloud.conf's URL changed, then a claim reload) and `access` (the handler's own ACL checks and
+// bearer protection). Green on Rust since milestone 10 commit 1.
 func TestRegistryAPI(t *testing.T) {
 	t.Run("default", func(t *testing.T) {
 		p := dashPair(t, daemon.Options{})
@@ -132,6 +133,9 @@ func TestRegistryAPI(t *testing.T) {
 			with(regText("dnt-no-action", regPath, regDNT, "DNT: 1"), regTkN),
 			with(regText("dnt-search-missing", regPath+"?action=search", regDNT, "DNT: 1"), regTkN),
 			with(regOff("access", access, "access"), regTkT),
+			// `DNT: 0` is no refusal (the flag is set for `DNT: 1` alone, http_header.c:74-77): the handler asks for
+			// tracking as for a client without the header
+			with(regOff("dnt0-search", regPath+"?action=search&for=m", "search", "DNT: 0"), regTkT),
 			with(regText("access-missing", regPath+"?action=access&machine=m&url=u",
 				"Invalid registry Access request."), regTkN),
 		})
@@ -229,6 +233,9 @@ func regDefaultRows() []exactReq {
 		regOff("access-bad-url", regPath+"?action=access&machine=m&url=bad&name=n", "access"),
 		regOff("delete", regPath+"?action=delete"+full+"&delete_url=d", "delete"),
 		regOff("search", regPath+"?action=search&for=m", "search"),
+		// `DNT: 1` is read only under `[web] respect do not track policy` (http_header.c:74-77): with the policy off
+		// the request is `search`'s, not the refusal the `dnt` stage's rows get (api_v1_registry.c:123, :136-140)
+		regOff("search-dnt", regPath+"?action=search&for=m", "search", "DNT: 1"),
 		regOff("switch", regPath+"?action=switch"+full+"&to=p", "switch"),
 		regText("subpath", regPath+"/hello", "API command 'registry' does not support subpaths."),
 		{name: "v3", target: "/api/v3/registry?action=hello",
@@ -251,7 +258,8 @@ func regChildRows() []exactReq {
 }
 
 // regChildGone waits until each side counts the child as no longer received (`/api/v2/info` nodes), within 30 s;
-// the oracle must.
+// the oracle must, or the stage did not run; a candidate that does not is reported, and the rows after it show what
+// it answers.
 func regChildGone(t *testing.T, p *Pair) {
 	t.Helper()
 	for _, side := range p.Each() {
@@ -270,9 +278,13 @@ func regChildGone(t *testing.T, p *Pair) {
 			time.Sleep(time.Second)
 			return false
 		})
-		if !gone && side.Role == Oracle {
+		if gone {
+			continue
+		}
+		if side.Role == Oracle {
 			t.Fatalf("oracle: the child is still received: %s", last)
 		}
+		t.Errorf("candidate: the child is still received after 30 s: %s", last)
 	}
 }
 

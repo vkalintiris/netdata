@@ -53,7 +53,7 @@ func testDashNormWeights(t *testing.T) {
 			`{"timings":{"query_ms":0.135,"total_ms":0.438}}`},
 	} {
 		for i := range 2 {
-			if got := string(weightsRender(i, []byte(c.body))); got != c.want {
+			if got := string(weightsRender(i, [2]int64{}, []byte(c.body))); got != c.want {
 				t.Errorf("weightsRender %s, side %d:\n%s\nwant\n%s", name, i, got, c.want)
 			}
 		}
@@ -62,7 +62,7 @@ func testDashNormWeights(t *testing.T) {
 	// the v2 family: the agents' clock and durations and the node's duration differed (the `anomaly` row); the versions
 	// hashes did not, and stay compared (the `two-hosts` row's walk adds the context versions twice)
 	weightsAnswer := func(hash, ms, now, query, output, total string) Value {
-		return parse("weights answer", string(weightsRender(0, []byte(`{
+		return parse("weights answer", string(weightsRender(0, [2]int64{}, []byte(`{
     "versions":{
         "routing_hard_hash":1,
         "nodes_hard_hash":2,
@@ -219,7 +219,7 @@ func testDashNormWeights(t *testing.T) {
 	if d := diffs(parse("tail", o), parse("tail", c), infoTailFamily.masks, infoTailFamily.unordered...); d != nil {
 		t.Errorf("infoTailFamily: the recorded label orders differ: %q", d)
 	}
-	if l := v2Layouts([2][]byte{[]byte(o), []byte(c)}, true); l != "" {
+	if l := v2Layouts([2][]byte{[]byte(o), []byte(c)}, infoTailFamily.layoutByCount()); l != "" {
 		t.Errorf("infoTailFamily: the recorded label orders' layouts: %s", l)
 	}
 	if d := diffs(parse("tail", o), parse("tail", c), infoTailFamily.masks); d == nil {

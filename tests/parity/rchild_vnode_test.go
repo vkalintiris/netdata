@@ -160,8 +160,10 @@ func checkRvEntry(t *testing.T, stage string, path []streamPathEntry, guid strin
 	t.Errorf("oracle: %s: the vnode's path has no entry of %s: %+v", stage, guid, path)
 }
 
-// rvNodesRules compare the C parents' /api/v2/nodes of the vnode (D145.10: the endpoint is M10's): the request's
-// durations masked, the labels a set (C prints them in heap order).
+// rvNodesRules compare the C parents' /api/v2/nodes of the vnode: the request's durations masked, the labels a set
+// (C prints them in heap order). Both parents of this check are C (D145.10); a Rust parent's node list of a C child
+// and its vnode is judged by `fn.stream`'s `calls/nodes` subtest (fnStreamCatalog, with fnStreamNodesFacts and
+// fnStreamNodesFamily in nodes_v2_test.go; D231 F2, milestone 10 commit 2).
 var rvNodesRules = Rules{
 	Masks:     []Mask{{Pattern: "timings", Reason: "request durations"}},
 	Unordered: []string{"nodes.[].labels"},

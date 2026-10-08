@@ -3,93 +3,249 @@
 package parity
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
 )
 
-// The alert families' answers as C gave them C against C (s4, 2026-10-06 20:22-20:24Z, the oracle's side, its run
-// directory already `<run>`): `/api/v3/alerts?options=summary,values,instances,minify&status=raised` (`alerts`) and
-// `/api/v3/alert_transitions?options=minify&transition=<hs_calc's change to WARNING>` (`transitions`), with the alert log
-// entries that name their ids, trimmed from the same run's `/api/v1/alarm_log` (the lowest entry, which sets the base,
-// and the entry of the id).
-const (
-	dashNormAlertsRaised     = `{"api":2,"nodes":[{"mg":"5a1e0000-0000-4000-8000-0000000000aa","nm":"parity-parent","ni":0}],"alerts":[{"ati":0,"ni":[0],"nm":"ha_low","sum":"","cr":0,"wr":1,"cl":0,"er":0,"in":1,"nd":1,"cfg":1,"ctx":["hsig.ctx"],"cls":[],"cp":[],"ty":[],"to":["root"]}],"alerts_by_type":[],"alerts_by_component":[],"alerts_by_classification":[],"alerts_by_recipient":[{"name":"root","cr":0,"wr":1,"cl":0,"er":0,"running":1,"running_silent":0,"available":3}],"alerts_by_module":[{"name":"[none]","cr":0,"wr":1,"cl":0,"er":0,"running":1,"running_silent":0}],"alert_instances":[{"ati":0,"ni":0,"gi":1791318134275409,"nm":"ha_low","ctx":"hsig.ctx","ch":"hsig.values","ch_n":"hsig.values","st":"WARNING","fami":"family","info":"a above 50","sum":"","units":"things","tr_i":"c5738268-36a6-401a-9ac9-4c374b33f3ad","tr_v":70,"tr_t":1791318134,"cfg":"9eceed5c-209e-4193-aa9d-3a4b0ca83fa3","src":"line=2,file=<run>/etc/health.d/parity.conf","to":"root","tp":"","cm":"","cl":"","v":70,"t":1791318134}],"timings":{"routing_ms":0,"node_max_ms":0,"total_ms":0.349}}`
-	dashNormAlertsRaisedWant = `{"api":2,"nodes":[{"mg":"5a1e0000-0000-4000-8000-0000000000aa","nm":"parity-parent","ni":0}],"alerts":[{"ati":0,"ni":[0],"nm":"ha_low","sum":"","cr":0,"wr":1,"cl":0,"er":0,"in":1,"nd":1,"cfg":1,"ctx":["hsig.ctx"],"cls":[],"cp":[],"ty":[],"to":["root"]}],"alerts_by_type":[],"alerts_by_component":[],"alerts_by_classification":[],"alerts_by_recipient":[{"name":"root","cr":0,"wr":1,"cl":0,"er":0,"running":1,"running_silent":0,"available":3}],"alerts_by_module":[{"name":"[none]","cr":0,"wr":1,"cl":0,"er":0,"running":1,"running_silent":0}],"alert_instances":[{"ati":0,"ni":0,"gi":"G","nm":"ha_low","ctx":"hsig.ctx","ch":"hsig.values","ch_n":"hsig.values","st":"WARNING","fami":"family","info":"a above 50","sum":"","units":"things","tr_i":"t+13","tr_v":70,"tr_t":"T","cfg":"9eceed5c-209e-4193-aa9d-3a4b0ca83fa3","src":"line=2,file=<run>/etc/health.d/parity.conf","to":"root","tp":"","cm":"","cl":"","v":70,"t":"T"}],"timings":{"routing_ms":0,"node_max_ms":0,"total_ms":0.349}}`
-	dashNormAlertsRaisedLog  = `[{"unique_id": 1791318132, "alarm_id": 1791318132, "alarm_event_id": 1, "name": "ha_low", "transition_id": "2b3a5a8a-1815-422d-b401-92d5373d06ca"}, {"unique_id": 1791318144, "alarm_id": 1791318132, "alarm_event_id": 5, "name": "ha_low", "transition_id": "c5738268-36a6-401a-9ac9-4c374b33f3ad"}]`
-	dashNormAlertsOne        = `{"api":2,"facets":[{"id":"f_status","name":"Alert Status","order":1,"options":[{"id":"WARNING","name":"WARNING","count":1}]},{"id":"f_class","name":"Alert Class","order":4,"options":[{"id":"unknown","name":"unknown","count":1}]},{"id":"f_type","name":"Alert Type","order":2,"options":[{"id":"unknown","name":"unknown","count":1}]},{"id":"f_component","name":"Alert Component","order":5,"options":[{"id":"unknown","name":"unknown","count":1}]},{"id":"f_role","name":"Recipient Role","order":3,"options":[{"id":"root","name":"root","count":1}]},{"id":"f_node","name":"Alert Node","order":6,"options":[{"id":"5a1e0000-0000-4000-8000-0000000000aa","name":"parity-parent","count":1}]},{"id":"f_alert","name":"Alert Name","order":7,"options":[{"id":"hs_calc","name":"hs_calc","count":1}]},{"id":"f_instance","name":"Instance Name","order":8,"options":[{"id":"hsig.values","name":"hsig.values","count":1}]},{"id":"f_context","name":"Context","order":9,"options":[{"id":"hsig.ctx","name":"hsig.ctx","count":1}]}],"transitions":[{"gi":1791318193745297,"alert":"hs_calc","transition_id":"7f50f733-a185-4e4c-8266-6ae2a83bbce7","machine_guid":"5a1e0000-0000-4000-8000-0000000000aa","config_hash_id":"cbc27ceb-dc89-46d5-9e2c-d04f869ddbda","hostname":"parity-parent","instance":"hsig.values","instance_n":"hsig.values","context":"hsig.ctx","component":null,"classification":null,"type":null,"when":1791318193,"info":"the last value of a","summary":"","units":"things","new":{"status":"WARNING","value":70},"old":{"status":"CLEAR","value":10,"duration":14,"raised_duration":0},"notification":{"when":1791318193,"delay":0,"delay_up_to_time":1791318193,"flags":["PROCESSED","UPDATED","EXEC_RUN","SAVED"],"exec":"<run>/notify/stub","exec_code":0,"to":"root"}}],"items":{"evaluated":1,"matched":1,"returned":1,"max_to_return":1,"before":0,"after":0},"timings":{"routing_ms":0,"node_max_ms":0,"total_ms":0.151}}`
-	dashNormAlertsOneWant    = `{"api":2,"facets":[{"id":"f_status","name":"Alert Status","order":1,"options":[{"id":"WARNING","name":"WARNING","count":1}]},{"id":"f_class","name":"Alert Class","order":4,"options":[{"id":"unknown","name":"unknown","count":1}]},{"id":"f_type","name":"Alert Type","order":2,"options":[{"id":"unknown","name":"unknown","count":1}]},{"id":"f_component","name":"Alert Component","order":5,"options":[{"id":"unknown","name":"unknown","count":1}]},{"id":"f_role","name":"Recipient Role","order":3,"options":[{"id":"root","name":"root","count":1}]},{"id":"f_node","name":"Alert Node","order":6,"options":[{"id":"5a1e0000-0000-4000-8000-0000000000aa","name":"parity-parent","count":1}]},{"id":"f_alert","name":"Alert Name","order":7,"options":[{"id":"hs_calc","name":"hs_calc","count":1}]},{"id":"f_instance","name":"Instance Name","order":8,"options":[{"id":"hsig.values","name":"hsig.values","count":1}]},{"id":"f_context","name":"Context","order":9,"options":[{"id":"hsig.ctx","name":"hsig.ctx","count":1}]}],"transitions":[{"gi":"G","alert":"hs_calc","transition_id":"t+13","machine_guid":"5a1e0000-0000-4000-8000-0000000000aa","config_hash_id":"cbc27ceb-dc89-46d5-9e2c-d04f869ddbda","hostname":"parity-parent","instance":"hsig.values","instance_n":"hsig.values","context":"hsig.ctx","component":null,"classification":null,"type":null,"when":"T","info":"the last value of a","summary":"","units":"things","new":{"status":"WARNING","value":70},"old":{"status":"CLEAR","value":10,"duration":"T","raised_duration":0},"notification":{"when":"T","delay":0,"delay_up_to_time":"T","flags":["PROCESSED","UPDATED","EXEC_RUN","SAVED"],"exec":"<run>/notify/stub","exec_code":0,"to":"root"}}],"items":{"evaluated":1,"matched":1,"returned":1,"max_to_return":1,"before":0,"after":0},"timings":{"routing_ms":0,"node_max_ms":0,"total_ms":0.151}}`
-	dashNormAlertsOneLog     = `[{"unique_id": 1791318180, "alarm_id": 1791318180, "alarm_event_id": 1, "name": "hs_calc", "transition_id": "0668e082-efef-4bc9-9085-ac59c241416c"}, {"unique_id": 1791318192, "alarm_id": 1791318180, "alarm_event_id": 5, "name": "hs_calc", "transition_id": "7f50f733-a185-4e4c-8266-6ae2a83bbce7"}]`
-)
-
-// testDashNormAlerts pins the alert families on the bodies above: what alertsV2Render replaces and keeps, the seconds
-// it hands to the bound, and the families with the health runner's normalizers and with the zero pair.
+// testDashNormAlerts pins the alert families on the answers and the alert logs of one C-against-C run
+// (dash_norm_alerts_data_test.go): what alertsV2Render names against each side's own alert log and what it leaves, the
+// seconds it hands to the bound, each wrong answer the review named (R96's D8), and the families with the health
+// runner's normalizers and with the zero pair.
 func testDashNormAlerts(t *testing.T) {
-	norm := func(log string) *healthNorm {
-		n := &healthNorm{entries: map[int64]healthEntry{}, tids: map[string]int64{}, moved: map[string]int64{}}
-		n.observe(log)
-		return n
+	norm := func() *healthNorm {
+		return &healthNorm{entries: map[int64]healthEntry{}, tids: map[string]int64{}, moved: map[string]int64{}}
 	}
+	// the family of one case's pair: each side's normalizer, and its log as recorded
+	family := func(logs [2]string) v2Family {
+		return alertsV2Family([2]*healthNorm{norm(), norm()}, func(i int) ([]byte, error) { return []byte(logs[i]), nil })
+	}
+	asked := [2]int64{dashNormAlertsAsked, dashNormAlertsAsked}
+	diffs := func(logs [2]string, o, c string) string {
+		t.Helper()
+		fam := family(logs)
+		return dashNormDiffs(t, fam, fam.masks, asked, o, c)
+	}
+
+	// the recorded pairs show no difference: each side's ids, times and spans are its own log's
 	for name, c := range map[string]struct {
-		n          *healthNorm
-		body, want string
-		clocks     []int64
-		unchanged  bool
+		logs, bodies [2]string
 	}{
-		// gi as G, tr_t and t as T, tr_i by the entry that first showed it (u+13 of the log's base)
-		"an alert's clocks and last transition": {n: norm(dashNormAlertsRaisedLog), body: dashNormAlertsRaised,
-			want: dashNormAlertsRaisedWant, clocks: []int64{1791318134, 1791318134, 1791318134}},
-		// gi, when, the old status' duration, the notification's time and the delay's end; the raised duration of a
-		// change from CLEAR is 0 and kept
-		"a transition's clocks, spans and id": {n: norm(dashNormAlertsOneLog), body: dashNormAlertsOne, want: dashNormAlertsOneWant,
-			clocks: []int64{1791318193, 1791318193, 14, 1791318193, 1791318193}},
-		// spaces after the colon, an id the log never showed, a clock that is 0
-		"spaces, an unknown id, a zero": {n: norm(dashNormAlertsRaisedLog),
-			body:   `{"gi": 1791318134275409, "tr_i": "0668e082-efef-4bc9-9085-ac59c241416c", "tr_t":0, "when":  12}`,
-			want:   `{"gi": "G", "tr_i": "t?", "tr_t":0, "when":  "T"}`,
-			clocks: []int64{1791318134, 12}},
-		// members that hold no clock keep their numbers, whatever their name starts or ends with
-		"not clocks": {n: norm(dashNormAlertsRaisedLog),
-			body: `{"v":70,"tr_v":70,"to":"root","tp":"","delay":0,"duration_ms":3,"total_ms":0.349,"exec_code":0,` +
-				`"cfg":"9eceed5c-209e-4193-aa9d-3a4b0ca83fa3","ati":0,"after":2,"when_key":5}`,
-			unchanged: true},
+		"raised":    {dashNormAlertsAlertsLog, dashNormAlertsRaised},
+		"by-name":   {dashNormAlertsAlertsLog, dashNormAlertsByName},
+		"v2":        {dashNormAlertsAlertsLog, dashNormAlertsPretty},
+		"anchor":    {dashNormAlertsTransitionsLog, dashNormAlertsAnchor},
+		"one":       {dashNormAlertsTransitionsLog, dashNormAlertsOne},
+		"one-clear": {dashNormAlertsTransitionsLog, dashNormAlertsOneClear},
 	} {
-		got, clocks := alertsV2Render(c.n, []byte(c.body))
-		want := c.want
-		if c.unchanged {
-			want = c.body
+		if got := diffs(c.logs, c.bodies[0], c.bodies[1]); got != "" {
+			t.Errorf("%s: the recorded pair differs at %q", name, got)
 		}
-		if string(got) != want {
-			t.Errorf("%s: rendered\n%s\nwant\n%s", name, got, want)
+	}
+
+	// what the render writes, on the oracle's side: an alert's instance and a transition
+	render := func(logBody, body string) (string, []int64) {
+		t.Helper()
+		n := norm()
+		n.observe(logBody)
+		log, err := alertsV2LogOf([]byte(logBody))
+		if err != nil {
+			t.Fatal(err)
 		}
-		if !slices.Equal(clocks, c.clocks) {
-			t.Errorf("%s: the seconds %v, want %v", name, clocks, c.clocks)
+		got, clocks := alertsV2Render(n, log, asked, []byte(body))
+		return string(got), clocks
+	}
+	got, clocks := render(dashNormAlertsAlertsLog[0], dashNormAlertsRaised[0])
+	for _, want := range []string{`"gi":"G","nm":"ha_low"`, `"tr_i":"t+16","tr_v":70,"tr_t":"WHEN"`, `"v":70,"t":"T"}`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the raised alert, rendered, does not hold %s: %s", want, got)
 		}
+	}
+	if want := []int64{1791438106, 1791438106, 1791438106}; !slices.Equal(clocks, want) {
+		t.Errorf("the raised alert's seconds %v, want %v", clocks, want)
+	}
+	got, clocks = render(dashNormAlertsTransitionsLog[0], dashNormAlertsOne[0])
+	for _, want := range []string{`{"gi":"G","alert":"hs_calc","transition_id":"t+13",`, `"type":null,"when":"WHEN",`,
+		`"old":{"status":"CLEAR","value":10,"duration":"DURATION","raised_duration":0}`,
+		`"notification":{"when":"EXEC_RUN","delay":0,"delay_up_to_time":"DELAY_UP_TO",`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the transition, rendered, does not hold %s: %s", want, got)
+		}
+	}
+	if want := []int64{1791438148, 1791438148, 13, 1791438148, 1791438148}; !slices.Equal(clocks, want) {
+		t.Errorf("the transition's seconds %v, want %v", clocks, want)
+	}
+	// a first status: its notification never ran, and the 0 stays
+	got, _ = render(dashNormAlertsTransitionsLog[0], dashNormAlertsOneClear[0])
+	if want := `"old":{"status":"UNINITIALIZED","value":0,"duration":0,"raised_duration":0},"notification":{"when":0,` +
+		`"delay":0,"delay_up_to_time":"DELAY_UP_TO",`; !strings.Contains(got, want) {
+		t.Errorf("the first status, rendered, does not hold %s: %s", want, got)
+	}
+	// members that hold no clock keep their numbers, and a body without a global id is left as it is
+	plain := `{"v":70,"tr_v":70,"to":"root","tp":"","delay":0,"duration_ms":3,"total_ms":0.349,"exec_code":0,` +
+		`"cfg":"9eceed5c-209e-4193-aa9d-3a4b0ca83fa3","ati":0,"after":2,"when_key":5,"when":7}`
+	if got, clocks := render(dashNormAlertsTransitionsLog[0], plain); got != plain || clocks != nil {
+		t.Errorf("a body without a global id: rendered %s, the seconds %v", got, clocks)
+	}
+
+	// The wrong answers: each planted in the candidate's body (and, where the log must differ for the plant to be
+	// one, in the candidate's log), each reported at its member and nowhere else.
+	one, oneLog := dashNormAlertsOne, dashNormAlertsTransitionsLog
+	anchor := dashNormAlertsAnchor
+	raised, alertsLog := dashNormAlertsRaised, dashNormAlertsAlertsLog
+	replace := func(s, old, new string) string {
+		t.Helper()
+		if strings.Count(s, old) != 1 {
+			t.Fatalf("the recorded answer holds %q %d times", old, strings.Count(s, old))
+		}
+		return strings.Replace(s, old, new, 1)
+	}
+	// the candidate's log with its notification of hs_calc's change run a second after the change
+	lateLog := [2]string{oneLog[0], replace(oneLog[1], `"when":1791438148,"duration":14,"non_clear_duration":0,`+
+		`"exec_run":1791438148,`, `"when":1791438148,"duration":14,"non_clear_duration":0,"exec_run":1791438149,`)}
+	// An alert that never had a status names its link's entry, and C reads one clock as it makes the alert and
+	// another for that entry (alertsV2Entry.lastChange). The recorded sides read both in one second; here the
+	// candidate's entry for hm_plain is made a second after its alert, so its duration is 1 and its global id of
+	// that later second, while the alert's last change stays the second it was made in.
+	pretty := dashNormAlertsPretty
+	linkLog := [2]string{alertsLog[0], replace(alertsLog[1], `"transition_id":"89805474-7bdb-4c91-bbac-7d1255814c9b",`+
+		`"when":1791438103,"duration":0,"non_clear_duration":0,"exec_run":0,"delay_up_to_timestamp":1791438103,`,
+		`"transition_id":"89805474-7bdb-4c91-bbac-7d1255814c9b","when":1791438104,"duration":1,`+
+			`"non_clear_duration":0,"exec_run":0,"delay_up_to_timestamp":1791438104,`)}
+	linked := replace(pretty[1], `"gi":1791438103088474,`, `"gi":1791438104088474,`)
+	// An alert that left REMOVED by a status change has an entry from REMOVED as well, to its new status: here the
+	// candidate's ha_low came to WARNING from REMOVED, three seconds after it was removed. Its last change is the
+	// entry's time, as for any status change.
+	backLog := [2]string{alertsLog[0], replace(alertsLog[1], `"status":"WARNING","old_status":"CLEAR"}`,
+		`"status":"WARNING","old_status":"REMOVED"}`)}
+	const plainChange, lowChange = `"tr_v":null,` + "\n            " + `"tr_t":`, `"tr_v":70,` + "\n            " + `"tr_t":`
+	tr := "$.transitions[0]."
+	for name, c := range map[string]struct {
+		logs              [2]string
+		oracle, candidate string
+		want              string
+	}{
+		"a duration off by one": {oneLog, one[0], replace(one[1], `"duration":14,`, `"duration":15,`),
+			tr + "old.duration"},
+		"a time off by one": {oneLog, one[0], replace(one[1], `"type":null,"when":1791438148,`,
+			`"type":null,"when":1791438149,`), tr + "when"},
+		"the end of the delay off by one": {oneLog, one[0], replace(one[1], `"delay_up_to_time":1791438148`,
+			`"delay_up_to_time":1791438147`), tr + "notification.delay_up_to_time"},
+		// the notification's time is the entry's exec_run, not its `when`
+		"the notification, run a second later": {lateLog, one[0], replace(one[1],
+			`"notification":{"when":1791438148`, `"notification":{"when":1791438149`), ""},
+		"the notification's time the transition's": {lateLog, one[0], one[1], tr + "notification.when"},
+		"a raised duration off by one": {oneLog, anchor[0], replace(anchor[1], `"raised_duration":32}`,
+			`"raised_duration":31}`), "$.transitions[1].old.raised_duration"},
+		// a global id is microseconds of its entry's second
+		"a global id in seconds": {oneLog, one[0], replace(one[1], `"gi":1791438148875597,`, `"gi":1791438148,`),
+			tr + "gi"},
+		// C reads the clock for it after the one that gave the entry's time: the seconds of the bound after it
+		"a global id two seconds late": {oneLog, one[0], replace(one[1], `"gi":1791438148875597,`,
+			`"gi":1791438150875597,`), ""},
+		"a global id three seconds late": {oneLog, one[0], replace(one[1], `"gi":1791438148875597,`,
+			`"gi":1791438151875597,`), tr + "gi"},
+		"a global id a second early": {oneLog, one[0], replace(one[1], `"gi":1791438148875597,`,
+			`"gi":1791438147875597,`), tr + "gi"},
+		"global ids without microseconds": {oneLog, anchor[0], dashNormWholeSeconds(anchor[1]),
+			"$.transitions[0].gi $.transitions[1].gi $.transitions[2].gi $.transitions[3].gi"},
+		// an id the side's log does not hold stays as it is, and nothing of its transition is named
+		"an id the log does not hold": {oneLog, one[0], replace(one[1], `"transition_id":"3e3dbcb9-`,
+			`"transition_id":"4e3dbcb9-`), tr + "gi " + tr + "transition_id " + tr + "when " + tr +
+			"old.duration " + tr + "notification.when " + tr + "notification.delay_up_to_time"},
+		// an alert that never had a status: its last change is the second it was made in, its entry's time less
+		// the entry's duration, and not the entry's time
+		"an alert made a second before its link's entry": {linkLog, pretty[0], linked, ""},
+		"its last change, the entry's time": {linkLog, pretty[0], replace(linked, plainChange+"1791438103,",
+			plainChange+"1791438104,"), "$.alert_instances[0].tr_t"},
+		// an alert with a status: its last change is its entry's time, not that less the entry's duration (3 here)
+		"a status' time less its duration": {alertsLog, pretty[0], replace(pretty[1], lowChange+"1791438106,",
+			lowChange+"1791438103,"), "$.alert_instances[1].tr_t"},
+		"an alert back from REMOVED": {backLog, pretty[0], pretty[1], ""},
+		"an alert back from REMOVED, its time less the duration": {backLog, pretty[0], replace(pretty[1],
+			lowChange+"1791438106,", lowChange+"1791438103,"), "$.alert_instances[1].tr_t"},
+		// an alert: its last change is its last entry's, its last evaluation a second of the request or of the two
+		// before it
+		"an alert's last change off by one": {alertsLog, raised[0], replace(raised[1], `"tr_t":1791438106,`,
+			`"tr_t":1791438105,`), "$.alert_instances[0].tr_t"},
+		"an alert evaluated three seconds ago": {alertsLog, raised[0], replace(raised[1], `"v":70,"t":1791438106}`,
+			`"v":70,"t":1791438103}`), "$.alert_instances[0].t"},
+		"an alert evaluated two seconds ago": {alertsLog, raised[0], replace(raised[1], `"v":70,"t":1791438106}`,
+			`"v":70,"t":1791438104}`), ""},
+		"an alert evaluated after the request": {alertsLog, raised[0], replace(raised[1], `"v":70,"t":1791438106}`,
+			`"v":70,"t":1791438107}`), "$.alert_instances[0].t"},
+	} {
+		if got := diffs(c.logs, c.oracle, c.candidate); got != c.want {
+			t.Errorf("%s: differences at %q, want %q", name, got, c.want)
+		}
+	}
+	// an id the log does not hold is left as the agent wrote it, not named
+	if got, _ := render(oneLog[1], replace(one[1], `"transition_id":"3e3dbcb9-`, `"transition_id":"4e3dbcb9-`)); !strings.Contains(got,
+		`"transition_id":"4e3dbcb9-693f-4ca1-973c-074ef998755f"`) || strings.Contains(got, `"t?"`) {
+		t.Errorf("an id the log does not hold, rendered: %s", got)
+	}
+	// one global id that is a whole second is a microsecond like another (a body with one cannot tell)
+	if got := diffs(oneLog, one[0], replace(one[1], `"gi":1791438148875597,`, `"gi":1791438148000000,`)); got != "" {
+		t.Errorf("one global id on a whole second: differences at %q", got)
 	}
 
 	// the zero pair (health off: the dashboard replay): the v2 envelope's masks alone
-	if fam := alertsV2Family([2]*healthNorm{}); fam.render != nil || fam.check != nil || fam.settle != 0 ||
+	if fam := alertsV2Family([2]*healthNorm{}, nil); fam.render != nil || fam.check != nil || fam.settle != 0 ||
 		fam.unordered != nil || fam.now != nil || !slices.Equal(fam.masks, infoV2Volatile) {
 		t.Errorf("the zero pair's family renders, checks, waits or masks more than the v2 envelope")
 	}
 
-	// with the runner's normalizers each side renders with its own; one second apart (as C was against C in that run's
-	// by-name row) the rendered answers are equal and the bound holds, three seconds apart it does not
-	n := [2]*healthNorm{norm(dashNormAlertsRaisedLog), norm(dashNormAlertsRaisedLog)}
-	fam := alertsV2Family(n)
+	// with the runner's normalizers: the family's wait and masks, and the bound beside the render: the recorded
+	// sides' first statuses were a second apart, within it; four seconds apart they are not
+	fam := family(oneLog)
 	if fam.render == nil || fam.check == nil || fam.settle != healthCandidateWait || fam.now != nil ||
 		!slices.Equal(fam.masks, infoV2Volatile) {
 		t.Fatalf("the family with normalizers has no render, no check, or another wait or masks")
 	}
-	o := fam.render(0, []byte(dashNormAlertsRaised))
-	c := fam.render(1, []byte(strings.ReplaceAll(dashNormAlertsRaised, "1791318134", "1791318133")))
-	if string(o) != string(c) || string(o) != dashNormAlertsRaisedWant {
-		t.Errorf("one second apart the renders differ:\n%s\n%s", o, c)
+	if got := string(fam.render(0, asked, []byte(one[0]))); !strings.Contains(got, `"transition_id":"t+13",`) {
+		t.Errorf("the family's render does not name the transition by its side's log: %s", got)
 	}
-	fam.check(t, "one second apart", Value{}, Value{})
-	_, oc := alertsV2Render(n[0], []byte(dashNormAlertsRaised))
-	_, cc := alertsV2Render(n[1], []byte(strings.ReplaceAll(dashNormAlertsRaised, "1791318134", "1791318131")))
-	if healthClocksNear(oc, cc) == nil {
-		t.Errorf("three seconds apart, the bound holds: %v, %v", oc, cc)
+	fam.render(0, asked, []byte(dashNormAlertsOneClear[0]))
+	fam.render(1, asked, []byte(dashNormAlertsOneClear[1]))
+	fam.check(t, "the first statuses, a second apart", Value{}, Value{})
+	_, near := render(oneLog[0], dashNormAlertsOneClear[0])
+	_, far := render(strings.ReplaceAll(oneLog[0], "1791438135", "1791438131"),
+		strings.ReplaceAll(dashNormAlertsOneClear[0], "1791438135", "1791438131"))
+	if len(near) != 3 || len(far) != 3 || healthClocksNear(near, far) == nil {
+		t.Errorf("four seconds apart, the bound holds: %v, %v", near, far)
 	}
+
+	// a side whose alert log cannot be read: its body is left unparsable, with the reason first
+	broken := alertsV2Family([2]*healthNorm{norm(), norm()}, func(int) ([]byte, error) { return nil, fmt.Errorf("no log") })
+	if got := string(broken.render(0, asked, []byte(`{"gi":1}`))); got != "the side's alert log: no log\n"+`{"gi":1}` {
+		t.Errorf("a side without its alert log: %q", got)
+	}
+
+	// the `one-clear` row's guard (alertsV2OneClear): C's answer, and not a change to WARNING
+	for name, c := range map[string]struct {
+		body string
+		bad  bool
+	}{
+		"C's answer":          {dashNormAlertsOneClear[0], false},
+		"a change to WARNING": {dashNormAlertsOne[0], true},
+		"no transition": {`{"api":2,"transitions":[],"items":{"evaluated":0,"matched":0,"returned":0,` +
+			`"max_to_return":1,"before":0,"after":0}}`, true},
+	} {
+		rendered, _ := render(oneLog[0], c.body)
+		v, err := ParseJSON([]byte(rendered))
+		if err != nil {
+			t.Fatalf("%v: %s", err, rendered)
+		}
+		if err := alertsV2OneClear(v); (err != nil) != c.bad {
+			t.Errorf("the one-clear guard, %s: %v", name, err)
+		}
+	}
+}
+
+// dashNormWholeSeconds is body with every global id cut to its whole second, in microseconds.
+func dashNormWholeSeconds(body string) string {
+	return alertsV2ItemRe.ReplaceAllStringFunc(body, func(m string) string {
+		return m[:len(m)-6] + "000000"
+	})
 }

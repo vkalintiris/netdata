@@ -662,7 +662,7 @@ func fnStreamCatalog(t *testing.T, p *Pair, _ [2]*fnStreamSide) {
 	}
 	// the parents' node lists (D231 F2): the child's and the vnode's capabilities follow what each negotiated and
 	// registered (funcs and dyncfg, aclk_capas.c:41-42, :49, :53); its own subtest, so a failure ends no more than
-	// it; red on Rust until milestone 10 commit 2
+	// it; green on Rust since milestone 10 commit 2
 	t.Run("nodes", func(t *testing.T) {
 		nodes := "/api/v3/nodes?options=minify"
 		compareV2(t, p, v2Req{name: nodes, target: nodes, status: "200", guard: dashGuard(fnStreamNodesFacts)},

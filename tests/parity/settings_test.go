@@ -80,14 +80,16 @@ const (
 	setFresh   = `{"version":1}`
 	setInvalid = `{"status":400,"errorMessage":"Invalid settings file given."}`
 	setMode    = `{"status":400,"errorMessage":"Invalid HTTP mode. HTTP modes GET and PUT are supported."}`
-	setV2      = `{ "version": 2, "value": { "preferred_node_ids": [ "5a1e0000-0000-4000-8000-0000000000bb" ] } }`
-	setV3      = `{ "version": 3, "value": { "preferred_node_ids": [ "5a1e0000-0000-4000-8000-0000000000bb" ] } }`
 )
 
-// The dashboard's PUT of its preferred nodes (installed v3 app), on the fresh file (stored as setV2) and on setV2.
+// The dashboard's PUT of its preferred nodes, the fixture child (installed v3 app), on the fresh file and on its second
+// version (setPutV1, setPutV2), and the file C stores for each, the version raised by one, as json-c prints it (setV2,
+// setV3).
 var (
 	setPutV1 = []byte(`{"version":1,"value":{"preferred_node_ids":["` + childHost.MachineGUID + `"]}}`)
 	setPutV2 = []byte(`{"version":2,"value":{"preferred_node_ids":["` + childHost.MachineGUID + `"]}}`)
+	setV2    = `{ "version": 2, "value": { "preferred_node_ids": [ "` + childHost.MachineGUID + `" ] } }`
+	setV3    = `{ "version": 3, "value": { "preferred_node_ids": [ "` + childHost.MachineGUID + `" ] } }`
 )
 
 // setRow is a settings row whose answer the oracle must give with the status line and the body exactly.
@@ -99,9 +101,10 @@ func setRow(name, method, target string, body []byte, status, answer string, hea
 // TestSettingsAPI (check `api.settings`, M10 commit 7, D224): `/api/v3/settings`, the dashboard's per-agent settings
 // file, asked in order on one pair (the file is state): GETs and PUTs of the default file through its versions (409 for
 // a stale version), the payload and file-name errors (400), the other methods, a routed host, and an admin's other
-// file. Every answer is compared raw after maskRaw; after the first GET and each PUT, both sides' file (bytes and
-// mode), its directory's mode, and no temporary file left, the oracle's judged first (settingsFiles). Red on Rust
-// until commit 7.
+// file. Every answer is compared raw after maskAnswer (each side's clock and expiry read against its own flight: an
+// nRPC answer to a PUT expires a second after its Date, json-c-parser-inline.c:49-50); after the first GET and each
+// PUT, both sides' file (bytes and mode), its directory's mode, and no temporary file left, the oracle's judged first
+// (settingsFiles). Red on Rust until commit 7.
 func TestSettingsAPI(t *testing.T) {
 	const ok, bad, conflict = "HTTP/1.1 200 OK\r\n", "HTTP/1.1 400 Bad Request\r\n", "HTTP/1.1 409 Conflict\r\n"
 	def := setPath + "?file=default"

@@ -10,7 +10,7 @@ import (
 )
 
 // testDashNormContextsRows pins the families and guards of `api.v2-contexts`' rows beyond the dashboard's calls
-// (D231 F6, D232: contextsLabelsFamily, contextsWindowFamily, contextsMCPFamily, dashSet and the rows' facts) on C's
+// (D231 F6, D232, D233, D238: contextsLabelsFamily, contextsMCPFamily, dashSet and the rows' facts) on C's
 // answers, recorded C against C (the oracle as its own candidate: H33's probe p1, 14:00Z, for the `data` rows; H34's
 // probe p1, 23:22-23:23Z, for the MCP texts and the two children's rows) and assembled from their parts: each
 // answer's members as C printed them, the timings of one of them.
@@ -108,7 +108,7 @@ func testDashNormContextsRows(t *testing.T) {
 	// parse is an answer as v2Round judges it: normalised by fam, asked in the second at
 	parse := func(fam v2Family, b string, at int64) Value {
 		t.Helper()
-		v, err := ParseJSON(fam.normalise(0, [2]int64{at, at}, []byte(b)))
+		v, err := ParseJSON(fam.normalise(0, [2]int64{at, at}, [2]int64{at, at}, []byte(b)))
 		if err != nil {
 			t.Fatalf("%v: %s", err, b)
 		}
@@ -148,20 +148,24 @@ func testDashNormContextsRows(t *testing.T) {
 		}
 	}
 
-	// the window's family: no `now` (C's walk clock is the second before the request's, and its contexts' last
-	// entries with it), so the agent's clock is not held to the flight; what it lists is compared
-	if len(contextsWindowFamily.now) != 0 {
-		t.Errorf("contextsWindowFamily writes %v as NOW", contextsWindowFamily.now)
+	// a window's answer: C's walk clock is the second before the request's (the recorded `window-miss` answer, asked
+	// in second `now`, says now - 1). The agent's clock is held to that second (v2Clock), not to the flight's; what
+	// the answer lists is compared
+	windowTarget := "/api/v2/contexts?scope_nodes=*&after=1791380820&before=1791381120"
+	if err := v2NowInFlight(parse(contextsFamily, window, now), contextsFamily.v2Clock(windowTarget, flight)); err != nil {
+		t.Errorf("a window's clock, the second before the request: %v", err)
 	}
-	if err := v2NowInFlight(parse(contextsWindowFamily, window, now), flight); err == nil {
-		t.Errorf("v2NowInFlight took a window's clock, the second before the request")
+	if err := v2NowInFlight(parse(contextsFamily, window, now), flight); err == nil {
+		t.Errorf("v2NowInFlight took a window's clock for the wall's")
+	}
+	if err := v2NowInFlight(parse(contextsFamily, none, now), contextsFamily.v2Clock(windowTarget, flight)); err == nil {
+		t.Errorf("v2NowInFlight took the wall's clock for a window's")
 	}
 	for name, c := range map[string]struct{ candidate, want string }{
 		"the recorded pair": {strings.Replace(window, `"query_ms":0.039`, `"query_ms":0.003`, 1), ""},
 		"the child listed":  {miss, "$.nodes.length $.contexts.<members>"},
 	} {
-		if got := dashNormDiffs(t, contextsWindowFamily, contextsWindowFamily.masks, flight, window,
-			c.candidate); got != c.want {
+		if got := dashNormDiffs(t, contextsFamily, contextsFamily.masks, flight, window, c.candidate); got != c.want {
 			t.Errorf("contexts window, %s: differences at %q, want %q", name, got, c.want)
 		}
 	}
@@ -232,7 +236,7 @@ func testDashNormContextsRows(t *testing.T) {
 		"no text":              {all, all},
 		"an answer of no JSON": {"Unsupported API command: contexts", "Unsupported API command: contexts"},
 	} {
-		if got := string(mcpTextRender(0, []byte(c.in))); got != c.want {
+		if got := string(mcpTextRender(0, [2]int64{}, []byte(c.in))); got != c.want {
 			t.Errorf("mcpTextRender, %s: %s, want %s", name, got, c.want)
 		}
 	}
@@ -305,10 +309,13 @@ func testDashNormContextsRows(t *testing.T) {
 		"contexts-miss": {miss, all, now},
 		"scope-miss":    {none, miss, now},
 		"window-miss":   {window, all, now},
-		"debug":         {debug, strings.Replace(debug, `"debug",`, `"debug","titles",`, 1), now},
-		"mcp":           {mcp, all, now},
-		"titles":        {merge, strings.Replace(merge, `"[x] [x]"`, `"other [x]"`, 1), nowMerge},
-		"truncated":     {truncated, merge, nowMerge},
+		// a selector with no word in it filters nothing: the dashboard's answer, not a filter's that matches nothing
+		"scope-wordless": {all, none, now},
+		"nodes-wordless": {all, miss, now},
+		"debug":          {debug, strings.Replace(debug, `"debug",`, `"debug","titles",`, 1), now},
+		"mcp":            {mcp, all, now},
+		"titles":         {merge, strings.Replace(merge, `"[x] [x]"`, `"other [x]"`, 1), nowMerge},
+		"truncated":      {truncated, merge, nowMerge},
 		"categorized": {categorized, strings.Replace(categorized, `"samples_per_category":3`,
 			`"samples_per_category":0`, 1), nowMerge},
 	} {
@@ -324,8 +331,8 @@ func testDashNormContextsRows(t *testing.T) {
 			t.Errorf("the %s guard took a wrong answer", name)
 		}
 	}
-	if len(rows) != 11 {
-		t.Errorf("%d rows, pinned 11", len(rows))
+	if len(rows) != 13 {
+		t.Errorf("%d rows, pinned 13", len(rows))
 	}
 	// a host kept without a context is refused where none may be
 	kept := body(now, `"api":2`, `"nodes":[`+parent+`"ni":0,`+st+`]`, `"contexts":{}`, version, agent, timings)
@@ -508,6 +515,83 @@ func testDashNormContextsRows(t *testing.T) {
 			}
 		}
 	}
+	// `merge-keep` (D238): C's answers once the second child alone was gone (H35's probe P2, the same members in
+	// this pair's seconds). The first host's q.ctx is collected and the newcomer's is not, so the first host's
+	// title, family, units and priority are kept; the retention's start is still the newcomer's
+	const keptQ = `"title":"title [x]","family":"fam","units":"units","priority":1000,"first_entry":1791415140,`
+	keepTitles := body(nowGone, `"api":2`, nodes3, contexts(keptQ+liveGone, dead2), hashes(39), agent, timings)
+	keep := map[string]contextsRow{}
+	for _, r := range contextsKeepRows(baseMerge) {
+		keep[r.req.name] = r
+	}
+	for name, c := range map[string]struct {
+		c       string
+		refused map[string]string
+	}{
+		"child2": {bothChild2, map[string]string{
+			"the contexts still collected": goneChild2,
+			"q.ctx live at its data's end": strings.Replace(bothChild2, own2Q+dead2,
+				own2Q+`"last_entry":1791415200,"live":true`, 1),
+			"the merged answer": keepTitles,
+		}},
+		"titles": {keepTitles, map[string]string{
+			// a port that always merges: `merge`'s title, family and priority
+			"always merged": body(nowGone, `"api":2`, nodes3, contexts(mergedQ+liveGone, dead2), hashes(39), agent,
+				timings),
+			// a port that takes the newcomer's flags: not collected, its last entry the fixture's end
+			"the newcomer's flags": body(nowGone, `"api":2`, nodes3, contexts(keptQ+
+				`"last_entry":1791415260,"live":false`, dead2), hashes(39), agent, timings),
+			"the second child still collected": goneTitles,
+			"the merged title alone":           strings.Replace(keepTitles, `"title":"title [x]"`, `"title":"[x] [x]"`, 1),
+			"the merged family alone":          strings.Replace(keepTitles, `"family":"fam"`, `"family":"fam[x]"`, 1),
+			"the newcomer's units":             strings.Replace(keepTitles, `"units":"units"`, `"units":"units2"`, 1),
+			"the lower priority":               strings.Replace(keepTitles, `"priority":1000`, `"priority":900`, 1),
+			"the first host's first entry": strings.Replace(keepTitles, `"priority":1000,"first_entry":1791415140`,
+				`"priority":1000,"first_entry":1791415200`, 1),
+			"not live at the walk's clock": strings.Replace(keepTitles, keptQ+liveGone,
+				keptQ+`"last_entry":1791415380,"live":false`, 1),
+			"live at its data's end": strings.Replace(keepTitles, keptQ+liveGone,
+				keptQ+`"last_entry":1791415260,"live":true`, 1),
+			"r.ctx still collected": strings.Replace(keepTitles, `"priority":1100,"first_entry":1791415140,`+dead2,
+				`"priority":1100,"first_entry":1791415140,`+liveGone, 1),
+			"r.ctx's last entry the fixture's": strings.Replace(keepTitles,
+				`"priority":1100,"first_entry":1791415140,`+dead2,
+				`"priority":1100,"first_entry":1791415140,"last_entry":1791415260,"live":false`, 1),
+			"two hosts":       strings.Replace(keepTitles, nodes3, nodes, 1),
+			"without r.ctx":   strings.Replace(keepTitles, `},"r.ctx":{`+rMerge+dead2+`}}`, `}}`, 1),
+			"without its api": strings.Replace(keepTitles, `"api":2,`, ``, 1),
+		}},
+	} {
+		r, ok := keep[name]
+		if !ok {
+			t.Errorf("no merge-keep row %s", name)
+			continue
+		}
+		if err := r.req.guard(parse(r.fam, c.c, nowGone)); err != nil {
+			t.Errorf("the merge-keep %s guard on C's answer: %v", name, err)
+		}
+		for what, refused := range c.refused {
+			if refused == c.c {
+				t.Errorf("the merge-keep %s guard: %s is C's answer", name, what)
+			}
+			if err := r.req.guard(parse(r.fam, refused, nowGone)); err == nil {
+				t.Errorf("the merge-keep %s guard took %s", name, what)
+			}
+		}
+	}
+	if len(keep) != 2 {
+		t.Errorf("%d merge-keep rows, pinned 2", len(keep))
+	}
+	if got := dashNormDiffs(t, contextsFamily, contextsFamily.masks, [2]int64{nowGone, nowGone}, keepTitles,
+		strings.Replace(keepTitles, `"query_ms":0.039`, `"query_ms":0.02`, 1)); got != "" {
+		t.Errorf("contexts merge-keep, the recorded pair: differences at %q", got)
+	}
+	if got := dashNormDiffs(t, contextsFamily, contextsFamily.masks, [2]int64{nowGone, nowGone}, keepTitles,
+		body(nowGone, `"api":2`, nodes3, contexts(mergedQ+liveGone, dead2), hashes(39), agent, timings)); got !=
+		"$.contexts.q.ctx.title $.contexts.q.ctx.family $.contexts.q.ctx.priority" {
+		t.Errorf("contexts merge-keep against a port that always merges: differences at %q", got)
+	}
+
 	// the two C sides' answers of a gone row show no difference; an entry that is not collected keeps its last
 	// entry's second, which is compared
 	for name, c := range map[string]struct{ oracle, candidate, want string }{

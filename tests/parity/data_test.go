@@ -23,7 +23,49 @@ var (
 	// v2 wrappers: the answering agent's clock, and the context dictionary's version, which counts worker-timed
 	// update events (spec §11).
 	v2ClockRe = regexp.MustCompile(`"(now|contexts_hard_hash)":("[^"]*"|[0-9]+)`)
+	// agentNowRe is the answering agent's clock: a number of seconds or, with `options=rfc3339`, a date
+	// (api_v2_contexts_agents.c:25).
+	agentNowRe = regexp.MustCompile(`"now":(\s*)([0-9]+|"[^"]*")`)
 )
+
+// agentNowIn tells whether an answering agent's clock, as agentNowRe's second group has it (a JSON number or
+// string), is a second in [from, to] (v2Second).
+func agentNowIn(text []byte, from, to int64) bool {
+	clock, err := ParseJSON(text)
+	if err != nil {
+		return false
+	}
+	v, err := v2Second(clock)
+	return err == nil && v >= from && v <= to
+}
+
+// maskAgentNow writes NOW for each `now` of b that is a second in [from, to], the seconds the request was in flight:
+// the answering agent reads its clock while it answers (api_v2_contexts_agents.c:12-13, :25: the data wrapper and the
+// dyncfg tree pass it no clock of their own, jsonwrap-v2.c:558, dyncfg-tree.c:162). Any other value is left to the
+// comparison: a 0, a clock in milliseconds, a second outside the flight.
+func maskAgentNow(b []byte, from, to int64) []byte {
+	return agentNowRe.ReplaceAllFunc(b, func(m []byte) []byte {
+		g := agentNowRe.FindSubmatch(m)
+		if !agentNowIn(g[2], from, to) {
+			return m
+		}
+		return []byte(`"now":` + string(g[1]) + `"NOW"`)
+	})
+}
+
+// dataStrayNow takes each `now` of b that is no second in [from, to] out of maskTimings' reach: its key then reads
+// `now, not a second of the request's flight`, its value as the agent wrote it. maskTimings hides a `now` whatever it
+// holds (maskClock, as the checks outside the dashboard's use it); a data answer's is the answering agent's clock
+// (maskAgentNow), so one the flight does not hold is left for the comparison, under a name that says why.
+func dataStrayNow(b []byte, from, to int64) []byte {
+	return agentNowRe.ReplaceAllFunc(b, func(m []byte) []byte {
+		g := agentNowRe.FindSubmatch(m)
+		if agentNowIn(g[2], from, to) {
+			return m
+		}
+		return []byte(`"now, not a second of the request's flight":` + string(g[1]) + string(g[2]))
+	})
+}
 
 // maskNowKeys writes "NOW" for each member of b named one of keys whose value is a second in [from, to], the seconds
 // the request was in flight: an agent prints its clock there for what is collected (a detailed tree's last entries; a
@@ -50,10 +92,14 @@ func maskNowEntries(b []byte, from, to int64) []byte {
 	return maskNowKeys(b, from, to, "le", "last_entry")
 }
 
-// dataMask hides what differs between two data answers of one fixture: the clock, the timings, and the last entries
-// of now (the seconds [from, to] the request was in flight).
+// dataMask hides what differs between two data answers of one fixture, given the seconds [from, to] the request was
+// in flight: the head's clock and expiry read against them (maskAnswer: an absolute window's answer expires a day
+// after its Date, a relative one's with it), the transaction id, the length, the contexts' version and the timings
+// (maskTimings), and what holds the clock of now: the answering agent's `now`, which is masked only where it is a
+// second of the flight (dataStrayNow), and the last entries.
 func dataMask(b []byte, from, to int64) []byte {
-	return maskNowEntries(maskTimings(maskRaw(b)), from, to)
+	b = dataStrayNow(maskAnswer(b, [2]int64{from, to}), from, to)
+	return maskNowEntries(maskTimings(b), from, to)
 }
 
 // dataAgree tells whether two masked data answers agree but for the labels' order (labelOrderOnly).
@@ -317,12 +363,52 @@ func TestDataAPI(t *testing.T) {
 		dataSame(t, p, []byte("GET "+target+" HTTP/1.1\r\n\r\n"), post, [2]string{"HTTP/1.1 200 OK\r\n", "\n}\n"},
 			[]string{`"update_every":10,`, `"grouped_by":["dimension"]`}, nil)
 	})
+	get := func(path string) []byte { return []byte("GET " + host + path + " HTTP/1.1\r\n\r\n") }
+	// A context scope with no word in it is no scope (D233: string_to_simple_pattern returns NULL for a text of
+	// separators alone, simple_pattern.h:57-59, which the query target reads as no filter, query_scope.c:115): the
+	// oracle answers as it does without the parameter, the child's one context queried.
+	t.Run("v2-scope-wordless", func(t *testing.T) {
+		plain := "/api/v2/data?scope_nodes=" + childHost.Hostname + "&points=6&" + win
+		dataSame(t, p, get(plain), get(plain+"&scope_contexts=%7C"), [2]string{"HTTP/1.1 200 OK\r\n", "\n}\n"}, nil,
+			dashGuard([]dashFact{dashIs(`"q.ctx"`, "summary", "contexts", "[0]", "id"),
+				dashIs(`{"sl":2,"qr":2}`, "summary", "contexts", "[0]", "is")}))
+	})
+	// The rows below carry what the oracle's answer must be (dataJudge): C's, in H35's probe P2.
+	for _, r := range []struct {
+		name, path string
+		want       [2]string
+		guard      func(Value) error
+	}{
+		// a chart pattern with no word in it is no pattern: every chart of the host answers, q.a's four visible
+		// dimensions and q.two's two (web/api/v1/api_v1_data.c:139-148, :175: the request has a chart, and the query
+		// target gets no instance filter), where `chart=*` is refused as no chart at all (`star-target`)
+		{"chart-wordless", "/api/v1/data?chart=%7C&points=5&" + win, [2]string{"HTTP/1.1 200 OK\r\n", "\n    }"},
+			dashGuard([]dashFact{dashIs(`["time","alpha","b","z","inc","a","b"]`, "labels")})},
+		// a `labels=` word whose separator is escaped: C parses each word of the pattern again with the web
+		// separators (database/pattern-array.c:112), and that second reading ends the value at the escaped comma, so
+		// `k:v1\,x` selects the instance labelled k=v1 (q.a: one of the two selected and queried, the other excluded)
+		{"v3-labels-escaped", v3 + "&points=4&labels=k:v1%5C,x", [2]string{"HTTP/1.1 200 OK\r\n", "\n}\n"},
+			dashGuard([]dashFact{dashIs(`{"sl":1,"ex":1,"qr":1}`, "summary", "nodes", "[0]", "is")})},
+		// a chart asked by its id is still held to `chart_label_key`: C checks the key on the single-chart path too
+		// (database/contexts/query_target.c:943-972), so a key the chart has no label of leaves nothing to query
+		{"chart-label-key-miss", "/api/v1/data?chart=q.a&chart_label_key=nosuchlabel&points=5&" + win,
+			[2]string{"HTTP/1.1 404 Not Found\r\n", "\r\n\r\nNo metrics where matched to query."}, nil},
+	} {
+		t.Run(r.name, func(t *testing.T) {
+			var got [2][]byte
+			for i, side := range p.Each() {
+				got[i] = dataAsk(t, side.Role, side.Daemon.Addr, get(r.path))
+			}
+			dataJudge(t, got, r.want, nil, r.guard)
+		})
+	}
 }
 
-// dataSame judges a POST whose payload C does not read (api_v2_data.c:20-340): the oracle's answer to post must be
-// its answer to get (the same target) asked just before or just after it; then the two answers to post are judged
-// as a data row's (dataJudge). An answer whose window ends at now moves with the clock: a round whose answers fall in
-// different seconds is asked again (3 rounds at most).
+// dataSame judges a request that C answers as it answers another: a POST whose payload C does not read
+// (api_v2_data.c:20-340), a selector with no word in it (D233). The oracle's answer to post must be its answer to get
+// asked just before or just after it; then the two answers to post are judged as a data row's (dataJudge). An answer
+// whose window ends at now moves with the clock: a round whose answers fall in different seconds is asked again (3
+// rounds at most).
 func dataSame(t *testing.T, p *Pair, get, post []byte, want [2]string, holds []string, guard func(Value) error) {
 	t.Helper()
 	var got [2][]byte
@@ -336,20 +422,35 @@ func dataSame(t *testing.T, p *Pair, get, post []byte, want [2]string, holds []s
 		agree = dataAgree(got[0], got[1])
 	}
 	if !asGet {
-		t.Fatalf("oracle: the POST is not answered as the GET: %q", truncateBytes(got[0]))
+		t.Fatalf("oracle: the request is not answered as the one it should equal: %q", truncateBytes(got[0]))
 	}
 	dataJudge(t, got, want, holds, guard)
 }
 
-// dataAsk sends request to one agent and returns its answer with the data masks.
+// dataAsk sends request to one agent and returns its answer with the data masks (dataAnswer); an answer whose
+// Content-Length is not its body's length is reported.
 func dataAsk(t *testing.T, side Role, addr string, request []byte) []byte {
 	t.Helper()
-	from := time.Now().Unix()
-	b, err := rawExchange(addr, request, 2*time.Second)
+	b, length, err := dataAnswer(addr, request)
 	if err != nil {
 		t.Fatalf("%s: %v", side, err)
 	}
-	return dataMask(b, from, time.Now().Unix())
+	if length != nil {
+		t.Errorf("%s: %v", side, length)
+	}
+	return b
+}
+
+// dataAnswer sends request to one agent and hands back its answer with the data masks, for the seconds the request
+// was in flight (dataMask), and what is wrong with the length its head names (rawLength: the masks hide the header,
+// the two sides' timings being as wide as they are).
+func dataAnswer(addr string, request []byte) (masked []byte, length, err error) {
+	from := time.Now().Unix()
+	b, err := rawExchange(addr, request, 2*time.Second)
+	if err != nil {
+		return nil, nil, err
+	}
+	return dataMask(b, from, time.Now().Unix()), rawLength(b), nil
 }
 
 // labelOrderPaths are where the answers print labels in their order, which in C is heap-address order and differs

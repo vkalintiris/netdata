@@ -17,16 +17,18 @@ func TestDashNorm(t *testing.T) {
 	t.Run("info", testDashNormInfo)
 	t.Run("nodes", testDashNormNodes)
 	t.Run("contexts-rows", testDashNormContextsRows)
+	t.Run("tight", testDashNormTight)
+	t.Run("wiring", testDashNormWiring)
 }
 
 // dashNormDiffs are the paths where two recorded answers differ as a family compares them: each side's body
-// normalised by fam (0 the oracle's, both in the seconds of flight), then masks applied and fam's unordered paths
-// left unordered.
+// normalised by fam (0 the oracle's, both in the seconds of flight, which are the agent's clock's too), then masks
+// applied and fam's unordered paths left unordered.
 func dashNormDiffs(t *testing.T, fam v2Family, masks []Mask, flight [2]int64, o, c string) string {
 	t.Helper()
 	var docs [2]Value
 	for i, b := range []string{o, c} {
-		body := fam.normalise(i, flight, []byte(b))
+		body := fam.normalise(i, flight, flight, []byte(b))
 		v, err := ParseJSON(body)
 		if err != nil {
 			t.Fatalf("%v: %s", err, body)

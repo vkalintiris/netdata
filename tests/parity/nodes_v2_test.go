@@ -185,73 +185,151 @@ func compareNodesCapabilities(t *testing.T, name string, o, c Value) {
 	}
 }
 
+// nodeCapsMasks hide each capability's values in the lists under prefix (a node's, an instance's), which are compared
+// by name (compareNodesCapabilities); the names, and each entry's members and their order, stay compared (C writes
+// name, version, enabled: database/contexts/api_v2_contexts.c:437-452).
+func nodeCapsMasks(prefix string) []Mask {
+	return []Mask{
+		{prefix + ".capabilities.[].version", "compared by name"},
+		{prefix + ".capabilities.[].enabled", "compared by name"},
+	}
+}
+
 var (
 	// nodesFamily compares `/api/v2|v3/nodes`: the request's durations masked (infoV2Volatile), the host labels a set
 	// (C walks them in the order of their entries' heap addresses, rrdlabels.c:36-44, keyed by the label's pointer at
 	// :267: in C-against-C run nd-h31s3-probe1 localhost's 37 labels began `_aclk_available _is_k8s_node` on one side
-	// and `_aclk_proxy _mqtt_version` on the other; the precedent is rvNodesRules), each node's capabilities by name
-	// (compareNodesCapabilities).
+	// and `_aclk_proxy _mqtt_version` on the other; the precedent is rvNodesRules; a label map is flat, so the layout
+	// is compared whole), each node's capabilities by name (compareNodesCapabilities, nodeCapsMasks).
 	nodesFamily = v2Family{
-		masks:     append(slices.Clone(infoV2Volatile), Mask{"nodes.[].capabilities", "compared by name"}),
+		masks:     slices.Concat(infoV2Volatile, nodeCapsMasks("nodes.[]")),
 		unordered: []string{"nodes.[].labels"},
+		flat:      true,
 		settle:    dashSettle,
 		check:     compareNodesCapabilities,
-	}
-
-	// nodeInstancesFamily compares `/api/v2|v3/node_instances`: the agent's info as `api.v2-info` does on a fresh
-	// dbengine (infoV2Volatile, infoV2Fresh: in C-against-C run nd-h29s3-probe1 `from` was 1791312187 against
-	// 1791312190 and `retention` 5 against 2), each instance's capabilities by name, its `db.last_time` as NOW when it
-	// is a second of the request's flight (`now`), and what C takes from each side's clock and sockets
-	// (niIngestRender): the ingestion's start masked (localhost's start, rrdhost-status.c:202, 1791312184 against
-	// 1791312187 in that run; a child's connection, :163-169), its age compared as `now - since`, the receiver's two
-	// ports.
-	nodeInstancesFamily = v2Family{
-		masks: slices.Concat(infoV2Volatile, infoV2Fresh, []Mask{
-			{"nodes.[].instances.[].capabilities", "compared by name"},
-			{"nodes.[].instances.[].ingest.since", "each side's start or connection"},
-		}),
-		settle: dashSettle,
-		now:    []string{"last_time"},
-		render: niIngestRender,
-		check:  compareNodesCapabilities,
 	}
 
 	// versionsFamily compares `/api/v2|v3/versions`: the hashes, and the request's duration masked.
 	versionsFamily = v2Family{masks: infoV2Volatile, settle: dashSettle}
 )
 
+// niSide is what one side's node-instance answers take from its own run, for niIngestRender: the port the agent
+// listens on, the seconds it started in (from its launch on) and the seconds the fixture child's connection was
+// opened in (dashLinkAs).
+type niSide struct {
+	listen          string
+	started, opened [2]int64
+}
+
+// niStartSlack is how many seconds after its launch an agent may read its start time: C takes it at the top of main()
+// (daemon/main.c:338), the launch's own second in every run seen. The slack is for a loaded box; it costs only
+// niReady's wait.
+const niStartSlack = 5
+
+// niReady waits until both agents' start windows (their launch and niStartSlack seconds after it) are over, so that a
+// child connected from then on connects in a later second than either agent started in: a start time and a connection
+// time are then told apart by their seconds alone.
+func niReady(p *Pair) {
+	last := max(p.Oracle.LaunchStartedAt.Unix(), p.Candidate.LaunchStartedAt.Unix()) + niStartSlack
+	time.Sleep(time.Until(time.Unix(last+1, 0)))
+}
+
+// niSides are the two sides' own values (niSide) for a pair whose fixture child's connections were opened in the
+// seconds opened (0 the oracle's).
+func niSides(p *Pair, opened [2][2]int64) [2]niSide {
+	var sides [2]niSide
+	for i, side := range p.Each() {
+		_, port, _ := strings.Cut(side.Daemon.Addr, ":")
+		launch := side.Daemon.LaunchStartedAt.Unix()
+		sides[i] = niSide{listen: port, started: [2]int64{launch, launch + niStartSlack}, opened: opened[i]}
+	}
+	return sides
+}
+
+// nodeInstancesFamily compares `/api/v2|v3/node_instances` of a pair whose sides' own values are sides: the agent's
+// info as `api.v2-info` does on a fresh dbengine (infoV2Volatile, infoV2Fresh: in C-against-C run nd-h29s3-probe1
+// `from` was 1791312187 against 1791312190 and `retention` 5 against 2), each instance's capabilities by name
+// (nodeCapsMasks), its `db.last_time` as NOW when it is a second of the agent's clock (`now`), and what C takes from
+// each side's own clock and sockets written by what it is (niIngestRender): nothing of an ingestion is masked, and
+// the cloud status's start and age, which the render names too, are not masked here either.
+func nodeInstancesFamily(sides [2]niSide) v2Family {
+	envelope := slices.DeleteFunc(slices.Clone(infoV2Volatile), func(m Mask) bool {
+		return m.Pattern == "agents.[].cloud.since" || m.Pattern == "agents.[].cloud.age"
+	})
+	return v2Family{
+		masks:  slices.Concat(envelope, infoV2Fresh, nodeCapsMasks("nodes.[].instances.[]")),
+		settle: dashSettle,
+		now:    []string{"last_time"},
+		render: niIngestRender(sides),
+		check:  compareNodesCapabilities,
+	}
+}
+
 var (
-	// niPortRe is an ingestion source's port: `"[ip]:port"`, then `:SSL` on TLS
+	// niPortRe is an ingestion source's end and its port: `"[ip]:port"`, then `:SSL` on TLS
 	// (database/contexts/api_v2_contexts.c:366-371).
-	niPortRe = regexp.MustCompile(`("(?:local|remote)":\s*"\[[^\]"]*\]:)[0-9]+`)
-	// niAgeRe is an ingestion's start and age, in C's order (database/contexts/api_v2_contexts.c:343-344).
+	niPortRe = regexp.MustCompile(`"(local|remote)":(\s*"\[[^\]"]*\]:)([0-9]+)`)
+	// niAgeRe is a start and its age, in C's order: an ingestion's (database/contexts/api_v2_contexts.c:343-344) and
+	// the cloud status's (claim/cloud-status.c:74-75).
 	niAgeRe = regexp.MustCompile(`"since":(\s*)([0-9]+),(\s*)"age":(\s*)([0-9]+)`)
+	// niPeerRe is a port as a socket has one: a number above 0, written without a leading 0.
+	niPeerRe = regexp.MustCompile(`^[1-9][0-9]*$`)
 )
 
-// niIngestRender writes each ingestion source's port as PORT, its address and suffix kept (each side's own port and
-// an ephemeral one: 38929 and 34050 against 42091 and 39074 in run nd-h29s3-probe1), and an age as "NOW-SINCE" where
-// it is the body's `now` (dashNowRe) less the start before it, as C computes it
-// (database/contexts/api_v2_contexts.c:344, from the walk's one `now`, :495); any other age is compared as it is.
-func niIngestRender(_ int, body []byte) []byte {
-	body = niPortRe.ReplaceAll(body, []byte("${1}PORT"))
-	now := dashNowRe.FindSubmatch(body)
-	if now == nil {
-		return body
-	}
-	n, err := strconv.ParseInt(string(now[1]), 10, 64)
-	if err != nil {
-		return body
-	}
-	return niAgeRe.ReplaceAllFunc(body, func(m []byte) []byte {
-		g := niAgeRe.FindSubmatch(m)
-		since, err1 := strconv.ParseInt(string(g[2]), 10, 64)
-		age, err2 := strconv.ParseInt(string(g[5]), 10, 64)
-		if err1 != nil || err2 != nil || since+age != n {
+// niIngestRender renders what a node-instance answer takes from the side's own run (sides[i]), each value by what it
+// is and only where it is that:
+//   - an ingestion source's `local` port reads LISTEN when it is the port the agent listens on, and its `remote` port
+//     PEER when it is a port (1 to 65535) other than that one: the child's own end, which the kernel chose
+//     (socket-peers.c:22-50, database/contexts/api_v2_contexts.c:366-371); the address and any suffix are kept;
+//   - a `since` reads START when it is a second the agent started in: localhost's ingestion (rrdhost-status.c:176,
+//     :202: `netdata_start_time`) and the cloud status of an agent that never connected (claim/cloud-status.c:38-44);
+//     it reads CONNECTED when it is a second the child's connection was opened in: a child's ingestion
+//     (rrdhost-status.c:163-169, streaming/stream-receiver.c:1416). niReady keeps the two apart;
+//   - the `age` after a `since` reads "NOW-SINCE" where it is the body's `now` (dashNowRe) less that start, as C
+//     computes it (database/contexts/api_v2_contexts.c:344, from the walk's one `now`, :495;
+//     claim/cloud-status.c:75).
+//
+// Any other port, start or age is left as the agent wrote it, for the comparison.
+func niIngestRender(sides [2]niSide) func(i int, _ [2]int64, body []byte) []byte {
+	return func(i int, _ [2]int64, body []byte) []byte {
+		side := sides[i]
+		body = niPortRe.ReplaceAllFunc(body, func(m []byte) []byte {
+			g := niPortRe.FindSubmatch(m)
+			switch end, port := string(g[1]), string(g[3]); {
+			case end == "local" && port == side.listen:
+				return []byte(`"local":` + string(g[2]) + "LISTEN")
+			case end == "remote" && port != side.listen && niPeerRe.MatchString(port):
+				if n, err := strconv.Atoi(port); err == nil && n <= 65535 {
+					return []byte(`"remote":` + string(g[2]) + "PEER")
+				}
+			}
 			return m
+		})
+		n, clocked := int64(0), false
+		if now := dashNowRe.FindSubmatch(body); now != nil {
+			x, err := strconv.ParseInt(string(now[1]), 10, 64)
+			n, clocked = x, err == nil
 		}
-		return []byte(`"since":` + string(g[1]) + string(g[2]) + "," + string(g[3]) + `"age":` + string(g[4]) +
-			`"NOW-SINCE"`)
-	})
+		return niAgeRe.ReplaceAllFunc(body, func(m []byte) []byte {
+			g := niAgeRe.FindSubmatch(m)
+			since, err1 := strconv.ParseInt(string(g[2]), 10, 64)
+			age, err2 := strconv.ParseInt(string(g[5]), 10, 64)
+			if err1 != nil || err2 != nil {
+				return m
+			}
+			start, span := string(g[2]), string(g[5])
+			switch {
+			case since >= side.started[0] && since <= side.started[1]:
+				start = `"START"`
+			case since >= side.opened[0] && since <= side.opened[1]:
+				start = `"CONNECTED"`
+			}
+			if clocked && since+age == n {
+				span = `"NOW-SINCE"`
+			}
+			return []byte(`"since":` + string(g[1]) + start + "," + string(g[3]) + `"age":` + string(g[4]) + span)
+		})
+	}
 }
 
 // versionsGuard judges a versions answer: its members alone (api_v2_versions.c:6, the VERSIONS mode;
@@ -277,15 +355,34 @@ func nodesChildFacts(i, ni int) []dashFact {
 			"capabilities", nodeCaps(false)))
 }
 
-// nodesRows are check `api.v2-nodes`'s requests.
-func nodesRows() []v2Req {
+// nodesDebug is the request a nodes or versions answer echoes with `options=debug`, after `api`
+// (database/contexts/api_v2_contexts.c:1382-1441): its modes (in the writer's order, :714-750: the routes ask
+// `nodes` with `nodes-info`, or `versions` alone, and no option of their own: api_v2_nodes.c:6,
+// api_v2_versions.c:6), the options, the host scope and selector as asked (null: none; these modes echo no context
+// scope), and the window as the walk reads it (0 and 0: none).
+func nodesDebug(modes, nodes string, after, before int64) string {
+	return fmt.Sprintf(`{"mode":[%s],"options":["debug"],"scope":{"scope_nodes":null},"selectors":{"nodes":%s},`+
+		`"filters":{"after":%d,"before":%d}}`, modes, nodes, after, before)
+}
+
+// nodesTimeout is the answer of a v2 walk whose time is up before a host is visited (`timeout=-1`: the walk compares
+// its clock with the deadline at every host, api_v2_contexts.c:640-642, and answers 504 with this text,
+// :1451-1462).
+const nodesTimeout = "query timeout"
+
+// nodesRows are check `api.v2-nodes`'s requests, the fixture child's base being base.
+func nodesRows(base int64) []v2Req {
 	parent := []string{"nodes", "[0]"}
+	members := dashKeys("api nodes timings")
+	// every host, localhost first, with its info (no agents, no versions: the NODES_INFO mode)
+	both := slices.Concat([]dashFact{dashAbsent("nodes", "[2]")}, dashParent(0, 0),
+		dashMembers(parent, "state", `"reachable"`, "capabilities", nodeCaps(true)), nodesChildFacts(1, 1))
+	// the child alone, numbered 0
+	child := slices.Concat([]dashFact{dashAbsent("nodes", "[1]")}, nodesChildFacts(0, 0))
+	debug := dashKeys("api request nodes timings")
+	const modes = `"nodes","nodes-info"`
 	return []v2Req{
-		// every host, localhost first, with its info (no agents, no versions: the NODES_INFO mode)
-		{name: "v3-nodes", target: "/api/v3/nodes", status: "200", guard: dashGuard(
-			[]dashFact{dashKeys("api nodes timings"), dashAbsent("nodes", "[2]")},
-			dashParent(0, 0), dashMembers(parent, "state", `"reachable"`, "capabilities", nodeCaps(true)),
-			nodesChildFacts(1, 1))},
+		{name: "v3-nodes", target: "/api/v3/nodes", status: "200", guard: dashGuard([]dashFact{members}, both)},
 		// a host scope that names the child: it alone, numbered 0 (query_scope.c:36-48 skip the others before
 		// api_v2_contexts.c:704 numbers it)
 		{name: "v2-nodes-child", target: "/api/v2/nodes?scope_nodes=" + childHost.Hostname, status: "200",
@@ -301,6 +398,40 @@ func nodesRows() []v2Req {
 		// the row above holds because the scope matched q.ctx, not because the child has some context
 		{name: "v2-nodes-nomatch", target: "/api/v2/nodes?scope_contexts=nomatch", status: "200",
 			guard: dashGuard(nodesNone)},
+		// The route's other parameters (web/api/v2/api_v2_contexts.c:23-42), as C answered them in H35's probe P2.
+		// `options=debug` echoes the request: the route's two modes and no option but debug.
+		{name: "v3-nodes-debug", target: "/api/v3/nodes?options=debug", status: "200", guard: dashGuard(
+			[]dashFact{debug, dashIs(nodesDebug(modes, "null", 0, 0), "request")}, both)},
+		// `nodes=` selects among the hosts in scope (query_scope.c:52-62; the walk skips a host it does not select,
+		// api_v2_contexts.c:629-632): the child alone, numbered 0 (a host is numbered when it is kept, :702-708),
+		// and the selector echoed
+		{name: "v3-nodes-sel", target: "/api/v3/nodes?options=debug&nodes=" + childHost.Hostname, status: "200",
+			guard: dashGuard([]dashFact{debug,
+				dashIs(nodesDebug(modes, strconv.Quote(childHost.Hostname), 0, 0), "request")}, child)},
+		{name: "v3-nodes-sel-none", target: "/api/v3/nodes?nodes=nomatch", status: "200", guard: dashGuard(nodesNone)},
+		// `contexts=` filters no context, but a host without any context is dropped (:270, :656-674): localhost,
+		// with the pulse off
+		{name: "v3-nodes-ctx-miss", target: "/api/v3/nodes?contexts=nomatch", status: "200",
+			guard: dashGuard([]dashFact{members}, child)},
+		// a window keeps the hosts whose retention meets it (:636; rrdhost-collection.c:31-35, rrdcontext.h:722-724:
+		// an online host's ends now, rrdhost.h:607-619): both hosts for the fixture's own minute; for five minutes
+		// that end before the fixture's first sample, localhost alone (it has no data, so its retention begins at 0),
+		// the child's data beginning after them, and the window echoed as it was asked
+		{name: "v3-nodes-window", target: fmt.Sprintf("/api/v3/nodes?after=%d&before=%d", base, base+60), status: "200",
+			guard: dashGuard([]dashFact{members}, both)},
+		{name: "v3-nodes-window-miss", target: fmt.Sprintf("/api/v3/nodes?options=debug&after=%d&before=%d", base-600,
+			base-300), status: "200", guard: dashGuard([]dashFact{debug, dashAbsent("nodes", "[1]"),
+			dashIs(nodesDebug(modes, "null", base-600, base-300), "request")}, dashParent(0, 0))},
+		// a cardinality limit cuts no node list (the limit is the contexts' and their lists', :1178-1263)
+		{name: "v3-nodes-card1", target: "/api/v3/nodes?cardinality=1", status: "200",
+			guard: dashGuard([]dashFact{members}, both)},
+		// a time that is up before the first host (nodesTimeout). A timeout above 0 is no row: whether a walk of two
+		// hosts takes longer than a millisecond is each side's timing (`timeout=1` answered 200 on both C sides).
+		{name: "v3-nodes-timeout", target: "/api/v3/nodes?timeout=-1", status: "504", guard: dashText(nodesTimeout)},
+		// a host scope with no word in it is no scope (D233: string_to_simple_pattern returns NULL for a text of
+		// separators alone, simple_pattern.h:57-59, which query_scope.c:36 reads as every host): `v3-nodes`' answer
+		{name: "v3-nodes-wordless", target: "/api/v3/nodes?scope_nodes=,", status: "200",
+			guard: dashGuard([]dashFact{members}, both)},
 	}
 }
 
@@ -321,7 +452,7 @@ var nodesHealthOn = slices.Concat(dashParent(0, 0), dashMembers([]string{"nodes"
 // host with its destination (`_streams_to`, database/rrdhost-labels.c:229-230), its own parent's address.
 func fnStreamNodesFamily(addrs [2]string) v2Family {
 	fam := nodesFamily
-	fam.render = func(i int, body []byte) []byte {
+	fam.render = func(i int, _ [2]int64, body []byte) []byte {
 		return bytes.ReplaceAll(body, []byte(addrs[i]), []byte("PARENT"))
 	}
 	return fam
@@ -345,11 +476,37 @@ var fnStreamNodesFacts = slices.Concat(
 		"capabilities", nodeCapsOf(capFuncsOn, capHealthOff, capDyncfgOff)),
 )
 
-// versionsRows are check `api.v2-nodes`'s version requests (the two routes share the callback).
-func versionsRows() []v2Req {
+// versionsScoped judges a versions answer whose host scope keeps no host with a context: versionsGuard's members and
+// hashes, but the contexts' version 0 (the sum over the hosts in scope, query_scope.c:64); the host index's version
+// is the agent's, whatever the scope.
+var versionsScoped = dashGuard([]dashFact{dashKeys("api versions timings")},
+	dashMembers([]string{"versions"}, "routing_hard_hash", "1", "nodes_hard_hash", "2", "contexts_hard_hash", "0",
+		"contexts_soft_hash", "0", "alerts_hard_hash", "0", "alerts_soft_hash", "0"))
+
+// versionsRows are check `api.v2-nodes`'s version requests (the two routes share the callback), the fixture child's
+// base being base; the parameters' rows are C's answers of H35's probe P2.
+func versionsRows(base int64) []v2Req {
 	return []v2Req{
 		{name: "v2-versions", target: "/api/v2/versions", status: "200", guard: versionsGuard},
 		{name: "v3-versions", target: "/api/v3/versions", status: "200", guard: versionsGuard},
+		// `options=debug` echoes the request: the route's one mode and no option but debug (nodesDebug)
+		{name: "v2-versions-debug", target: "/api/v2/versions?options=debug", status: "200", guard: dashGuard(
+			[]dashFact{dashKeys("api request versions timings"), dashIs(nodesDebug(`"versions"`, "null", 0, 0), "request"),
+				dashAbove(0, "versions", "contexts_hard_hash")})},
+		// the hashes are those of the hosts in scope (query_scope.c:20-84): localhost alone has no context, and a
+		// scope that matches no host has none either
+		{name: "v2-versions-scope", target: "/api/v2/versions?scope_nodes=" + parentIdentity.Hostname, status: "200",
+			guard: versionsScoped},
+		{name: "v2-versions-scope-none", target: "/api/v2/versions?scope_nodes=nomatch", status: "200",
+			guard: versionsScoped},
+		// `nodes=` changes no hash: they are summed before it is read (api_v2_contexts.c:628-646)
+		{name: "v2-versions-nodes", target: "/api/v2/versions?nodes=nomatch", status: "200", guard: versionsGuard},
+		// the context scope and selector are not read in this mode (web/api/v2/api_v2_contexts.c:27-30), and neither a
+		// window nor a cardinality limit changes a hash
+		{name: "v2-versions-ignored", target: fmt.Sprintf("/api/v2/versions?scope_contexts=nomatch&contexts=nomatch"+
+			"&cardinality=1&after=%d&before=%d", base-600, base-300), status: "200", guard: versionsGuard},
+		{name: "v2-versions-timeout", target: "/api/v2/versions?timeout=-1", status: "504",
+			guard: dashText(nodesTimeout)},
 	}
 }
 
@@ -362,17 +519,21 @@ const versionsMCP = "{\n    \"versions\":{\n        \"routing_hard_hash\":1,\n  
 
 // TestNodesAPI compares the nodes and versions routes (check `api.v2-nodes`, D224): the dashboard's node list
 // (`/api/v3/nodes`), a host scope, a context scope that matches the child's context and one that matches none (D231,
-// D232), and both version routes, on a parent with the fixture child; then `access`: the ACL refusal (451) and bearer
+// D232), the routes' other parameters (the request echoed with `options=debug`, a host selector, a context selector,
+// a window, a cardinality limit, a time that is up) and a host scope with no word in it (D233), and both version
+// routes with theirs, on a parent with the fixture child; then `access`: the ACL refusal (451) and bearer
 // protection (412) of each route (web_api.c:82-89), but `/api/v3/versions`, which no ACL guards (HTTP_ACL_NOCHECK,
-// web_api_v3.c:142-147; `/api/v2/versions` has the NODES ACL, web_api_v2.c:99-104). Red on Rust until commit 2.
+// web_api_v3.c:142-147; `/api/v2/versions` has the NODES ACL, web_api_v2.c:99-104). Green on Rust since milestone 10
+// commit 2.
 func TestNodesAPI(t *testing.T) {
 	t.Run("data", func(t *testing.T) {
 		p := dashPair(t, daemon.Options{})
-		dashChild(t, p, dashBase())
-		for _, r := range nodesRows() {
+		base := dashBase()
+		dashChild(t, p, base)
+		for _, r := range nodesRows(base) {
 			t.Run(r.name, func(t *testing.T) { compareV2(t, p, r, nodesFamily) })
 		}
-		for _, r := range versionsRows() {
+		for _, r := range versionsRows(base) {
 			t.Run(r.name, func(t *testing.T) { compareV2(t, p, r, versionsFamily) })
 		}
 	})
@@ -392,7 +553,9 @@ func TestNodesAPI(t *testing.T) {
 // connection (`id`, :234), one hop, a child that is online (:179-185, :225-228) with the receiver's negotiated
 // capabilities (stream.CapsLive); the fixture's 7 dimensions of 2 charts of 1 context (streamDataFixture) both
 // stored and collected; no sender (api_v2_contexts.c:383-384), ML and health off, no function and no dyncfg
-// (aclk_capas.c:41-42; rrdhost-status.c:405).
+// (aclk_capas.c:41-42; rrdhost-status.c:405). What the ingestion takes from the side's own run reads as
+// niIngestRender names it: connected in the seconds the fixture child's connection was opened in, from a port of the
+// child's own to the port the agent listens on, both on the loopback address.
 func niChildFacts(i, ni int) []dashFact {
 	node := []string{"nodes", "[" + strconv.Itoa(i) + "]"}
 	inst := append(slices.Clone(node), "instances", "[0]")
@@ -408,19 +571,30 @@ func niChildFacts(i, ni int) []dashFact {
 			"dyncfg", `{"status":"unavailable"}`),
 		dashMembers(db, "status", `"online"`, "liveness", `"live"`, "mode", `"ram"`, "last_time", `"NOW"`,
 			"metrics", "7", "instances", "2", "contexts", "1"),
-		dashMembers(ingest, "id", "1", "hops", "1", "type", `"child"`, "status", `"online"`, "metrics", "7",
-			"instances", "2", "contexts", "1"),
-		dashMembers(append(slices.Clone(ingest), "source"), "capabilities",
-			`["VCAPS","HLABELS","CLABELS","INTERPOLATED"]`))
+		dashMembers(ingest, "id", "1", "hops", "1", "type", `"child"`, "status", `"online"`, "since", `"CONNECTED"`,
+			"age", `"NOW-SINCE"`, "metrics", "7", "instances", "2", "contexts", "1"),
+		[]dashFact{dashIs(`{"local":"[127.0.0.1]:LISTEN","remote":"[127.0.0.1]:PEER",`+
+			`"capabilities":["VCAPS","HLABELS","CLABELS","INTERPOLATED"]}`, append(slices.Clone(ingest), "source")...)})
+}
+
+// niLocalIngest are the facts of localhost's ingestion, the instance at path inst: initializing with the pulse off
+// (rrdhost-status.c:171-173), begun when the agent started (:202: a host without a connection time gets
+// `netdata_start_time`), which niIngestRender names START, its age the walk's clock less that.
+func niLocalIngest(inst []string) []dashFact {
+	return dashMembers(append(slices.Clone(inst), "ingest"), "type", `"localhost"`, "status", `"initializing"`,
+		"since", `"START"`, "age", `"NOW-SINCE"`)
 }
 
 // niAgentFacts are the facts of the agent's info in `/api/v2|v3/node_instances` (api_v2_contexts_agents.c:11-121;
-// the AGENTS_INFO mode): its members, and its hosts, localhost and the child it receives.
+// the AGENTS_INFO mode): its members, its hosts, localhost and the child it receives, and its cloud status, of an
+// agent that never connected: begun when the agent started (claim/cloud-status.c:38-44, :74-75), as niIngestRender
+// names it.
 var niAgentFacts = slices.Concat(
 	[]dashFact{dashKeys("mg nd nm now ai application cloud nodes metrics instances contexts capabilities api db_size "+
 		"timings", "agents", "[0]")},
 	dashMembers([]string{"agents", "[0]"}, "mg", strconv.Quote(parentIdentity.MachineGUID),
-		"nodes", `{"total":2,"receiving":1,"sending":0,"archived":0}`))
+		"nodes", `{"total":2,"receiving":1,"sending":0,"archived":0}`),
+	dashMembers([]string{"agents", "[0]", "cloud"}, "status", `"available"`, "since", `"START"`, "age", `"NOW-SINCE"`))
 
 // nodeInstancesRows are check `api.v2-node-instances`'s requests.
 func nodeInstancesRows() []v2Req {
@@ -436,7 +610,7 @@ func nodeInstancesRows() []v2Req {
 			dashParent(0, 0),
 			dashMembers(append(slices.Clone(parent), "db"), "status", `"initializing"`, "mode", `"dbengine"`,
 				"last_time", `"NOW"`, "contexts", "0"),
-			dashMembers(append(slices.Clone(parent), "ingest"), "type", `"localhost"`, "status", `"initializing"`),
+			niLocalIngest(parent),
 			dashMembers(parent, "capabilities", nodeCaps(true)),
 			niChildFacts(1, 1), niAgentFacts)},
 	}
@@ -449,9 +623,11 @@ func nodeInstancesRows() []v2Req {
 func TestNodeInstancesAPI(t *testing.T) {
 	t.Run("data", func(t *testing.T) {
 		p := dashPair(t, daemon.Options{})
-		dashChild(t, p, dashBase())
+		niReady(p)
+		_, opened := dashChildLinkAs(t, p, dashBase(), childHost, qCharts)
+		fam := nodeInstancesFamily(niSides(p, opened))
 		for _, r := range nodeInstancesRows() {
-			t.Run(r.name, func(t *testing.T) { compareV2(t, p, r, nodeInstancesFamily) })
+			t.Run(r.name, func(t *testing.T) { compareV2(t, p, r, fam) })
 		}
 	})
 	t.Run("access", func(t *testing.T) {

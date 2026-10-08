@@ -7,9 +7,10 @@ import (
 	"testing"
 )
 
-// testDashNormWeb pins the static answers' mask (walkMask) on the head C sent for `/index.html` in helper s6's probe
-// pass (2026-10-06, the request in second 1791318731): the random transaction id is masked; the expiry is masked only
-// when it is now + 86400 for a second the request was in flight; the Date (the file's modification time) is kept.
+// testDashNormWeb pins the static answers' mask (maskAnswer, as walkFile uses it) on the head C sent for `/index.html`
+// in helper s6's probe pass (2026-10-06, the request in second 1791318731): the random transaction id is masked; the
+// expiry is masked only when it is now + 86400 for a second the request was in flight; the Date (the file's
+// modification time) is kept, and so is the body.
 func testDashNormWeb(t *testing.T) {
 	const (
 		expires = "Expires: Wed, 07 Oct 2026 20:32:11 GMT"
@@ -37,8 +38,8 @@ func testDashNormWeb(t *testing.T) {
 		"not-a-clock": {other(head), sent, sent, other(noTx)},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := string(walkMask([]byte(c.in), c.from, c.to)); got != c.want {
-				t.Errorf("walkMask:\n got %q\nwant %q", got, c.want)
+			if got := string(maskAnswer([]byte(c.in), [2]int64{c.from, c.to})); got != c.want {
+				t.Errorf("maskAnswer:\n got %q\nwant %q", got, c.want)
 			}
 		})
 	}

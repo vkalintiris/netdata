@@ -6,8 +6,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"reflect"
-	"regexp"
-	"strconv"
 	"testing"
 	"time"
 
@@ -15,19 +13,9 @@ import (
 	"github.com/netdata/netdata/tests/query-corpus/stream"
 )
 
-// lastTimeRe finds last_time_t members; a collected object reports the request time there.
-var lastTimeRe = regexp.MustCompile(`"last_time_t":\s*(\d+)`)
-
-// maskNow replaces last_time_t values within [from, to] (the seconds the request was in flight) with NOW.
-func maskNow(b []byte, from, to int64) []byte {
-	return lastTimeRe.ReplaceAllFunc(b, func(m []byte) []byte {
-		v, err := strconv.ParseInt(string(lastTimeRe.FindSubmatch(m)[1]), 10, 64)
-		if err == nil && v >= from && v <= to {
-			return []byte(`"last_time_t":"NOW"`)
-		}
-		return m
-	})
-}
+// maskNow replaces last_time_t values within [from, to] (the seconds the request was in flight) with NOW: a collected
+// object reports the request time there (maskNowKeys).
+func maskNow(b []byte, from, to int64) []byte { return maskNowKeys(b, from, to, "last_time_t") }
 
 // labelsOnly re-encodes a JSON body as parsed data: C prints labels in heap-address order, so requests showing
 // labels compare as values, not bytes.
@@ -45,7 +33,8 @@ func labelsOnly(t *testing.T, b []byte) any {
 }
 
 // TestContextsAPI streams charts from a fake child into both daemons (ram mode) and compares /api/v1/contexts,
-// /api/v1/context and /api/v3/context for that child while it is connected and after it disconnects.
+// /api/v1/context and /api/v3/context for that child while it is connected and after it disconnects; while it is
+// connected, also the filters with no word in them, which the oracle must answer as it does without them (D233).
 func TestContextsAPI(t *testing.T) {
 	p := StartPair(t, daemon.Options{StreamMemoryMode: "ram", StorageTiers: 1}, parentIdentity)
 	var conns []*stream.Conn
@@ -101,6 +90,17 @@ func TestContextsAPI(t *testing.T) {
 		"contexts-labels": "/api/v1/contexts?options=labels,charts",
 		"context-labels":  "/api/v1/context?context=ingest.test&options=labels",
 	}
+	// A filter with no word in it is no filter (D233; R100's 2.1): C's simple_pattern_create returns NULL for a text
+	// of separators alone (web/api/v1/api_v1_contexts.c:40-49, api_v1_context.c:47-56) and the renderer tests the
+	// pointer (database/contexts/api_v1_contexts.c:70-73, :123, :136-146), so the oracle answers each as it does
+	// without the parameter (the second target), where a filter that matches nothing lists no context
+	// (`contexts-filter-miss`) and answers 404 for one.
+	sameCases := map[string][2]string{
+		"contexts-key-wordless":  {"/api/v1/contexts?chart_label_key=%7C", "/api/v1/contexts"},
+		"contexts-dims-wordless": {"/api/v1/contexts?dimensions=,", "/api/v1/contexts"},
+		"context-key-wordless": {"/api/v1/context?context=ingest.test&chart_label_key=%7C",
+			"/api/v1/context?context=ingest.test"},
+	}
 	compare := func(stage string, extra map[string]string) {
 		cases := map[string]string{}
 		for k, v := range bytesCases {
@@ -142,7 +142,37 @@ func TestContextsAPI(t *testing.T) {
 			})
 		}
 	}
+	ask := func(t *testing.T, side Role, addr, path string) []byte {
+		t.Helper()
+		from := time.Now().Unix()
+		b, err := rawExchange(addr, []byte("GET "+host+path+" HTTP/1.1\r\n\r\n"), 2*time.Second)
+		if err != nil {
+			t.Fatalf("%s: %v", side, err)
+		}
+		return maskNow(maskAnswer(b, [2]int64{from, time.Now().Unix()}), from, time.Now().Unix())
+	}
+	same := func(stage string) {
+		for name, paths := range sameCases {
+			t.Run(stage+"/"+name, func(t *testing.T) {
+				// the oracle's two answers fall in one second, or are asked again (3 rounds at most)
+				var with, without []byte
+				for round := 0; round < 3 && (with == nil || !bytes.Equal(with, without)); round++ {
+					with = ask(t, Oracle, p.Oracle.Addr, paths[0])
+					without = ask(t, Oracle, p.Oracle.Addr, paths[1])
+				}
+				if !bytes.HasPrefix(with, []byte("HTTP/1.1 200 OK\r\n")) || !bytes.Contains(with, []byte(`"title":`)) ||
+					!bytes.Equal(with, without) {
+					t.Fatalf("oracle: %s is not answered as %s, a 200 with a context:\n%s\n%s", paths[0], paths[1], with,
+						without)
+				}
+				if got := ask(t, Candidate, p.Candidate.Addr, paths[0]); !bytes.Equal(with, got) {
+					t.Errorf("responses differ\noracle:    %s\ncandidate: %s", with, got)
+				}
+			})
+		}
+	}
 	compare("connected", nil)
+	same("connected")
 	for _, c := range conns {
 		_ = c.Close()
 	}

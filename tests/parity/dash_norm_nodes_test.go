@@ -89,7 +89,7 @@ func testDashNormNodes(t *testing.T) {
 			t.Errorf("fn.stream nodes, %s: differences at %q, want %q", name, got, c.want)
 		}
 	}
-	rendered := func(b string) string { return string(fam.normalise(0, [2]int64{}, []byte(b))) }
+	rendered := func(b string) string { return string(fam.normalise(0, [2]int64{}, [2]int64{}, []byte(b))) }
 	for name, c := range map[string]struct {
 		in  string
 		bad bool
@@ -113,7 +113,7 @@ func testDashNormNodes(t *testing.T) {
 	// the context scope's rows: the child alone, numbered 0, for a scope that matches its context, and the parent's
 	// answer is refused; no host for a scope that matches no context, and an answer that keeps a host is refused
 	rows := map[string]v2Req{}
-	for _, r := range nodesRows() {
+	for _, r := range nodesRows(dashNormBase) {
 		rows[r.name] = r
 	}
 	ctxRow, noRow := rows["v2-nodes-ctx"], rows["v2-nodes-nomatch"]
@@ -159,6 +159,101 @@ func testDashNormNodes(t *testing.T) {
 	if got := dashNormDiffs(t, nodesFamily, nodesFamily.masks, [2]int64{}, nomatch,
 		ctxAnswer); got != "$.nodes.length" {
 		t.Errorf("v2-nodes-nomatch against the child kept: differences at %q", got)
+	}
+
+	// The routes' other parameters and the host scope with no word in it (D233): C's answers of H35's probe P2 (the
+	// fixture child's base dashNormBase), each row's guard on its answer and on the answers it must refuse.
+	const (
+		reqNodes = `"request":{"mode":["nodes","nodes-info"],"options":["debug"],"scope":{"scope_nodes":null},` +
+			`"selectors":{"nodes":null},"filters":{"after":0,"before":0}},`
+		reqVersions = `"request":{"mode":["versions"],"options":["debug"],"scope":{"scope_nodes":null},` +
+			`"selectors":{"nodes":null},"filters":{"after":0,"before":0}},`
+		hashes13 = `"versions":{"routing_hard_hash":1,"nodes_hard_hash":2,"contexts_hard_hash":13,` +
+			`"contexts_soft_hash":0,"alerts_hard_hash":0,"alerts_soft_hash":0},`
+	)
+	with := func(request, answer string) string {
+		return strings.Replace(answer, `{"api":2,`, `{"api":2,`+request, 1)
+	}
+	reqSel := strings.Replace(reqNodes, `"selectors":{"nodes":null}`, `"selectors":{"nodes":"parity-child"}`, 1)
+	reqWindow := strings.Replace(reqNodes, `{"after":0,"before":0}`, `{"after":1791438360,"before":1791438660}`, 1)
+	versions := `{"api":2,` + hashes13 + timings + `}`
+	scoped := strings.Replace(versions, `"contexts_hard_hash":13`, `"contexts_hard_hash":0`, 1)
+	text := func(s string) Value { return Value{Kind: KindString, Text: s} }
+	for _, r := range versionsRows(dashNormBase) {
+		rows[r.name] = r
+	}
+	for name, c := range map[string]struct {
+		c       Value
+		refused map[string]Value
+	}{
+		"v3-nodes-debug": {parse(with(reqNodes, both)), map[string]Value{
+			"no request":         parse(both),
+			"the request last":   parse(strings.Replace(both, timings+`}`, timings+`,`+strings.TrimSuffix(reqNodes, ",")+`}`, 1)),
+			"an option more":     parse(with(strings.Replace(reqNodes, `["debug"]`, `["debug","minify"]`, 1), both)),
+			"the modes swapped":  parse(with(strings.Replace(reqNodes, `["nodes","nodes-info"]`, `["nodes-info","nodes"]`, 1), both)),
+			"a context scope":    parse(with(strings.Replace(reqNodes, `{"scope_nodes":null}`, `{"scope_nodes":null,"scope_contexts":null}`, 1), both)),
+			"the child alone":    parse(with(reqNodes, ctxAnswer)),
+			"the scope as asked": parse(with(strings.Replace(reqNodes, `"scope_nodes":null`, `"scope_nodes":"*"`, 1), both)),
+		}},
+		"v3-nodes-sel": {parse(with(reqSel, ctxAnswer)), map[string]Value{
+			"every host":              parse(with(reqSel, both)),
+			"the selector not echoed": parse(with(reqNodes, ctxAnswer)),
+			"the selector as the scope": parse(with(strings.Replace(reqNodes, `"scope_nodes":null`,
+				`"scope_nodes":"parity-child"`, 1), ctxAnswer)),
+			"no host":    parse(with(reqSel, nomatch)),
+			"no request": parse(ctxAnswer),
+		}},
+		"v3-nodes-sel-none": {parse(nomatch), map[string]Value{"the child": parse(ctxAnswer), "every host": parse(both)}},
+		"v3-nodes-ctx-miss": {parse(ctxAnswer), map[string]Value{"every host": parse(both), "no host": parse(nomatch),
+			"localhost": parse(localhost)}},
+		"v3-nodes-window": {parse(both), map[string]Value{"localhost alone": parse(localhost),
+			"the child alone": parse(ctxAnswer), "no host": parse(nomatch)}},
+		"v3-nodes-window-miss": {parse(with(reqWindow, localhost)), map[string]Value{
+			"every host":            parse(with(reqWindow, both)),
+			"the child":             parse(with(reqWindow, ctxAnswer)),
+			"no host":               parse(with(reqWindow, nomatch)),
+			"the window not echoed": parse(with(reqNodes, localhost)),
+			"the window relative": parse(with(strings.Replace(reqNodes, `{"after":0,"before":0}`,
+				`{"after":-600,"before":-300}`, 1), localhost)),
+			"no request": parse(localhost),
+		}},
+		"v3-nodes-card1":    {parse(both), map[string]Value{"the child alone": parse(ctxAnswer), "no host": parse(nomatch)}},
+		"v3-nodes-wordless": {parse(both), map[string]Value{"no host": parse(nomatch), "the child alone": parse(ctxAnswer)}},
+		"v3-nodes-timeout": {text("query timeout"), map[string]Value{"no text": text(""),
+			"the node list": text(both), "another text": text("Query timeout")}},
+		"v2-versions-debug": {parse(with(reqVersions, versions)), map[string]Value{
+			"no request":       parse(versions),
+			"the nodes' modes": parse(with(reqNodes, versions)),
+			"no context":       parse(with(reqVersions, scoped)),
+		}},
+		"v2-versions-scope":      {parse(scoped), map[string]Value{"every host's hash": parse(versions)}},
+		"v2-versions-scope-none": {parse(scoped), map[string]Value{"every host's hash": parse(versions)}},
+		"v2-versions-nodes":      {parse(versions), map[string]Value{"a hash of 0": parse(scoped)}},
+		"v2-versions-ignored":    {parse(versions), map[string]Value{"a hash of 0": parse(scoped)}},
+		"v2-versions-timeout":    {text("query timeout"), map[string]Value{"the hashes": text(versions)}},
+	} {
+		r, ok := rows[name]
+		if !ok || r.guard == nil {
+			t.Errorf("no row %s", name)
+			continue
+		}
+		if err := r.guard(c.c); err != nil {
+			t.Errorf("%s's guard on C's answer: %v", name, err)
+		}
+		for what, refused := range c.refused {
+			if err := r.guard(refused); err == nil {
+				t.Errorf("%s's guard took %s", name, what)
+			}
+		}
+	}
+	// the window rows ask the fixture's own minute and five minutes that end before it
+	if w, m := rows["v3-nodes-window"].target, rows["v3-nodes-window-miss"].target; w !=
+		"/api/v3/nodes?after=1791438960&before=1791439020" || m !=
+		"/api/v3/nodes?options=debug&after=1791438360&before=1791438660" {
+		t.Errorf("the window rows ask %s and %s", w, m)
+	}
+	if len(rows) != 21 {
+		t.Errorf("%d rows of nodes and versions, pinned 21", len(rows))
 	}
 
 	// the wait for a child that is gone: C's `/api/v3/nodes?scope_nodes=parity-child` once the fixture child's

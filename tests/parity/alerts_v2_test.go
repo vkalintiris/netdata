@@ -3,7 +3,9 @@
 package parity
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"regexp"
 	"slices"
 	"strconv"
@@ -19,7 +21,7 @@ import (
 // `/api/v3/alert_transitions` the alert log's transitions in SQLite (database/contexts/api_v2_contexts_alerts.c,
 // api_v2_contexts_alert_transitions.c, database/sqlite/sqlite_health.c:1458-1652). They run on the health runner: both
 // agents hold the same alerts and transitions, each with ids and clocks of its own, which the families render on each
-// side before the answers are parsed (alertsV2Render).
+// side, against that side's own alert log, before the answers are parsed (alertsV2Render).
 
 var (
 	// the members that hold a wall-clock second or a span between two events: an alert's last evaluation and last change
@@ -31,40 +33,194 @@ var (
 	// an alert's last transition id and a transition's id: random UUIDs (health/health_log.c:225;
 	// api_v2_contexts_alerts.c:360, api_v2_contexts_alert_transitions.c:404)
 	alertsV2TidRe = regexp.MustCompile(`"(tr_i|transition_id)":(\s*)"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"`)
+	// an alert's or a transition's global id, the member each of them has once, before its other clocks
+	// (api_v2_contexts_alerts.c:337, api_v2_contexts_alert_transitions.c:400)
+	alertsV2ItemRe = regexp.MustCompile(`"gi":\s*\d+`)
 )
 
-// alertsV2Render renders one side's alerts or transitions body for the comparison: a time or a span as `"T"` when set
-// (0 kept), a global id as `"G"`, a transition id by the side's alert log (healthNorm.tid: `t+k`, `t?` for an id the
-// log did not show). It returns the seconds it replaced in the body's order (a global id's whole seconds), for the
-// bound beside the masks (healthClocksNear).
-func alertsV2Render(n *healthNorm, body []byte) ([]byte, []int64) {
+// alertsV2Entry is what the alert endpoints' times and spans are read against: an entry of the side's own alert log,
+// `/api/v1/alarm_log`. Both endpoints print the entry's stored columns (database/sqlite/sqlite_health.c:1063-1070,
+// :1158-1185: the log; :1462-1466 and api_v2_contexts_alert_transitions.c:431-456: a transition), and an alert its
+// last entry's id and the second of its last change (health/health_log.c:225, :238; api_v2_contexts_alerts.c:360-362).
+// The members are the ones the render reads (healthEntry, the health checks' view of an entry, has no end of the
+// delay).
+type alertsV2Entry struct {
+	Tid       string `json:"transition_id"`
+	Status    string `json:"status"`
+	OldStatus string `json:"old_status"`
+	When      int64  `json:"when"`
+	Duration  int64  `json:"duration"`
+	NonClear  int64  `json:"non_clear_duration"`
+	ExecRun   int64  `json:"exec_run"`
+	DelayUpTo int64  `json:"delay_up_to_timestamp"`
+}
+
+// lastChange is the second an alert whose last entry is e changed status last, as C keeps it for the alert: the
+// entry's `when` (a status change's entry and the alert take the pass's one clock, health/health_event_loop.c:738-741,
+// :768), but for an alert that never had a status, whose last entry is its link's, from REMOVED to UNINITIALIZED
+// (made for a new alert alone, health/rrdcalc.c:457): C takes one clock when it makes the alert (:413) and reads
+// another for the link's entry, whose duration is the seconds between the two (:320, :325). An alert that left
+// REMOVED by a status change has an entry from REMOVED too, to a status that is never UNINITIALIZED
+// (health/health_event_loop.c:518-519, :668-690): its last change is that entry's `when`.
+func (e alertsV2Entry) lastChange() int64 {
+	if e.OldStatus == "REMOVED" && e.Status == "UNINITIALIZED" {
+		return e.When - e.Duration
+	}
+	return e.When
+}
+
+// alertsV2Log is a side's alert log: its entries by transition id.
+type alertsV2Log map[string]alertsV2Entry
+
+// alertsV2LogOf reads an `/api/v1/alarm_log` body.
+func alertsV2LogOf(body []byte) (alertsV2Log, error) {
+	var entries []alertsV2Entry
+	if err := json.Unmarshal(body, &entries); err != nil {
+		return nil, err
+	}
+	log := alertsV2Log{}
+	for _, e := range entries {
+		if e.Tid != "" {
+			log[e.Tid] = e
+		}
+	}
+	return log, nil
+}
+
+// alertsV2Render renders one side's alerts or transitions body for the comparison, each id, time and span by what it
+// is in the side's own alert log (log; n names the ids), and only where it is that. Each alert instance and each
+// transition is read from its global id to the next one's (alertsV2ItemRe) against the log's entry its transition id
+// names (`tr_i`, `transition_id`):
+//   - the transition id reads `t+k`, the entry's unique id from the side's base (healthNorm.tid);
+//   - a transition's `when` reads WHEN where it is the entry's `when`, and an alert's last change (`tr_t`) where it
+//     is the second the entry says the alert changed last (alertsV2Entry.lastChange);
+//   - a transition's `duration` and `raised_duration` read DURATION and NON_CLEAR where they are the entry's
+//     `duration` and `non_clear_duration`; its notification's `when` and `delay_up_to_time` read EXEC_RUN and
+//     DELAY_UP_TO where they are the entry's `exec_run` and `delay_up_to_timestamp`;
+//   - the global id reads G where it is a microsecond of the entry's `when` or of the healthBound seconds after it:
+//     C reads the clock for it as it makes the entry (health/health_log.c:226), after the one that gave `when`, with
+//     no bound of its own; when the body has two or more, only if some global id is no whole second (one alone cannot
+//     tell);
+//   - an alert's last evaluation (`t`) reads T where it is a second of the request's flight or of the healthBound
+//     seconds before it (an alert that is evaluated is evaluated each second in these cases; one that never was has
+//     0).
+//
+// A 0 stays 0. Anything else is left as the agent wrote it, for the comparison: an id the log does not hold, a time
+// that is not its entry's, a global id in seconds. It returns the seconds it replaced in the body's order (a global
+// id's whole seconds), for the bound beside the render (healthClocksNear).
+func alertsV2Render(n *healthNorm, log alertsV2Log, flight [2]int64, body []byte) ([]byte, []int64) {
+	micro, ids := false, alertsV2ItemRe.FindAll(body, -1)
+	for _, m := range ids {
+		_, digits, _ := strings.Cut(string(m), ":")
+		if v, err := strconv.ParseInt(strings.TrimSpace(digits), 10, 64); err == nil && v%1_000_000 != 0 {
+			micro = true
+		}
+	}
+	micro = micro || len(ids) < 2
 	var clocks []int64
-	out := alertsV2ClockRe.ReplaceAllStringFunc(string(body), func(m string) string {
-		g := alertsV2ClockRe.FindStringSubmatch(m)
-		v, err := strconv.ParseInt(g[3], 10, 64)
-		if err != nil || v == 0 {
-			return m
+	item := func(span string) string {
+		// the item's one transition id (an alert's `tr_i`, a transition's `transition_id`) and its entry
+		var entry alertsV2Entry
+		known := false
+		if g := alertsV2TidRe.FindStringSubmatch(span); g != nil {
+			entry, known = log[g[3]]
 		}
-		mark := "T"
-		if g[1] == "gi" {
-			mark, v = "G", v/1_000_000
+		whens := 0
+		span = alertsV2ClockRe.ReplaceAllStringFunc(span, func(m string) string {
+			g := alertsV2ClockRe.FindStringSubmatch(m)
+			v, err := strconv.ParseInt(g[3], 10, 64)
+			if g[1] == "when" {
+				whens++
+			}
+			if err != nil || v == 0 {
+				return m
+			}
+			mark, second := "", v
+			switch {
+			case g[1] == "t":
+				if v >= flight[0]-healthBound && v <= flight[1] {
+					mark = "T"
+				}
+			case !known:
+			case g[1] == "gi":
+				if second = v / 1_000_000; micro && second >= entry.When && second <= entry.When+healthBound {
+					mark = "G"
+				}
+			case g[1] == "tr_t":
+				if v == entry.lastChange() {
+					mark = "WHEN"
+				}
+			case g[1] == "when" && whens == 1:
+				if v == entry.When {
+					mark = "WHEN"
+				}
+			case g[1] == "when":
+				if v == entry.ExecRun {
+					mark = "EXEC_RUN"
+				}
+			case g[1] == "duration":
+				if v == entry.Duration {
+					mark = "DURATION"
+				}
+			case g[1] == "raised_duration":
+				if v == entry.NonClear {
+					mark = "NON_CLEAR"
+				}
+			case g[1] == "delay_up_to_time":
+				if v == entry.DelayUpTo {
+					mark = "DELAY_UP_TO"
+				}
+			}
+			if mark == "" {
+				return m
+			}
+			clocks = append(clocks, second)
+			return `"` + g[1] + `":` + g[2] + `"` + mark + `"`
+		})
+		if !known {
+			return span
 		}
-		clocks = append(clocks, v)
-		return `"` + g[1] + `":` + g[2] + `"` + mark + `"`
-	})
-	out = alertsV2TidRe.ReplaceAllStringFunc(out, func(m string) string {
-		g := alertsV2TidRe.FindStringSubmatch(m)
-		return `"` + g[1] + `":` + g[2] + `"` + n.tid(g[3]) + `"`
-	})
-	return []byte(out), clocks
+		return alertsV2TidRe.ReplaceAllStringFunc(span, func(m string) string {
+			g := alertsV2TidRe.FindStringSubmatch(m)
+			return `"` + g[1] + `":` + g[2] + `"` + n.tid(g[3]) + `"`
+		})
+	}
+	var out strings.Builder
+	last := 0
+	for k, loc := range alertsV2ItemRe.FindAllIndex(body, -1) {
+		if k == 0 {
+			out.Write(body[:loc[0]])
+		} else {
+			out.WriteString(item(string(body[last:loc[0]])))
+		}
+		last = loc[0]
+	}
+	if len(ids) == 0 {
+		return body, nil
+	}
+	out.WriteString(item(string(body[last:])))
+	return []byte(out.String()), clocks
+}
+
+// alertsV2LogReader reads side i's alert log as the health pair h serves it now.
+func alertsV2LogReader(h *healthPair) func(i int) ([]byte, error) {
+	return func(i int) ([]byte, error) {
+		r := healthGet(h.p.Each()[i].Daemon, "/api/v1/alarm_log")
+		if r.Status != http.StatusOK {
+			return nil, fmt.Errorf("/api/v1/alarm_log answered %d: %s", r.Status, truncateBytes(r.Body))
+		}
+		return r.Body, nil
+	}
 }
 
 // alertsV2Family compares the alert endpoints' answers, `/api/v2|v3/alerts` and `/api/v2|v3/alert_transitions`. With
-// the health runner's normalizers (n[i] side i's): each side's body rendered (alertsV2Render), the seconds the render
-// replaced held within healthBound side to side, and healthCandidateWait for the candidate to show the oracle's answer.
-// With the zero pair (health off: the dashboard replay, whose agents hold no alert) the v2 envelope's masks alone,
-// without a render, a bound or a wait.
-func alertsV2Family(n [2]*healthNorm) v2Family {
+// the health runner's normalizers (n[i] side i's) and a reader of each side's alert log (log, read again after every
+// answer: an entry's notification is stored after the entry): each side's body rendered against its own log
+// (alertsV2Render), the seconds the render replaced held within healthBound side to side, and healthCandidateWait for
+// the candidate to show the oracle's answer. A side whose log cannot be read has its body left unparsable, with the
+// reason. With the zero pair (health off: the dashboard replay, whose agents hold no alert) the v2 envelope's masks
+// alone, without a render, a bound or a wait.
+func alertsV2Family(n [2]*healthNorm, log func(i int) ([]byte, error)) v2Family {
 	if n[0] == nil || n[1] == nil {
 		return v2Family{masks: infoV2Volatile}
 	}
@@ -72,8 +228,17 @@ func alertsV2Family(n [2]*healthNorm) v2Family {
 	return v2Family{
 		masks:  infoV2Volatile,
 		settle: healthCandidateWait,
-		render: func(i int, body []byte) []byte {
-			out, c := alertsV2Render(n[i], body)
+		render: func(i int, flight [2]int64, body []byte) []byte {
+			raw, err := log(i)
+			var entries alertsV2Log
+			if err == nil {
+				entries, err = alertsV2LogOf(raw)
+			}
+			if err != nil {
+				return append([]byte("the side's alert log: "+err.Error()+"\n"), body...)
+			}
+			n[i].observe(string(raw))
+			out, c := alertsV2Render(n[i], entries, flight, body)
 			clocks[i] = c
 			return out
 		},
@@ -81,7 +246,14 @@ func alertsV2Family(n [2]*healthNorm) v2Family {
 			t.Helper()
 			if err := healthClocksNear(clocks[0], clocks[1]); err != nil {
 				t.Errorf("%s: %v", name, err)
+				return
 			}
+			apart := int64(0)
+			for k := range clocks[0] {
+				apart = max(apart, clocks[0][k]-clocks[1][k], clocks[1][k]-clocks[0][k])
+			}
+			t.Logf("%s: the two sides' %d times and spans are at most %d s apart (the bound is %d)", name,
+				len(clocks[0]), apart, healthBound)
 		},
 	}
 }
@@ -160,11 +332,13 @@ func alertsV2AccessCase(routes ...string) func(t *testing.T, h *healthPair) {
 // (the green anchor), reads each side's alert log for its ids' aliases, then asks the v2 endpoints (compareV2: the
 // oracle's status and guard, then the candidate's answer within healthCandidateWait), and once both agents stopped,
 // its routes' access rows (`access`). Cases:
-//   - `alerts`: `health.api` `endpoints`' three alerts, one WARNING: `/api/v3/alerts` with `status=raised`, with the
-//     summary alone, with `alert=` of two names, and `/api/v2/alerts` pretty;
+//   - `alerts`: `health.api` `endpoints`' three alerts, one WARNING, and a fourth on a chart never collected
+//     (alertsV2Conf): `/api/v3/alerts` with `status=raised`, with the summary alone, with `alert=` of two names, and
+//     `/api/v2/alerts` pretty;
 //   - `transitions`: `health.transitions`' three alerts through CLEAR, WARNING, CRITICAL and CLEAR:
 //     `/api/v2/alert_transitions` over the last ten minutes, its newest four after the second switch (`anchor_gi`), and
-//     `/api/v3/alert_transitions` of one transition by its id, each side's own (v2Req.targets).
+//     `/api/v3/alert_transitions` of one transition by its id, each side's own (v2Req.targets): a change to WARNING,
+//     which the window lists too, and a first status, which it does not.
 //
 // Neither endpoint runs a data query: asking them does not pause HEALTH (stream-control.c:99-103).
 func TestAlertsV2(t *testing.T) {
@@ -234,7 +408,7 @@ func alertsV2PlayAlerts(t *testing.T, h *healthPair) {
 	// the ids' aliases: each side's alert log, once it holds ha_low's change (an alert's `tr_i` is its last entry's id)
 	h.compareNow(t, "the alert log's transitions", func(i int) string { return h.transitions(i, "") },
 		alertsV2LogHolds("ha_low: CLEAR->WARNING 70 things"))
-	fam := alertsV2Family(h.n)
+	fam := alertsV2Family(h.n, alertsV2LogReader(h))
 	for _, req := range alertsV2AlertRows {
 		compareV2(t, h.p, req, fam)
 	}
@@ -297,6 +471,15 @@ var alertsV2AlertRows = func() []v2Req {
 	}
 }()
 
+// alertsV2OneClear is the `one-clear` row's guard: the one transition is hs_calc's first status, from UNINITIALIZED
+// to CLEAR at the first value, its notification never run (`when` 0), and it is the one row evaluated, matched and
+// returned.
+var alertsV2OneClear = alertsV2Guard(
+	alertsV2Rows{member: "transitions", keys: append(slices.Clone(alertsV2TransitionKeys), "notification.when"),
+		items: []string{"hs_calc UNINITIALIZED CLEAR 10 0"}},
+	alertsV2Rows{member: "items", keys: []string{"evaluated", "matched", "returned", "max_to_return", "before", "after"},
+		items: []string{"1 1 1 1 0 0"}})
+
 // alertsV2LogHolds is a guard on a transitions view (healthPair.transitions): it holds each of the lines.
 func alertsV2LogHolds(lines ...string) func(string) error {
 	return func(view string) error {
@@ -330,15 +513,20 @@ var (
 //   - `items` counts them (api_v2_contexts_alert_transitions.c:495-515): `evaluated` the rows of the window, `matched`
 //     those the facets keep, `before` those at or before `anchor_gi` (:190-194), `after` those past `last` (:215-219,
 //     :241-254), `returned` the rest;
-//   - with `transition=` the one row of that id, whatever its status (sqlite_health.c:1476-1479, :1502-1512), and
-//     `last` 1 when the request has none (web/api/v2/api_v2_contexts.c:70-71).
+//   - with `transition=` the one row of that id, whatever its status (sqlite_health.c:1476-1479, :1502-1512: the
+//     direct statement has no status clause, so hs_calc's first status, UNINITIALIZED to CLEAR, answers too, where the
+//     window leaves it out), and `last` 1 when the request has none (web/api/v2/api_v2_contexts.c:70-71).
+//
+// The phases are health.transitions' (healthPlayPhases), played here to keep the second of the second switch.
 func alertsV2PlayTransitions(t *testing.T, h *healthPair) {
 	names := []string{"hs_avg", "hs_calc", "hs_max"}
-	var second [4]int64
+	var switched int64
 	h.create(t)
 	for k := range healthSigPhases {
 		if k > 0 {
-			second[k] = h.release(t, fmt.Sprintf("p%d", k), k, healthSigHold)
+			if second := h.release(t, fmt.Sprintf("p%d", k), k, healthSigHold); k == 2 {
+				switched = second
+			}
 		}
 		h.compareNow(t, fmt.Sprintf("phase %d: /api/v1/alarms?all", k), func(i int) string { return h.get(i, "/api/v1/alarms?all") },
 			healthAll(healthSigStatus[k], names...))
@@ -346,24 +534,34 @@ func alertsV2PlayTransitions(t *testing.T, h *healthPair) {
 	// the green anchor, as health.transitions compares it; it also names each side's transition ids
 	h.compareNow(t, "the alert log's transitions", func(i int) string { return h.transitions(i, "") },
 		alertsV2LogHolds("hs_calc: CLEAR->WARNING 70 things", "hs_avg: CRITICAL->CLEAR 44 things"))
-	// one transition by its id: hs_calc's change to WARNING, each side's own
-	var own [2]string
+	// one transition by its id, each side's own: hs_calc's change to WARNING and its first status
+	var raised, first [2]string
 	var newest int64
-	for i := range own {
+	for i, side := range h.p.Each() {
 		entries, err := h.entriesAs(h.n[i], i, "/api/v1/alarm_log")
 		if err != nil {
-			t.Fatalf("%s: %v", h.p.Each()[i].Role, err)
+			t.Fatalf("%s: %v", side.Role, err)
 		}
 		for _, e := range entries {
 			if e.Name == "hs_calc" && e.OldStatus == "CLEAR" && e.Status == "WARNING" {
-				own[i] = e.Tid
+				raised[i] = e.Tid
+			}
+			if e.Name == "hs_calc" && e.OldStatus == "UNINITIALIZED" && e.Status == "CLEAR" {
+				first[i] = e.Tid
 			}
 			if i == 0 {
 				newest = max(newest, e.When)
 			}
 		}
-		if own[i] == "" && i == 0 {
-			t.Fatalf("oracle: its alert log has no change of hs_calc from CLEAR to WARNING")
+		for what, id := range map[string]string{"from CLEAR to WARNING": raised[i], "from UNINITIALIZED to CLEAR": first[i]} {
+			if id != "" {
+				continue
+			}
+			if side.Role == Oracle {
+				t.Fatalf("oracle: its alert log has no change of hs_calc %s", what)
+			}
+			// the row is still asked, without an id: it shows what the candidate answers then
+			t.Errorf("candidate: its alert log has no change of hs_calc %s", what)
 		}
 	}
 	// a relative window ends a second before the request's (libnetdata/libnetdata.c:550-551), at that second's first
@@ -373,7 +571,7 @@ func alertsV2PlayTransitions(t *testing.T, h *healthPair) {
 	time.Sleep(time.Until(time.Unix(newest+3, 0)))
 	items := []string{"evaluated", "matched", "returned", "max_to_return", "before", "after"}
 	one := "/api/v3/alert_transitions?options=minify&transition="
-	fam := alertsV2Family(h.n)
+	fam := alertsV2Family(h.n, alertsV2LogReader(h))
 	for _, req := range []v2Req{
 		{name: "window", target: "/api/v2/alert_transitions?after=-600&last=200&options=minify", status: "200",
 			guard: alertsV2Guard(
@@ -381,15 +579,19 @@ func alertsV2PlayTransitions(t *testing.T, h *healthPair) {
 				alertsV2Rows{member: "items", keys: items, items: []string{"9 9 9 200 0 0"}})},
 		// the newest four after the second switch: phase 3's three changes and hs_avg's change to CRITICAL, which its
 		// window shows after phase 2 began (S2 = the switch's second, one value for both sides)
-		{name: "anchor", target: fmt.Sprintf("/api/v2/alert_transitions?after=-600&last=4&anchor_gi=%d&options=minify", second[2]*1_000_000),
+		{name: "anchor", target: fmt.Sprintf("/api/v2/alert_transitions?after=-600&last=4&anchor_gi=%d&options=minify", switched*1_000_000),
 			status: "200",
 			guard: alertsV2Guard(
 				alertsV2Rows{member: "transitions", keys: alertsV2TransitionKeys, items: alertsV2Newest, sorted: true},
 				alertsV2Rows{member: "items", keys: items, items: []string{"9 9 4 4 3 2"}})},
-		{name: "one", target: one + "<hs_calc's change to WARNING>", targets: [2]string{one + own[0], one + own[1]}, status: "200",
+		{name: "one", target: one + "<hs_calc's change to WARNING>", targets: [2]string{one + raised[0], one + raised[1]},
+			status: "200",
 			guard: alertsV2Guard(
 				alertsV2Rows{member: "transitions", keys: alertsV2TransitionKeys, items: []string{"hs_calc CLEAR WARNING 70"}},
 				alertsV2Rows{member: "items", keys: items, items: []string{"1 1 1 1 0 0"}})},
+		// a status the window leaves out (neither side of it is above CLEAR): asked by its id it answers
+		{name: "one-clear", target: one + "<hs_calc's first status>", targets: [2]string{one + first[0], one + first[1]},
+			status: "200", guard: alertsV2OneClear},
 	} {
 		compareV2(t, h.p, req, fam)
 	}

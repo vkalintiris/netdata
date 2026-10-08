@@ -269,7 +269,9 @@ func healthCapabilities(t *testing.T, h *healthPair) {
 // health status and the five-way alert count exactly, the capabilities by name (compareCapabilities), once the
 // oracle's answer holds nodesHealthOn. Not the whole answer: localhost's labels and system info are `api.v2-nodes`'
 // (health off). A candidate's failure is an error, not the case's end, so the case still stops both agents and
-// judges their stop. Red on Rust until milestone 10 commit 2.
+// judges their stop: an answer that is no 200 or no JSON, and one whose first node lists other capabilities than the
+// oracle's (none at all too), on which compareCapabilities would end the case (capabilityProblems is read here
+// instead). Green on Rust since milestone 10 commit 2.
 func healthNodes(t *testing.T, h *healthPair) {
 	t.Helper()
 	var health, caps [2]Value
@@ -294,7 +296,11 @@ func healthNodes(t *testing.T, h *healthPair) {
 	if o, c := health[0].String(), health[1].String(); o != c {
 		t.Errorf("/api/v3/nodes' localhost health: oracle %s, candidate %s", o, c)
 	}
-	compareCapabilities(t, "/api/v3/nodes' localhost", caps[0], caps[1])
+	// by name, as compareCapabilities does, but other names are an error too, not the case's end
+	problems, _ := capabilityProblems("/api/v3/nodes' localhost", caps[0], caps[1], sameBinary(t), capabilityDiffs)
+	for _, problem := range problems {
+		t.Error(problem)
+	}
 	t.Logf("/api/v3/nodes' localhost, the oracle's: health %s, capabilities %s", health[0], caps[0])
 }
 
