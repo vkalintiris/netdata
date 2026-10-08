@@ -1,6 +1,6 @@
 //! `stream_control` (`src/streaming/stream-control.c`): what the heavy work counts, so that the background threads
-//! yield to it. The tier backfills and the users' data queries are counted; the weights queries are not ported, so
-//! they count none, and the replication queries count only for ML, which is not ported either (D105.12).
+//! yield to it. The tier backfills, the users' data queries and the users' weights queries are counted; the
+//! replication queries count only for ML, which is not ported (D105.12).
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -10,6 +10,9 @@ static BACKFILL_RUNNERS: AtomicUsize = AtomicUsize::new(0);
 
 /// `user_data_query_runners`: the data queries executing now.
 static USER_DATA_QUERY_RUNNERS: AtomicUsize = AtomicUsize::new(0);
+
+/// `user_weights_query_runners`: the queries a weights request executes now.
+static USER_WEIGHTS_QUERY_RUNNERS: AtomicUsize = AtomicUsize::new(0);
 
 /// How many tier backfills run now.
 pub fn backfill_runners() -> usize {
@@ -48,20 +51,42 @@ impl Drop for UserDataQuery {
     }
 }
 
+/// `stream_control_user_weights_query_started()` and `_finished()`: a query of a weights request counts while its
+/// guard lives.
+pub struct UserWeightsQuery;
+
+impl UserWeightsQuery {
+    pub fn start() -> Self {
+        USER_WEIGHTS_QUERY_RUNNERS.fetch_add(1, Ordering::AcqRel);
+        UserWeightsQuery
+    }
+}
+
+impl Drop for UserWeightsQuery {
+    fn drop(&mut self) {
+        USER_WEIGHTS_QUERY_RUNNERS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// The users' queries executing now, data and weights together.
+fn user_query_runners() -> usize {
+    USER_DATA_QUERY_RUNNERS.load(Ordering::Acquire) + USER_WEIGHTS_QUERY_RUNNERS.load(Ordering::Acquire)
+}
+
 /// `stream_control_children_should_be_accepted()`: no backfill. Replication is not counted: it gains from merging the
 /// children's extents, and counting it would lock out the last children while all the others replicate.
 pub fn children_should_be_accepted() -> bool {
     backfill_runners() == 0
 }
 
-/// `stream_control_health_should_be_running()`: no backfill, and at most one user query.
+/// `stream_control_health_should_be_running()`: no backfill, and at most one user query, of data or weights.
 pub fn health_should_be_running() -> bool {
-    backfill_runners() == 0 && USER_DATA_QUERY_RUNNERS.load(Ordering::Acquire) <= 1
+    backfill_runners() == 0 && user_query_runners() <= 1
 }
 
-/// `stream_control_replication_should_be_running()`: no backfill and no user query.
+/// `stream_control_replication_should_be_running()`: no backfill and no user query, of data or weights.
 pub fn replication_should_be_running() -> bool {
-    backfill_runners() == 0 && USER_DATA_QUERY_RUNNERS.load(Ordering::Acquire) == 0
+    backfill_runners() == 0 && user_query_runners() == 0
 }
 
 /// `STREAM_CONTROL_SLEEP_UT`: what `stream_control_throttle()` sleeps, 10 ms plus up to 10 ms more.
@@ -86,8 +111,8 @@ mod tests {
         drop(running);
     }
 
-    /// Replication runs with no backfill and no user data query; health with no backfill and at most one user query
-    /// (the counters are shared too: only the refusals are asserted).
+    /// Replication runs with no backfill and no user query; health with no backfill and at most one user query, a
+    /// weights query counting as a data query does (the counters are shared too: only the refusals are asserted).
     #[test]
     fn backfills_and_user_queries_hold_replication_and_health_back() {
         let one = UserDataQuery::start();
@@ -95,6 +120,11 @@ mod tests {
         let two = UserDataQuery::start();
         assert!(!health_should_be_running());
         drop((one, two));
+        let weights = UserWeightsQuery::start();
+        assert!(!replication_should_be_running());
+        let data = UserDataQuery::start();
+        assert!(!health_should_be_running());
+        drop((weights, data));
         let running = BackfillRunning::start();
         assert!(!replication_should_be_running() && !health_should_be_running());
         drop(running);
