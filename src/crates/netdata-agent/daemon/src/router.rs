@@ -4,8 +4,8 @@
 //!
 //! Not ported yet: `/mcp` and `/sse`, and the API commands other than `info`, `chart`, `charts`, `context`,
 //! `contexts`, `registry`, `data`, `dbengine_stats`, `function`, `functions`, `manage`, `me`, `nodes`, `progress`,
-//! `stream_info`, `stream_path`, `versions` and health's (`alarms`, `alarm_log` and the others of its block of the
-//! table, and `badge.svg`).
+//! `stream_info`, `stream_path`, `versions`, `alerts` (without `transition=` and `options=mcp` yet) and health's
+//! (`alarms`, `alarm_log` and the others of its block of the table, and `badge.svg`).
 //! `/netdata.conf` shows only the keys of the subsystems ported so far.
 
 use std::sync::Arc;
@@ -239,6 +239,13 @@ const API_V2: &[Command] = &[
         callback: |route, _, query| contexts_v2::contexts(route, query),
     },
     Command {
+        name: "alerts",
+        acl: acl::bits::ALERTS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: |route, _, query| contexts_v2::alerts(route, query),
+    },
+    Command {
         name: "alert_config",
         acl: acl::bits::ALERTS,
         access: access::ANONYMOUS_DATA,
@@ -333,6 +340,13 @@ const API_V3: &[Command] = &[
         access: access::ANONYMOUS_DATA,
         allow_subpaths: false,
         callback: |route, _, query| data::v23(route, query, 3),
+    },
+    Command {
+        name: "alerts",
+        acl: acl::bits::ALERTS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: |route, _, query| contexts_v2::alerts(route, query),
     },
     Command {
         name: "alert_config",
@@ -1157,6 +1171,178 @@ mod tests {
         assert_eq!(health(), counted("initializing", [0, 1, 0, 0, 0]));
         let body = text(b"/api/v3/nodes", b"options=minify");
         assert!(body.contains(r#"{"name":"health","version":2,"enabled":true}"#), "{body}");
+    }
+
+    /// `/api/v2/alerts` and `/api/v3/alerts` (`api_v2_alerts()`): the nodes, then what the options ask of the alerts,
+    /// then the timings; no versions and no agents. Both rows ask the client for the alerts feature, and for that
+    /// alone. With health off there is no alert and no rule: the arrays a request asks for are empty and the host is
+    /// still listed. With health on, a host's alerts are kept by their name and by their published status; a summary
+    /// has them by name in link order and counts them by type and by collecting module, with every rule's name as
+    /// available whatever is kept; the instances are listed with the index their host has in `nodes`. A host
+    /// without a kept alert is listed while no context pattern is given, and not with one.
+    #[test]
+    fn alerts_are_routed_in_v2_and_v3() {
+        use netdata_agent_health::alert::Status;
+        use netdata_agent_rrd::chart::{Algorithm, ChartSpec, ChartType};
+        let s = shared();
+        let all = acl::bits::ALL_LISTENER_FEATURES;
+        let text = |path: &[u8], query: &[u8]| {
+            let r = asked(&s, path, query, all);
+            let shown = String::from_utf8_lossy(path).into_owned();
+            assert_eq!((r.code, r.content_type), (status::OK, ContentType::ApplicationJson), "{shown}");
+            assert!(r.no_cacheable, "{shown}");
+            String::from_utf8(r.body).unwrap()
+        };
+        let node = r#""nodes":[{"mg":"0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e","nm":"box","ni":0}]"#;
+        let no_summary = concat!(
+            r#""alerts":[],"alerts_by_type":[],"alerts_by_component":[],"alerts_by_classification":[],"#,
+            r#""alerts_by_recipient":[],"alerts_by_module":[]"#
+        );
+        for path in [&b"/api/v2/alerts"[..], b"/api/v3/alerts"] {
+            let shown = String::from_utf8_lossy(path).into_owned();
+            assert_eq!(members(&text(path, b"")), ["api", "nodes", "timings"], "{shown}");
+            // the dashboard's three calls on an agent without health
+            let body = text(path, b"options=summary,values,instances,minify&status=raised");
+            let head = format!(r#"{{"api":2,{node},{no_summary},"alert_instances":[],"timings":{{"#);
+            assert!(body.starts_with(&head), "{shown}: {body}");
+            let head = format!(r#"{{"api":2,{node},{no_summary},"timings":{{"#);
+            for query in [&b"options=minify,summary"[..], b"options=minify,summary&alert=nope"] {
+                let body = text(path, query);
+                assert!(body.starts_with(&head), "{shown}: {body}");
+            }
+            let body = text(path, b"options=minify,values");
+            let head = format!(r#"{{"api":2,{node},"alert_instances":[],"timings":{{"#);
+            assert!(body.starts_with(&head), "{shown}: {body}");
+
+            let denied = server::permission_denied_acl();
+            let r = asked(&s, path, b"", all & !acl::bits::ALERTS);
+            assert_eq!((r.code, &r.body), (denied.code, &denied.body), "{shown}");
+            assert_eq!(asked(&s, path, b"", acl::bits::ALERTS).code, status::OK, "{shown}");
+        }
+        // the echo: `config` is stripped; the last `status` replaces the first, a word that is no status is
+        // ignored, and each bit prints its first word; the name pattern as it was given
+        let query = b"options=debug,config,summary&status=active,clear&status=warning|bogus&alert=a*";
+        let echo: String = text(b"/api/v2/alerts", query).split_whitespace().collect();
+        assert!(echo.contains(r#""mode":["nodes","alerts"],"options":["debug","summary"],"#), "{echo}");
+        let selectors = concat!(
+            r#""selectors":{"nodes":null,"contexts":null,"#,
+            r#""alerts":{"status":["warning"],"alert":"a*","transition":null}},"filters":{"#
+        );
+        assert!(echo.contains(selectors), "{echo}");
+        let body = text(b"/api/v2/alerts", b"options=debug&status=raised,critical");
+        let echo: String = body.split_whitespace().collect();
+        let alerts = r#""alerts":{"status":["raised","critical"],"alert":null,"transition":null}}"#;
+        assert!(echo.contains(alerts), "{echo}");
+
+        // health on: two rules on one chart, and one more that no chart takes
+        let host = s.hosts.localhost();
+        host.set_health_enabled(true);
+        let (chart, _) = host.charts().create(&ChartSpec {
+            type_: "t",
+            id: "c",
+            name: None,
+            family: Some("f"),
+            context: Some("t.ctx"),
+            title: "T",
+            units: "u",
+            plugin: "p",
+            module: None,
+            priority: 1000,
+            update_every: 1,
+            chart_type: ChartType::Line,
+            mode: netdata_agent_rrd::mode::DbMode::Ram,
+            history_entries: 5,
+            page_size: 4096,
+        });
+        chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+        chart.update_collection(|collection| collection.last_collected = (5, 0));
+        let dir = tempfile::tempdir().unwrap();
+        let rules = dir.path().join("a.conf");
+        let text_of_rules = concat!(
+            "template: a_first\n on: t.ctx\n type: System\n every: 10s\n calc: 1\n\n",
+            "template: a_second\n on: t.ctx\n every: 10s\n calc: 1\n\n",
+            "template: a_third\n on: other.ctx\n type: System\n every: 10s\n calc: 1\n",
+        );
+        std::fs::write(&rules, text_of_rules).unwrap();
+        {
+            use std::os::unix::ffi::OsStrExt;
+            assert!(netdata_agent_health::readfile::health_readfile(&s.health, rules.as_os_str().as_bytes(), false));
+        }
+        s.health.host_link(host, &|| 1_700_000_000, &|| true);
+        let linked = s.health.host(host).unwrap().chart_alerts(&chart);
+        let names: Vec<String> = linked.iter().map(|a| String::from_utf8_lossy(a.name()).into_owned()).collect();
+        assert_eq!(names.len(), 2, "{names:?}");
+        assert!(names.contains(&"a_first".to_owned()) && names.contains(&"a_second".to_owned()), "{names:?}");
+        for alert in &linked {
+            let mut run = alert.run();
+            run.status = if alert.name() == b"a_first" { Status::Warning } else { Status::Clear };
+            alert.publish(&run, None);
+        }
+        let between = |body: &str, from: &str, to: &str| {
+            let at = body.find(from).unwrap_or_else(|| panic!("no {from} in {body}"));
+            let end = at + body[at..].find(to).unwrap_or_else(|| panic!("no {to} after {from} in {body}"));
+            body[at..end].to_owned()
+        };
+        let kept = |query: &[u8]| {
+            let body = text(b"/api/v3/alerts", query);
+            let alerts = between(&body, r#""alerts":["#, r#","alerts_by_type""#);
+            names.iter().filter(|name| alerts.contains(&format!(r#""nm":"{name}""#))).cloned().collect::<Vec<_>>()
+        };
+        // every alert, in link order; then by status and by name
+        assert_eq!(kept(b"options=minify,summary"), names);
+        assert_eq!(kept(b"options=minify,summary&status=warning"), ["a_first"]);
+        assert_eq!(kept(b"options=minify,summary&status=raised"), ["a_first"]);
+        assert_eq!(kept(b"options=minify,summary&status=clear"), ["a_second"]);
+        assert_eq!(kept(b"options=minify,summary&status=clear,active").len(), 2);
+        assert!(kept(b"options=minify,summary&status=critical").is_empty());
+        assert_eq!(kept(b"options=minify,summary&alert=a_second"), ["a_second"]);
+        assert_eq!(kept(b"options=minify,summary&alert=a_s*|nope"), ["a_second"]);
+        assert!(kept(b"options=minify,summary&alert=A_SECOND").is_empty());
+
+        // the summary's counts, and the groupings: the type of the kept alerts and of every rule's name (two of the
+        // three rules have it), the charts' collecting module (never a rule's)
+        let body = text(b"/api/v3/alerts", b"options=minify,summary");
+        let first = between(&body, r#"{"ati":"#, r#","ctx":"#);
+        // (the first entry is the first alert in link order: the warning one or the clear one)
+        let (wr, cl) = if names[0] == "a_first" { (1, 0) } else { (0, 1) };
+        let counts = format!(r#""cr":0,"wr":{wr},"cl":{cl},"er":0,"in":1,"nd":1,"cfg":1"#);
+        let head = format!(r#"{{"ati":0,"ni":[0],"nm":"{}","#, names[0]);
+        assert!(first.starts_with(&head) && first.ends_with(&counts), "{first}");
+        let by_type = between(&body, r#""alerts_by_type":"#, r#","alerts_by_component""#);
+        let system = concat!(
+            r#""alerts_by_type":[{"name":"System","cr":0,"wr":1,"cl":0,"er":0,"running":1,"running_silent":0,"#,
+            r#""available":2}]"#
+        );
+        assert_eq!(by_type, system);
+        let by_module = between(&body, r#""alerts_by_module":"#, r#","timings""#);
+        let module = concat!(
+            r#""alerts_by_module":[{"name":"[none]","cr":0,"wr":1,"cl":1,"er":0,"running":2,"#,
+            r#""running_silent":0}]"#
+        );
+        assert_eq!(by_module, module);
+        // nothing kept: the rules' names are still available, and the host is still listed
+        let body = text(b"/api/v3/alerts", b"options=minify,summary&status=critical");
+        let head = format!(r#"{{"api":2,{node},"alerts":[],"alerts_by_type":[{{"name":"System","cr":0,"#);
+        assert!(body.starts_with(&head), "{body}");
+        assert!(body.contains(r#""running":0,"running_silent":0,"available":2}],"alerts_by_component":"#), "{body}");
+        assert!(body.contains(r#","alerts_by_module":[],"timings":{"#), "{body}");
+        // with a context pattern a host is listed only for a context that has a kept alert
+        let listed = |query: &[u8]| text(b"/api/v3/alerts", query).contains(node);
+        assert!(listed(b"options=minify,summary&scope_contexts=t.ctx"));
+        assert!(!listed(b"options=minify,summary&scope_contexts=t.ctx&status=critical"));
+        assert!(!listed(b"options=minify,summary&scope_contexts=other.ctx"));
+        assert!(!listed(b"options=minify,summary&contexts=t.ctx&alert=nope"));
+
+        // the instances: the index of the host, the alert, its chart; with `instances` its status and the rule's part
+        let body = text(b"/api/v3/alerts", b"options=minify,values&status=warning");
+        let instance = r#""alert_instances":[{"ni":0,"nm":"a_first","ch":"t.c","ch_n":"t.c","v":"#;
+        assert!(body.starts_with(&format!(r#"{{"api":2,{node},{instance}"#)), "{body}");
+        // (the one kept alert is the summary's first entry, whatever its place among the chart's alerts)
+        let body = text(b"/api/v3/alerts", b"options=minify,summary,instances&status=warning");
+        let instance = between(&body, r#""alert_instances":[{"#, r#""info":"#);
+        assert!(instance.starts_with(r#""alert_instances":[{"ati":0,"ni":0,"gi":"#), "{instance}");
+        let tail = r#""nm":"a_first","ctx":"t.ctx","ch":"t.c","ch_n":"t.c","st":"WARNING","fami":"f","#;
+        assert!(instance.ends_with(tail), "{instance}");
     }
 
     /// `/api/v2/contexts` and `/api/v3/contexts` (`api_v2_contexts()`): the nodes, the contexts, the versions and the

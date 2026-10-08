@@ -2,7 +2,8 @@
 //! `rrdcontext_to_json_v2()` and its host walk (`src/database/contexts/api_v2_contexts.c`, `query_scope.c`) for the
 //! modes the agent serves so far: `/api/v3/stream_path`, `/api/v2/info` (`/api/v3/info`), `/api/v2/functions`
 //! (`/api/v3/functions`), `/api/v2/versions` (`/api/v3/versions`), `/api/v2/nodes` (`/api/v3/nodes`) and
-//! `/api/v2/contexts` (`/api/v3/contexts`). Decisions D51, D92, D160 and D231 in the status repository.
+//! `/api/v2/contexts` (`/api/v3/contexts`), and `/api/v2/alerts` (`/api/v3/alerts`) without `transition=` and
+//! `options=mcp` yet. Decisions D51, D92, D160, D231 and D234 in the status repository.
 
 use std::ops::ControlFlow;
 use std::sync::Arc;
@@ -14,10 +15,11 @@ use netdata_agent_query::jsonwrap_v2::{cloud_timings, version_hashes_v2};
 use netdata_agent_query::keys::Keys;
 use netdata_agent_query::request::pairs;
 use netdata_agent_query::tables::{
+    alert_statuses_to_json_array,
     contexts_options::{
-        DEBUG, FAMILY, JSON_LONG_KEYS, LIVENESS, MCP, MINIFY, PRIORITIES, RETENTION, RFC3339, UNITS,
+        CONFIGURATIONS, DEBUG, FAMILY, JSON_LONG_KEYS, LIVENESS, MCP, MINIFY, PRIORITIES, RETENTION, RFC3339, UNITS,
     },
-    contexts_options_to_json_array, parse_contexts_options,
+    contexts_options_to_json_array, parse_alert_statuses, parse_contexts_options,
 };
 use netdata_agent_query::target::{Versions, foreach_context, foreach_host, matches_retention};
 use netdata_agent_rrd::clock::now_realtime_s;
@@ -34,6 +36,7 @@ use crate::server::{Reply, Shared};
 use crate::startup;
 
 mod agents;
+mod alerts;
 mod contexts;
 mod functions;
 mod labels;
@@ -89,12 +92,19 @@ struct Request {
     /// `cardinality` or `cardinality_limit`: how many contexts, and items of each of their lists, are printed; 0 for
     /// all.
     cardinality_limit: u64,
+    /// `alert`: a pattern on the alerts' names (the two alert modes).
+    alert: Option<Vec<u8>>,
+    /// `transition`: the id of one transition of the alert log (the two alert modes).
+    transition: Option<Vec<u8>>,
+    /// `status`: the bits of the status words an alerts request keeps; 0 keeps every alert.
+    status: u64,
 }
 
 /// `api_v2_contexts_internal()`'s parameter loop: the last occurrence of a value wins, options accumulate.
 fn parse(query: &[u8], mode: u32, options: u64) -> Request {
     let context_modes =
         mode::NODES | mode::CONTEXTS | mode::SEARCH | mode::ALERTS | mode::ALERT_TRANSITIONS;
+    let alert_modes = mode::ALERTS | mode::ALERT_TRANSITIONS;
     let mut req = Request {
         options,
         ..Request::default()
@@ -112,6 +122,10 @@ fn parse(query: &[u8], mode: u32, options: u64) -> Request {
             b"before" => req.before = str2l(value),
             b"timeout" => req.timeout_ms = str2l(value),
             b"cardinality" | b"cardinality_limit" => req.cardinality_limit = str2ul(value),
+            b"alert" if mode & alert_modes != 0 => req.alert = Some(value.to_vec()),
+            b"transition" if mode & alert_modes != 0 => req.transition = Some(value.to_vec()),
+            // the words of one `status` add up; a later `status` replaces an earlier one
+            b"status" if mode & mode::ALERTS != 0 => req.status = parse_alert_statuses(value),
             _ => {}
         }
     }
@@ -169,6 +183,15 @@ fn request_to_json(w: &mut JsonWriter, req: &Request, mode: u32) {
     if listed {
         w.member_add_string_opt("contexts", text(&req.contexts).as_deref());
     }
+    if mode & (mode::ALERTS | mode::ALERT_TRANSITIONS) != 0 {
+        w.member_add_object("alerts");
+        if mode & mode::ALERTS != 0 {
+            alert_statuses_to_json_array(w, b"status", req.status);
+        }
+        w.member_add_string_opt("alert", text(&req.alert).as_deref());
+        w.member_add_string_opt("transition", text(&req.transition).as_deref());
+        w.object_close();
+    }
     w.object_close();
     w.member_add_object("filters");
     let rfc3339 = req.options & RFC3339 != 0;
@@ -186,6 +209,10 @@ fn render(shared: &Shared, req: &Request, mode: u32, wall_s: i64) -> Reply {
     let pattern = |v: &Option<Vec<u8>>| v.as_deref().and_then(SimplePattern::from_web);
     let (scope_nodes, nodes) = (pattern(&req.scope_nodes), pattern(&req.nodes));
     let (contexts, scope_contexts) = (pattern(&req.contexts), pattern(&req.scope_contexts));
+    // the alerts an alerts request keeps: by a pattern on their names and by their status
+    let alert_name = pattern(&req.alert);
+    let filters = alerts::Filters { name: alert_name.as_ref(), alarm_id: 0, status: req.status };
+    let mut alerts = (mode & mode::ALERTS != 0).then(|| alerts::Collector::new(req.options));
     let window = if req.after != 0 || req.before != 0 {
         let (after, before, _) = relative_window_to_absolute_query(req.after, req.before, wall_s);
         Window {
@@ -218,15 +245,24 @@ fn render(shared: &Shared, req: &Request, mode: u32, wall_s: i64) -> Reply {
         if timed_out(startup::now_ut(), received_ut, req.timeout_ms) {
             return ControlFlow::Break(());
         }
+        // With status words, a host whose last complete health pass counted no alert of a requested status
+        // cannot have one the request keeps: its contexts are not walked (`rrdhost_alert_status_snapshot_read()`
+        // and its filter). A host without a complete pass may have one.
+        let host_alerts = if mode & mode::ALERTS != 0 { shared.health.host(host) } else { None };
+        let may_have_alerts = req.status & alerts::STATUSES == 0
+            || alerts::host_may_match(req.status, host_alerts.as_ref().and_then(|alerts| alerts.pass_counts()));
         let patterns = contexts.is_some() || scope_contexts.is_some();
-        let mut matched = mode & (mode::NODES | mode::FUNCTIONS | mode::ALERTS) != 0
-            && !patterns
-            && window.range.is_none();
-        if mode & (mode::CONTEXTS | mode::SEARCH | mode::ALERTS) != 0 || patterns {
+        let matched_modes = mode::NODES | mode::FUNCTIONS | if may_have_alerts { mode::ALERTS } else { 0 };
+        let mut matched = mode & matched_modes != 0 && !patterns && window.range.is_none();
+        let walk_contexts = mode & (mode::CONTEXTS | mode::SEARCH | mode::ALERTS) != 0 || patterns;
+        if walk_contexts && (mode & mode::ALERTS == 0 || may_have_alerts) {
             // query_scope_foreach_context() with rrdcontext_to_json_v2_add_context(): a host with a context that
             // counts is matched, and the contexts answer collects each one that does. The `contexts` selector
             // does not filter here (C ignores whether a context is queryable), so it only keeps a host without any
-            // context out. Where nothing is collected, the first context that counts settles the host.
+            // context out. Where nothing is collected, the first context that counts settles the host. An alerts
+            // request counts a context only when it keeps an alert of it, and walks them all.
+            let stop_at_first = dict.is_none() && alerts.is_none();
+            let ni = selected.len();
             let mut counted = false;
             let first = foreach_context(
                 host,
@@ -236,21 +272,24 @@ fn render(shared: &Shared, req: &Request, mode: u32, wall_s: i64) -> Reply {
                 None,
                 true,
                 |rc, _| {
-                    if dict.is_none() && window.range.is_none() {
+                    if stop_at_first && window.range.is_none() {
                         return ControlFlow::Break(());
                     }
                     let state = rc.state();
                     if !context_in_window(rc, &state, window) {
                         return ControlFlow::Continue(());
                     }
-                    match dict.as_mut() {
-                        Some(dict) => {
-                            dict.add(rc, state, req.options, window);
-                            counted = true;
-                            ControlFlow::Continue(())
+                    if let Some(alerts) = alerts.as_mut() {
+                        // rrdcontext_matches_alert(): an instance's `ni` is the index the host is about to get
+                        if !alerts.context(rc, host, host_alerts.as_deref(), ni, &filters) {
+                            return ControlFlow::Continue(());
                         }
-                        None => ControlFlow::Break(()),
                     }
+                    if let Some(dict) = dict.as_mut() {
+                        dict.add(rc, state, req.options, window);
+                    }
+                    counted = true;
+                    if stop_at_first { ControlFlow::Break(()) } else { ControlFlow::Continue(()) }
                 },
             );
             matched |= counted || first.is_break();
@@ -303,6 +342,12 @@ fn render(shared: &Shared, req: &Request, mode: u32, wall_s: i64) -> Reply {
     if let Some(dict) = &dict {
         dict.to_json(&mut w, req, window.now);
     }
+    if let Some(alerts) = &mut alerts {
+        // contexts_v2_alerts_to_json(): a summary's hosts are printed as their indexes in `nodes`
+        let node_index = |guid: &str| selected.iter().position(|host| host.machine_guid() == guid);
+        alerts.count_prototypes(&shared.health.prototypes());
+        alerts.to_json(&mut w, req.options, node_index);
+    }
     if mode & mode::VERSIONS != 0 {
         // the host index's version as the answer is written
         versions.nodes_hard_hash = u64::from(shared.hosts.version());
@@ -340,6 +385,18 @@ pub fn info(route: &Route<'_>, query: &[u8]) -> Reply {
     let info_mode = mode::AGENTS | mode::AGENTS_INFO;
     let req = parse(query, info_mode, 0);
     render(route.shared, &req, info_mode, now_realtime_s())
+}
+
+/// `api_v2_alerts()` (`/api/v2/alerts`, `/api/v3/alerts`): the alerts of the hosts in scope that the request's
+/// name pattern and status words keep, between the nodes and the timings: with `options=summary` summarised by
+/// name and counted by type, component, classification, recipient and collecting module, with `instances` or
+/// `values` listed one by one. No versions and no agents. The host in the URL does not matter.
+pub fn alerts(route: &Route<'_>, query: &[u8]) -> Reply {
+    let alerts_mode = mode::ALERTS | mode::NODES;
+    let mut req = parse(query, alerts_mode, 0);
+    // rrdcontext_to_json_v2() strips `config` for this mode before anything reads the options, the echo too
+    req.options &= !CONFIGURATIONS;
+    render(route.shared, &req, alerts_mode, now_realtime_s())
 }
 
 /// `api_v2_contexts()` (`/api/v2/contexts`, `/api/v3/contexts`): the contexts of the hosts in scope, merged by id,
