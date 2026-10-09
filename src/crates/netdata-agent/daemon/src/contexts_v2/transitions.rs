@@ -580,6 +580,15 @@ mod tests {
         // with room for them the ties are simply kept
         let roomy = after(5, 0, &[9, 8, 8, 8, 7]);
         assert_eq!(roomy, (vec![9, 8, 8, 8, 7], [5, 5, 5, 5, 0, 0], [1, 0, 4, 0, 0, 0, 0, 0]));
+        // the answer's `after` counts the two shifts with the one row skipped after the list (C's
+        // `skips_after + shifts`, api_v2_contexts_alert_transitions.c:513)
+        let mut c = collector(&[], 2, 0);
+        for global_id in [9, 8, 8, 8, 7] {
+            c.row(&row(global_id));
+        }
+        let text = printed(&c, 0, None);
+        let items = r#""items":{"evaluated":5,"matched":5,"returned":2,"max_to_return":2,"before":0,"after":3}"#;
+        assert!(text.contains(items), "{text}");
     }
 
     /// A row newer than the list's (the statement by id has no order): on a full list it takes the place of the

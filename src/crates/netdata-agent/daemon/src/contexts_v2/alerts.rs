@@ -838,6 +838,30 @@ mod tests {
         String::from_utf8(w.into_bytes()).unwrap()
     }
 
+    /// A recipient counts as silent only when it is exactly `silent` (`alerts_by_x_insert_callback()`): one that
+    /// starts so, or differs in case, is another recipient whose alerts run.
+    #[test]
+    fn only_the_recipient_silent_is_silent() {
+        let mut collector = Collector::new(SUMMARY);
+        let summary = collector.summary.as_mut().unwrap();
+        for (host, to) in [(1, "silent"), (2, "silence"), (3, "Silent"), (4, "sil")] {
+            let texts = ["System", "CPU", "Utilization", to];
+            summary.add(&kept("cpu_high", texts, &HASH_A, "system.cpu", "stat", host, Status::Warning, 91.0));
+        }
+        let text = printed(&collector, SUMMARY);
+        let entry = |to: &str, silent: u8| {
+            format!(r#"{{"name":"{to}","cr":0,"wr":1,"cl":0,"er":0,"running":1,"running_silent":{silent}}}"#)
+        };
+        let want = format!(
+            r#""alerts_by_recipient":[{},{},{},{}]"#,
+            entry("silent", 1),
+            entry("silence", 0),
+            entry("Silent", 0),
+            entry("sil", 0)
+        );
+        assert!(text.contains(&want), "{text}");
+    }
+
     /// The summary: one entry per name in the order first seen, its index the `ati`; the rule's summary as written,
     /// from the first alert of the name; the counters; the hosts as their indexes in `nodes`, each once; the rules'
     /// hashes counted once each; the five sets with each text once, as a label name (so a space becomes an
