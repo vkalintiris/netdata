@@ -1122,6 +1122,14 @@
     "proves": "volume weight equals the relative highlight-versus-baseline average change multiplied by the highlight-time share on the matching side of the baseline average"
   },
   {
+    "name": "W/volume-absolute",
+    "proves": "volume weighting reads the absolute values of a metric with negative values in all three of its queries: the averages and the share of the highlight above the baseline average are those of the absolute values"
+  },
+  {
+    "name": "W/volume-anomaly-share",
+    "proves": "volume weighting with the anomaly bit over a baseline anomaly rate of zero weighs a metric by the share of the highlight's points above it alone, without the relative change"
+  },
+  {
     "name": "W/ks2-raw-endpoints",
     "proves": "ks2 assigns exact raw weights 0 to identical consecutive-difference distributions and 1 to fully one-sided distributions meeting the endpoint threshold"
   },

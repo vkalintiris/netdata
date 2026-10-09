@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/netdata/netdata/tests/query-corpus/daemon"
 	"github.com/netdata/netdata/tests/query-corpus/fixture"
@@ -19,7 +18,8 @@ import (
 // `/api/v2/weights` and `/api/v3/weights`, one handler (api_v2_weights.c:18-187) and one engine
 // (weights.c:2636-2915). Each check has its own pair (`dashPair`: the parent's own database stays dbengine, never
 // the ram or alloc shape the weights walk crashes on) with the fixture child carrying the corpus's two weights
-// charts at fixture.T0; every window is absolute.
+// charts at fixture.T0; every window is absolute but those of the rows `relative` and `one-sided` and of the routes'
+// refusals that read none (weights_rows_test.go holds the rows added by H38).
 
 // weightsT is a fixture second as a query value.
 func weightsT(s int64) string { return strconv.FormatInt(fixture.T0+s, 10) }
@@ -34,35 +34,13 @@ var (
 // weightsCharts are the corpus's weights fixtures (fixture/weights.go).
 func weightsCharts() []fixture.Chart { return []fixture.Chart{fixture.Weights(), fixture.WeightsKS2()} }
 
-// weightsChild connects the fixture child (`childHost`) to each side (dashConnect) and pushes both weights charts live
-// over that one connection (fixture.Chart.Replicate serves one chart per dialogue, so replication would reconnect the
-// host for the second), then waits on each side for each chart's whole retention and its context's retention stamp
-// (Daemon.WaitContextStamp: the per-metric walk's retention gate reads it, weights.c:2490-2506).
+// weightsChild connects the fixture child (`childHost`) to each side and pushes both weights charts live over that one
+// connection (fixture.Chart.Replicate serves one chart per dialogue, so replication would reconnect the host for the
+// second), then waits on each side for each chart's whole retention and its context's retention stamp
+// (Daemon.WaitContextStamp: the per-metric walk's retention gate reads it, weights.c:2490-2506): weightsPush.
 func weightsChild(t *testing.T, p *Pair) {
 	t.Helper()
-	charts := weightsCharts()
-	for i, conn := range dashConnect(t, p) {
-		for _, ch := range charts {
-			ch.Define(conn)
-		}
-		for _, ch := range charts {
-			ch.PushLive(conn)
-		}
-		if err := conn.Flush(); err != nil {
-			t.Fatalf("%s: %v", p.Each()[i].Role, err)
-		}
-	}
-	for _, side := range p.Each() {
-		for _, ch := range charts {
-			if _, err := side.Daemon.WaitRetention(childHost.Hostname, ch.Context, ch.FirstT(), ch.LastT(),
-				30*time.Second); err != nil {
-				t.Fatalf("%s: %v", side.Role, err)
-			}
-			if err := side.Daemon.WaitContextStamp(childHost.Hostname, ch.Context, 30*time.Second); err != nil {
-				t.Fatalf("%s: %v", side.Role, err)
-			}
-		}
-	}
+	weightsPush(t, p, childHost, weightsCharts(), weightsCharts())
 }
 
 // weightsNumbers are an object's members as numbers.
@@ -121,6 +99,12 @@ var weightsFamily = v2Family{masks: infoV2Volatile, settle: dashSettle, wall: tr
 // weightsV2Dims are a multinode answer's dimension rows (`[0, ni, ci, ii, di, weight, …]`, weights.c:890-948) as
 // dimension id → weight, the ids from `dictionaries.dimensions` (weights.c:1279-1350).
 func weightsV2Dims(v Value) (map[string]float64, error) {
+	return weightsDimsBy(v, func(id, _ string) string { return id })
+}
+
+// weightsDimsBy are a multinode answer's dimension rows as key(dimension id, node index) → weight; a key twice, a
+// row whose dimension is not in the dictionary or whose weight is no number is an error.
+func weightsDimsBy(v Value, key func(id, ni string) string) (map[string]float64, error) {
 	dict, err := dashMember(v, "dictionaries", "dimensions")
 	if err != nil {
 		return nil, err
@@ -147,14 +131,15 @@ func weightsV2Dims(v Value) (map[string]float64, error) {
 		if !ok {
 			return nil, fmt.Errorf("row %s: no dimension %s", r, r.Items[4])
 		}
-		if _, dup := out[id]; dup {
-			return nil, fmt.Errorf("dimension %s twice", id)
+		k := key(id, r.Items[1].Text)
+		if _, dup := out[k]; dup {
+			return nil, fmt.Errorf("dimension %s twice", k)
 		}
 		f, err := strconv.ParseFloat(r.Items[5].Text, 64)
 		if err != nil {
 			return nil, fmt.Errorf("row %s: weight %s", r, r.Items[5])
 		}
-		out[id] = f
+		out[k] = f
 	}
 	return out, nil
 }
@@ -290,11 +275,11 @@ func weightsRequests() []v2Req {
 		{name: "anomaly-raw", target: "/api/v3/weights?method=anomaly-rate&options=raw&" + weightsHighlight + child,
 			status: "200", guard: dashGuard([]dashFact{weightsV2Holds(nil, nil, 6), weightsV2Weigh(map[string]float64{
 				"flat": 0, "level": 0, "split": 0, "anom": 12000.0 / 121, "flat2": 0, "jump": 0}, 1e-6)})},
-		// the dashboard's default scope: both hosts are queryable, so on a box with two or more CPUs C walks them in
-		// parallel (weights.c:2543-2607; with one CPU it walks them as `anomaly` does, :2546-2561), and its counting
-		// pass and its threads each add the hosts' context versions (weights.c:2543, :674-675, :2600-2601): twice the
-		// child's, which is what tells that the parallel walk ran (localhost has no context). localhost has no data,
-		// so the answer is the child's (weightsAnomaly)
+		// the dashboard's default scope: both hosts are queryable, so with the pair's two CPUs (`cpu cores = 2`) C
+		// walks them in threads (weights.c:2543-2607; with one CPU it walks them as `anomaly` does, :2546-2561), and
+		// its counting pass and its threads each add the hosts' context versions (weights.c:2543, :674-675,
+		// :2600-2601): twice the child's, which is what tells that the threads ran (localhost has no context).
+		// localhost has no data, so the answer is the child's (weightsAnomaly)
 		{name: "two-hosts", target: "/api/v3/weights?method=anomaly-rate&" + weightsHighlight, status: "200",
 			guard: func(v Value) error {
 				hash, err := weightsContextsHash(v)
@@ -306,7 +291,7 @@ func weightsRequests() []v2Req {
 						"read the parallel walk's hash against")
 				case hash != 2*serial:
 					return fmt.Errorf("versions.contexts_hard_hash is %d, want %d, twice what the one host's walk of "+
-						"`anomaly` read (%d): the oracle did not walk the hosts in parallel (it needs two or more CPUs), "+
+						"`anomaly` read (%d): the oracle did not walk the hosts in threads (the pair sets two CPUs), "+
 						"or the child's contexts changed between the two rows", hash, 2*serial, serial)
 				}
 				return anomaly(v)
@@ -368,11 +353,8 @@ func weightsReady(t *testing.T, routes ...string) {
 func TestWeightsV1API(t *testing.T) {
 	p := dashPair(t, daemon.Options{})
 	weightsChild(t, p)
-	for _, req := range weightsV1Requests() {
-		t.Run(req.name, func(t *testing.T) {
-			compareV2(t, p, req, weightsV1Family)
-		})
-	}
+	weightsPush(t, p, child2Host, weightsLimitCharts(), weightsLimitCharts())
+	weightsAsk(t, p, weightsV1Rows())
 	t.Run("access", func(t *testing.T) {
 		routes := []string{"/api/v1/weights", "/api/v1/metric_correlations"}
 		accessRows(t, []accessConf{accessACL, accessBearer}, accessRoutes(routes...))
@@ -382,16 +364,15 @@ func TestWeightsV1API(t *testing.T) {
 
 // TestWeightsAPI (check `api.weights`, milestone 10 commit 10): the v2 and v3 routes on the weights fixtures.
 func TestWeightsAPI(t *testing.T) {
-	p := dashPair(t, daemon.Options{})
+	p := dashPair(t, weightsCPUs(2))
 	weightsChild(t, p)
-	for _, req := range weightsRequests() {
-		t.Run(req.name, func(t *testing.T) {
-			compareV2(t, p, req, weightsFamily)
-		})
-	}
+	weightsAsk(t, p, weightsAPIRows())
 	t.Run("access", func(t *testing.T) {
 		routes := []string{"/api/v2/weights", "/api/v3/weights"}
 		accessRows(t, []accessConf{accessACL, accessBearer}, accessRoutes(routes...))
 		weightsReady(t, routes...)
+		t.Run("ready-v3-limit", func(t *testing.T) {
+			compareBeforeReady(t, "/api/v3/weights?limit=x")
+		})
 	})
 }

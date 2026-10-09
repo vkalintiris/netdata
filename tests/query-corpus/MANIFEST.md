@@ -260,6 +260,8 @@ set at the end.
 | W/anomaly-rate-multidim | method=anomaly-rate implies the anomaly bit on EVERY path: the bare method and the explicit options=anomaly-bit are equivalent, both returning true anomaly rates through the multi-dimensional path (was: the bare method ranked by plain value averages there while per-metric and MCP forced the bit) | n/a | #23212 |
 | W/volume-equal-baseline-skip | volume weighting omits a metric whose highlight and baseline window averages are equal | n/a |  |
 | W/volume-formula | volume weight equals the relative highlight-versus-baseline average change multiplied by the highlight-time share on the matching side of the baseline average | n/a |  |
+| W/volume-absolute | volume weighting reads the absolute values of a metric with negative values in all three of its queries: the averages and the share of the highlight above the baseline average are those of the absolute values | n/a |  |
+| W/volume-anomaly-share | volume weighting with the anomaly bit over a baseline anomaly rate of zero weighs a metric by the share of the highlight's points above it alone, without the relative change | n/a |  |
 | W/ks2-raw-endpoints | ks2 assigns exact raw weights 0 to identical consecutive-difference distributions and 1 to fully one-sided distributions meeting the endpoint threshold | n/a |  |
 | W/ks2-spread-normalization | spread_results_evenly rank-normalizes ks2 weights by unique-value slots while tied raw weights share one slot | n/a |  |
 | L8/percentage-post-processing | options=percentage computes per-row shares over absolute values and forces absolute semantics for v2/v3 and non-dimension groupings | n/a |  |

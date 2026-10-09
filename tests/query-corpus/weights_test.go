@@ -841,6 +841,48 @@ func TestWeightsVolume(t *testing.T) {
 	})
 }
 
+// TestWeightsVolumeAbsolute: volume adds the absolute option to its three queries (weights.c:1866), so a metric with
+// negative values is weighed by its absolute values. `jump` alternates 1 and 0 in the baseline (its absolute values
+// average 0.5) and falls 0, -5, ..., -600 in the highlight (they average 36300/121 = 300); 120 of the highlight's
+// 121 absolute values are above 0.5. `flat2`'s two averages are equal: skipped. Without the absolute values the
+// highlight would average -300, below the baseline.
+func TestWeightsVolumeAbsolute(t *testing.T) {
+	trackContract(t, "W/volume-absolute")
+
+	weightsSettle(t, "weights-ks2", guid(163), fixture.WeightsKS2())
+	doc, err := td.HostJSON("weights-ks2", "api/v1/weights", weightsV1Params("volume", wKS2Context, "raw", true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := v1ContextsWeights(t, doc, wKS2Context)
+	want := map[string]float64{"jump": (300 - 0.5) / 0.5 * (120.0 / 121)}
+	if len(got) != len(want) {
+		t.Fatalf("got %d dims %v, want %v", len(got), got, want)
+	}
+	for id, w := range want {
+		if g, ok := got[id]; !ok || !tierValueMatch(g, w, 1e-9) {
+			t.Errorf("%s: weight %v, want %v (the absolute values' relative change times their share)", id, got[id], w)
+		}
+	}
+}
+
+// TestWeightsVolumeAnomalyShare: with the anomaly bit volume compares anomaly rates; `anom`'s baseline rate is 0, so
+// its weight is the share of the highlight's points above it alone (RESULT_IS_PERCENTAGE_OF_TIME,
+// weights.c:1924-1927): 120 of 121. The other dimensions' rates are 0 in both windows: skipped.
+func TestWeightsVolumeAnomalyShare(t *testing.T) {
+	trackContract(t, "W/volume-anomaly-share")
+
+	weightsSettle(t, "weights-h", guid(160), fixture.Weights())
+	doc, err := td.HostJSON("weights-h", "api/v1/weights", weightsV1Params("volume", wContext, "raw|anomaly-bit", true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := v1ContextsWeights(t, doc, wContext)
+	if len(got) != 1 || !tierValueMatch(got["anom"], 120.0/121, 1e-9) {
+		t.Errorf("weights %v, want only anom at 120/121 (the share of the highlight above a baseline rate of 0)", got)
+	}
+}
+
 func TestWeightsKS2(t *testing.T) {
 	skipIfNotApplicable(t, contractScope{"W/ks2-raw-endpoints", ""}, contractScope{"W/ks2-spread-normalization", ""})
 	weightsSettle(t, "weights-ks2", guid(163), fixture.WeightsKS2())

@@ -16,6 +16,7 @@ func TestDashNorm(t *testing.T) {
 	t.Run("transitions", testDashNormTransitions)
 	t.Run("rules-order", testDashNormRulesOrder)
 	t.Run("weights", testDashNormWeights)
+	t.Run("weights-rows", testDashNormWeightsRows)
 	t.Run("web", testDashNormWeb)
 	t.Run("info", testDashNormInfo)
 	t.Run("nodes", testDashNormNodes)
