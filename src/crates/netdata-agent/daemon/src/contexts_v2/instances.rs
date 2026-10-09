@@ -45,8 +45,9 @@ pub(super) fn to_json(w: &mut JsonWriter, host: &Host, shared: &Shared, k: Keys,
 /// texts, `null` for 0; an age is always a number of seconds. A child (a host with an attached receiver) adds to
 /// its `ingest`: `replication` while it replicates, `source` (the two ends of its connection, each `[address]:port`
 /// with `:SSL` on TLS, and its capabilities by name) while it replicates or is online, and `reason` when it is
-/// offline. No state of C's receiver paths is a child that is offline; here a detach that ends between two reads of
-/// the status is one (D241 F5). `now_ut` is the parents' clock; `path` writes the host's `streaming_path`.
+/// offline: a cleanup that gives up waiting for its receiver to stop orphans the host with the receiver still
+/// attached, in C (`database/rrdhost.c:976`, `:1026`) as here, and here a detach that ends between two reads of the
+/// status is one too (D241 F5). `now_ut` is the parents' clock; `path` writes the host's `streaming_path`.
 fn status_to_json(w: &mut JsonWriter, s: &Status, rfc3339: bool, now_ut: u64, path: impl FnOnce(&mut JsonWriter)) {
     w.member_add_object("db");
     w.member_add_string("status", s.db.status.name());
@@ -104,8 +105,9 @@ fn ends_to_json(w: &mut JsonWriter, ends: &SocketPeers, tls: bool) {
     w.member_add_string("remote", format!("[{}]:{}{ssl}", ends.peer_ip, ends.peer_port));
 }
 
-/// `rrdhost_sender_to_json()`: where the host streams to. `reason` only while offline; the destination's ends,
-/// capabilities and bytes are the last connection's (the ends `not connected` without one).
+/// `rrdhost_sender_to_json()`: where the host streams to. `reason` only while offline; the destination's capabilities
+/// only while connected (none otherwise), its ends the dispatched connection's (`not connected` without one), its
+/// bytes the last connection's.
 fn stream_to_json(w: &mut JsonWriter, s: &Status, rfc3339: bool, now_ut: u64, path: impl FnOnce(&mut JsonWriter)) {
     let st = &s.stream;
     if st.status == StreamStatus::Disabled {

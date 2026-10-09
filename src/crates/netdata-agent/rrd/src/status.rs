@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use crate::host::{Host, ReceiverSlot, local_flags, netdata_start_time, sender_flags};
+use crate::host::{Host, ReceiverSlot, local_flags, netdata_start_time};
 use crate::mode::DbMode;
 
 /// `RRDHOST_DB_STATUS`.
@@ -294,7 +294,8 @@ pub struct Ml {
 }
 
 /// What `rrdhost_status_stream_internal()` reads of a sender under its lock (C's `stream_sender_lock()`), in one
-/// read ([`crate::upstream::Upstream::status`]). The default is a sender that never connected.
+/// read ([`crate::upstream::Upstream::status`]). Its default is the test doubles' status: empty ends, where a sender
+/// that never connected has `not connected` ones.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SenderStatus {
     /// `s->last_state_since_t`: its last dispatch or removal; 0 for a sender that had neither.
@@ -319,6 +320,10 @@ pub struct SenderStatus {
     /// `host->stream.snd.status.connections`: the connections dispatched since the agent started, read in the same
     /// hold as `since_s`, which the dispatch writes with it.
     pub connections: u32,
+    /// The host's CONNECTED flag, tested in the same hold after the values every sender has (`rrdhost-status.c:265`):
+    /// a connect writes its hops and capabilities back before it sets the flag, so a read that sees the flag sees
+    /// them.
+    pub connected: bool,
 }
 
 /// `STREAM_PARENT` as `rrdhost_stream_parents_to_json()` prints it: one of a host's parents, as the connector's last
@@ -485,8 +490,8 @@ impl Host {
         }
     }
 
-    /// `rrdhost_status_stream_internal()`: the sender's values in one read; what a connected sender adds only while
-    /// the host's CONNECTED flag is set (C tests it in the same hold, after the values every sender has).
+    /// `rrdhost_status_stream_internal()`: the sender's values in one read; what a connected sender adds only when
+    /// that read saw the host's CONNECTED flag.
     fn stream_status(&self, now: i64, ingest_hops: i16, start_s: i64) -> Stream {
         let Some(up) = self.upstream() else {
             return Stream {
@@ -519,7 +524,7 @@ impl Host {
             sent_bytes: s.sent_bytes,
             parents: up.published_parents(),
         };
-        if self.sender_flags() & sender_flags::CONNECTED != 0 {
+        if s.connected {
             let instances = self.sender_replicating_charts();
             let completion =
                 sender_replication_completion(instances, s.oldest_request_after_s, s.latest_completed_before_s, now);
@@ -635,7 +640,7 @@ mod tests {
 
     use super::*;
     use crate::chart::Algorithm;
-    use crate::host::{Attach, Hosts, ReceiverLink, ReceiverSlot};
+    use crate::host::{Attach, Hosts, ReceiverLink, ReceiverSlot, sender_flags};
     use crate::testutil::{collected_chart, info, store};
 
     const T0: i64 = 1_790_180_000;
@@ -940,9 +945,10 @@ mod tests {
     }
 
     /// The stream part follows the sender (`rrdhost-status.c:238-291`): every sender gives its time (the agent's start
-    /// for none), its socket's ends and TLS, its bytes, the reason and the connections; only while the host's
-    /// CONNECTED flag is set do its hops, capabilities, compression and replication show, and the status says
-    /// whether charts replicate; otherwise it is offline, one hop past the ingestion.
+    /// for none), its socket's ends and TLS, its bytes, the reason and the connections; only when its read saw the
+    /// host's CONNECTED flag do its hops, capabilities, compression and replication show, and the status says
+    /// whether charts replicate; otherwise it is offline, one hop past the ingestion. A flag set after that read does
+    /// not count: C tests it in the hold that reads the hops.
     #[test]
     fn the_stream_part_follows_the_sender() {
         let host = Host::new("guid-l", true, info("l"));
@@ -969,6 +975,7 @@ mod tests {
             oldest_request_after_s: 0,
             latest_completed_before_s: 0,
             connections: 2,
+            connected: false,
         };
         let offline = Stream {
             id: 2,
@@ -985,8 +992,10 @@ mod tests {
             parents: Vec::new(),
         };
         assert_eq!(full(&host, T0).stream, offline);
-
         host.sender_flags_set(sender_flags::CONNECTED);
+        assert_eq!(full(&host, T0).stream, offline);
+
+        recorder.status.lock().unwrap().connected = true;
         let online = Stream {
             hops: 4,
             status: StreamStatus::Online,
@@ -1012,7 +1021,7 @@ mod tests {
         }
         assert_eq!(full(&host, T0).stream, replicating(50.0));
 
-        host.sender_flags_clear(sender_flags::CONNECTED);
+        recorder.status.lock().unwrap().connected = false;
         assert_eq!(full(&host, T0).stream, offline);
 
         // the parents, as the sender publishes them

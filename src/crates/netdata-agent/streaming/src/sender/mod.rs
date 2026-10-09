@@ -98,6 +98,9 @@ pub(crate) struct State {
     /// thread and cleared where it leaves it (D241 F2): `not connected` between the two.
     pub peers: SocketPeers,
     pub tls: bool,
+    /// Whether the last connect set a compressor up (C's `compressor.initialized`, set in `stream_connect()` before
+    /// CONNECTED): what the status shows until the dispatch hands the compressor to the commit lock.
+    pub compression: bool,
 }
 
 /// The two ends of a sender without a socket.
@@ -272,6 +275,7 @@ impl Sender {
                 api_key: send.api_key.clone(),
                 peers: not_connected(),
                 tls: false,
+                compression: false,
             }),
             ssl_parent: AtomicBool::new(parents.any_ssl()),
             published: Mutex::new(parents.published()),
@@ -366,6 +370,7 @@ impl Sender {
                 state.last_state_since_s = 0;
                 state.peers = not_connected();
                 state.tls = false;
+                state.compression = false;
                 // a stop flag left from before the free cannot reach the revived sender
                 self.shutdown.store(false, Ordering::Relaxed);
             }
@@ -494,7 +499,7 @@ impl Sender {
 
     /// `stream_sender_remove()`: the host is off its connector and stream thread, ready to be queued again.
     pub(crate) fn remove(&self, host: &Host, reason: Reason) {
-        let reason = {
+        let (reason, since_s) = {
             let mut state = self.lock();
             let reason = if reason == Reason::DISCONNECT_SIGNALED_TO_STOP && state.exit_reason != Reason::NEVER {
                 state.exit_reason
@@ -505,9 +510,10 @@ impl Sender {
             self.shutdown.store(false, Ordering::Relaxed);
             host.sender_flags_clear(sender_flags::ADDED | sender_flags::CONNECTED | sender_flags::READY_4_METRICS);
             state.last_state_since_s = now_realtime_s();
-            reason
+            // C's one hold: a status never pairs this time with the reason of before
+            state.status_reason = reason;
+            (reason, state.last_state_since_s)
         };
-        let since_s = self.lock().last_state_since_s;
         self.set_disconnect_reason(reason, since_s);
         self.parents().reset(reason, self.connector.settings.reconnect_delay_s);
     }
@@ -590,6 +596,7 @@ impl Upstream for Sender {
 
     /// C's one hold of the sender lock: the state, then the commit lock inside it.
     fn status(&self) -> SenderStatus {
+        let host = self.host();
         let state = self.lock();
         let out = self.out();
         let (oldest_request_after_s, latest_completed_before_s) = self.replication.stamps();
@@ -598,14 +605,16 @@ impl Upstream for Sender {
             reason: state.status_reason.0,
             hops: state.hops,
             capabilities: state.capabilities,
-            compression: out.compressor.is_some(),
+            // the connect's, until its dispatch hands the compressor over (a failed compression may drop it later)
+            compression: if out.session.is_some() { out.compressor.is_some() } else { state.compression },
             peers: state.peers.clone(),
             tls: state.tls,
             sent_bytes: out.buffer.stats().bytes_sent_by_type,
             oldest_request_after_s,
             latest_completed_before_s,
             // the dispatch counts it in the hold that writes `since`
-            connections: self.host().map_or(0, |h| h.sender_connections()),
+            connections: host.as_ref().map_or(0, |h| h.sender_connections()),
+            connected: host.is_some_and(|h| h.sender_flags() & sender_flags::CONNECTED != 0),
         }
     }
 

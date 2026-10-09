@@ -1057,8 +1057,9 @@ mod tests {
     }
 
     /// The dispatch's bookkeeping (`stream-sender.c:364-365`): the connection counted once on the host and the state's
-    /// time stamped, with the socket's two ends (a unix pair's are `unknown`); its disconnect clears the ends and
-    /// keeps the count and the time, which C stamps again only at a removal.
+    /// time stamped, with the socket's two ends (a unix pair's are `unknown`); its disconnect clears the ends and the
+    /// CONNECTED flag the status reads, and keeps the count and the time, which C stamps again only at a removal (a
+    /// time set in the past shows a stamp in the same second).
     #[test]
     fn a_dispatch_is_counted_once_and_its_ends_leave_with_it() {
         let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000cb", false, info("127.0.0.1:1", "key")));
@@ -1074,13 +1075,36 @@ mod tests {
         };
         assert_eq!((s.connections, host.sender_connections()), (1, 1));
         assert!((before_s..=now_realtime_s()).contains(&s.since_s), "{}", s.since_s);
-        assert_eq!((&s.peers, s.tls), (&unknown, false));
+        assert_eq!((&s.peers, s.tls, s.connected), (&unknown, false, false));
+        // the connector sets the flag; the status reads it in its hold
+        host.sender_flags_set(sender_flags::CONNECTED);
+        assert!(up.status().connected);
+        l.s.with(|w, _| w.senders[0].as_ref().expect("dispatched").sender.lock().last_state_since_s = 1_000);
         let _ = netdata_agent_log::capture(|| {
             l.s.with(|w, cx| w.disconnect_sender(cx, 0, Reason::DISCONNECT_SOCKET_ERROR, Reason::NEVER, true))
         });
         let after = up.status();
-        assert_eq!((after.connections, after.since_s), (1, s.since_s));
+        assert_eq!((after.connections, after.since_s, after.connected), (1, 1_000, false));
         assert_eq!((&after.peers, after.tls), (&crate::sender::not_connected(), false));
+    }
+
+    /// The status's compression is the connect's until a dispatch hands the compressor to the commit lock, and the
+    /// commit lock's while the connection is dispatched: C sets the compressor up in `stream_connect()`, before
+    /// CONNECTED, where the dispatch here waits for the stream thread's tick.
+    #[test]
+    fn the_compression_is_the_connect_s_until_the_dispatch() {
+        let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000cd", false, info("127.0.0.1:1", "key")));
+        let mut l = linked(&host, caps::V2);
+        let up = Arc::clone(host.upstream().expect("a sender"));
+        let sender = l.s.with(|w, _| Arc::clone(&w.senders[0].as_ref().expect("dispatched").sender));
+        // dispatched without a compressor: the connect's word no longer counts
+        sender.lock().compression = true;
+        assert!(!up.status().compression);
+        let _ = netdata_agent_log::capture(|| {
+            l.s.with(|w, cx| w.disconnect_sender(cx, 0, Reason::DISCONNECT_SOCKET_ERROR, Reason::NEVER, true))
+        });
+        // off its stream thread until the next dispatch: the connect's
+        assert!(up.status().compression);
     }
 
     /// The status takes the sender's state and then its commit lock; commits take the commit lock alone. Both at once

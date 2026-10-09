@@ -542,6 +542,10 @@ impl Connector {
         st.status_reason = attempt.status_reason;
         st.capabilities = attempt.capabilities;
         st.remote_ip = attempt.remote_ip;
+        // C sets the compressor up only on a connect that succeeds
+        if let Some(c) = &connected {
+            st.compression = c.compressor.is_some();
+        }
         connected
     }
 

@@ -847,9 +847,16 @@ mod tests {
         let below = answer(4 * one_step - 1);
         assert_eq!(shape(&below), (1, vec!["false".to_string(), (T + 2).to_string(), (T + 3).to_string()]));
         assert_eq!(s.replication().stamps().1, T + 3);
-        // an answer that runs no query leaves it
+        // an answer that runs no query leaves it: one for a chart that is not there, and one asked without a window
+        // (the start of streaming), which answers the chart without querying it
         q.request_add(&s, "no.such".into(), T + 2, T + 8, false);
         let _ = netdata_agent_log::capture(|| assert!(q.execute_next(&mut Vec::new())));
+        assert_eq!(s.replication().stamps().1, T + 3);
+        s.out().buffer.set_max_size(1 << 30, true);
+        q.request_add(&s, "t.a".into(), 0, 0, false);
+        let mut buf = Vec::new();
+        let _ = netdata_agent_log::capture(|| assert!(q.execute_next(&mut buf)));
+        assert!(String::from_utf8_lossy(&buf).contains("REND"), "{}", String::from_utf8_lossy(&buf));
         assert_eq!(s.replication().stamps().1, T + 3);
         // a free forgets both stamps with the sender (C frees the struct that holds them)
         s.replication().latest_completed_before_s.store(T + 5, Ordering::Relaxed);
