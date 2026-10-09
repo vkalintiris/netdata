@@ -243,3 +243,44 @@ A {"a\\u0000b":1,"a":2}
 A {"\\u0000":1,"version":1}
 A {"a":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}
 R {"a":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}
+# the errno json-c leaves (decision D242 in the status repository): the last number read decides, a string version
+# is read again by json_parse_int64()
+A {"version":0,"a":1e999}
+A {"version":0,"a":1e-999}
+A {"version":0,"a":99999999999999999999}
+A {"version":0,"a":-99999999999999999999}
+A {"version":0,"a":-9223372036854775808}
+A {"version":0,"a":-9223372036854775809}
+A {"version":0,"a":18446744073709551615}
+A {"version":0,"a":18446744073709551616}
+R {"version":0,"a":1e999,
+A {"version":0,"a":1e999,"b":1.5}
+A {"version":0.0,"a":1e999}
+A {"version":null,"a":1e999}
+A {"a":1e999,"version":0}
+A {"version":0,"a":1e999,"b":1}
+A {"version":"0","a":1e999}
+A {"version":0,"a":"1e999"}
+A {"version":0,"a":2.2250738585072011e-308}
+A {"version":0,"a":4.9406564584124654e-324}
+A {"version":0,"a":0e999}
+A {"version":"x"}
+A {"version":"  "}
+A {"version":true,"a":1e999}
+A [1e999]
+R [1e999 x
+# a number json-c does not convert: in an array or an object it fails the text first at a byte that cannot end one
+# (the end of the text too); a `-` without digits is EINVAL; strtod() must take the whole number
+R [1e999x]
+R {"version":0,"a":1e999.}
+R {"version":0,"a":1e999
+R [-,1]
+R [1e999/]
+R [12i]
+R [-I]
+R [1.-5e999,x]
+R [1e,x]
+# a number json-c converts and this reader refuses, then a failure
+R [01,x]
+R {"a":-.5e999,"b":x}
+R {"a":1.,"b":x}

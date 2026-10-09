@@ -9,7 +9,11 @@
 //! control bytes are taken raw inside a string, and no byte is checked for being UTF-8; a surrogate escape
 //! without its pair is U+FFFD; a key ends at a NUL an escape brought. What json-c reads beyond that (comments,
 //! single quotes, trailing commas, `NaN` and `Infinity`, leading zeros, literals in another case, `1.` and
-//! `-.5`) is refused here: decisions D234 F10 and D240 in the status repository.
+//! `-.5`, an exponent without digits such as `1e`, `1e+` or `1.0e`) is refused here: decisions D234 F10, D240 and
+//! D242 in the status repository.
+//!
+//! [`parse_errno`] and [`Value::get_int_errno`] also say what json-c leaves in the thread's `errno`, which C's
+//! logger attaches to the next record (D242).
 
 use std::collections::HashMap;
 
@@ -17,6 +21,10 @@ use crate::c::c_str;
 
 /// `JSON_TOKENER_DEFAULT_DEPTH`: json-c refuses a value nested deeper.
 const TOKENER_DEPTH: usize = 32;
+
+/// Linux's `ERANGE` and `EINVAL`.
+const ERANGE: i32 = 34;
+const EINVAL: i32 = 22;
 
 /// A json-c object (`json_object`).
 #[derive(Debug, Clone, PartialEq)]
@@ -59,23 +67,42 @@ pub fn jsonc_string(out: &mut Vec<u8>, text: &[u8]) {
 /// reader refuses of json-c's leniencies (the module's text). json-c's null value is its NULL object, so a text
 /// whose root is `null` gives the caller what a text that does not parse gives.
 pub fn parse(text: &[u8]) -> Option<Value> {
-    let mut reader = Reader { text: c_str(text), at: 0 };
-    reader.whitespace();
-    let root = reader.value(1)?;
-    // after the root json-c reads on over whitespace and comments, and fails the text at a `/` that opens none
-    reader.whitespace();
-    if reader.peek() == Some(b'/') {
-        return None;
-    }
-    (root != Value::Null).then_some(root)
+    parse_errno(text).0
+}
+
+/// [`parse`], and the `errno` json-c leaves after it: `None` when no number json-c converted touched it (the
+/// thread's stays), else what the last one left. An integer is read by `json_parse_int64()` or
+/// `json_parse_uint64()`, which clear it, then leave `ERANGE` for one beyond 64 bits and `EINVAL` for a `-` without
+/// digits; a number with a fraction or an exponent by `strtod()`, which leaves `ERANGE` for one out of range or tiny
+/// and inexact, and clears nothing. In an array or an object json-c fails the text at a byte that cannot end a
+/// number before it converts the number. A text that fails keeps what the numbers before the failure left; where
+/// this reader refuses one of json-c's leniencies, the numbers json-c would convert after it are not followed
+/// (D243).
+pub fn parse_errno(text: &[u8]) -> (Option<Value>, Option<i32>) {
+    let mut reader = Reader { text: c_str(text), at: 0, errno: None };
+    let root = reader.document();
+    (root, reader.errno)
 }
 
 struct Reader<'t> {
     text: &'t [u8],
     at: usize,
+    /// What the numbers read so far left in json-c's `errno`.
+    errno: Option<i32>,
 }
 
 impl Reader<'_> {
+    fn document(&mut self) -> Option<Value> {
+        self.whitespace();
+        let root = self.value(1)?;
+        // after the root json-c reads on over whitespace and comments, and fails the text at a `/` that opens none
+        self.whitespace();
+        if self.peek() == Some(b'/') {
+            return None;
+        }
+        (root != Value::Null).then_some(root)
+    }
+
     fn peek(&self) -> Option<u8> {
         self.text.get(self.at).copied()
     }
@@ -106,7 +133,7 @@ impl Reader<'_> {
             b'"' => self.string().map(Value::String),
             b'[' => self.array(depth),
             b'{' => self.object(depth),
-            b'-' | b'0'..=b'9' => self.number(),
+            b'-' | b'0'..=b'9' => self.number(depth),
             _ => None,
         }
     }
@@ -238,66 +265,113 @@ impl Reader<'_> {
         }
     }
 
-    /// A number in JSON's grammar: `-`? then `0` or digits without a leading zero, then an optional fraction and
-    /// an optional exponent, each with at least one digit.
-    fn number(&mut self) -> Option<Value> {
+    /// A number as json-c's tokener reads one, `depth` containers deep counting itself (`json_tokener.c`, the
+    /// number state): the bytes it takes, whether it converts them, and what the conversion leaves in `errno`. The
+    /// number is kept only when those bytes are JSON's number and no `.`, `e`, `E` or sign follows them.
+    fn number(&mut self, depth: usize) -> Option<Value> {
         let start = self.at;
-        let digits = |reader: &mut Self| {
-            let from = reader.at;
-            while matches!(reader.peek(), Some(b'0'..=b'9')) {
-                reader.at += 1;
+        // json-c takes digits, one `.` before an exponent, one `e` or `E`, a `-` first, and a sign after the `.` or
+        // the `e`
+        let (mut is_double, mut is_exponent, mut minus_ok, mut plus_ok) = (false, false, true, false);
+        while let Some(c) = self.peek() {
+            let takes = c.is_ascii_digit()
+                || (!is_exponent && matches!(c, b'e' | b'E'))
+                || (minus_ok && c == b'-')
+                || (plus_ok && c == b'+')
+                || (!is_double && c == b'.');
+            if !takes {
+                break;
             }
-            reader.at - from
-        };
-        if self.peek() == Some(b'-') {
             self.at += 1;
+            let marker = matches!(c, b'.' | b'e' | b'E');
+            (minus_ok, plus_ok) = (marker, marker);
+            is_double |= marker;
+            is_exponent |= matches!(c, b'e' | b'E');
         }
-        match self.peek()? {
-            b'0' => self.at += 1,
-            b'1'..=b'9' => {
-                digits(self);
-            }
-            _ => return None,
-        }
-        let mut is_double = false;
-        if self.peek() == Some(b'.') {
-            self.at += 1;
-            if digits(self) == 0 {
-                return None;
-            }
-            is_double = true;
-        }
-        if matches!(self.peek(), Some(b'e' | b'E')) {
-            self.at += 1;
-            if matches!(self.peek(), Some(b'+' | b'-')) {
-                self.at += 1;
-            }
-            if digits(self) == 0 {
-                return None;
-            }
-            is_double = true;
-        }
-        // where JSON's number has ended json-c reads on over digits (`0123` is 123), and at any other of these
-        // bytes stops: the rest is ignored at the root (`1.5.3` is 1.5) and an error in a container. Refused
-        // everywhere, so that no number is read differently
-        if matches!(self.peek(), Some(b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-')) {
+        let taken = &self.text[start..self.at];
+        let next = self.peek();
+        // in a container json-c fails the text at any other byte, before converting anything
+        if depth > 1 && !next.is_some_and(ends_a_number) {
             return None;
         }
-        let text = &self.text[start..self.at];
-        if is_double {
-            return Some(Value::Double(text.to_vec()));
+        // `-Infinity`
+        if taken == b"-" && matches!(next, Some(b'I' | b'i')) {
+            return None;
         }
-        // json_parse_int64() and json_parse_uint64(): strtoll() and strtoull(), which saturate
-        let digits = std::str::from_utf8(text).ok()?;
-        Some(if let Some(magnitude) = digits.strip_prefix('-') {
-            Value::Int(magnitude.parse::<u64>().map_or(i64::MIN, |m| 0i64.checked_sub_unsigned(m).unwrap_or(i64::MIN)))
-        } else {
-            match digits.parse::<u64>() {
-                Ok(n) => i64::try_from(n).map_or(Value::Uint(n), Value::Int),
-                Err(_) => Value::Uint(u64::MAX),
+        let value = if is_double {
+            // json-c drops a trailing exponent marker or sign; strtod() must take the rest whole, and leaves
+            // `ERANGE` or nothing
+            let mut text = taken;
+            while let [rest @ .., b'e' | b'E' | b'+' | b'-'] = text
+                && !rest.is_empty()
+            {
+                text = rest;
             }
-        })
+            let (_, used, erange) = crate::parse::strtod_range(text);
+            if erange {
+                self.errno = Some(ERANGE);
+            }
+            (used == text.len()).then(|| Value::Double(text.to_vec()))
+        } else {
+            // json_parse_int64() and json_parse_uint64(): strtoll() and strtoull(), which clear `errno` and
+            // saturate with `ERANGE`; a `-` without digits is `EINVAL`
+            let (value, used, erange) = if taken[0] == b'-' {
+                let (n, used, erange) = crate::parse::strtoll10(taken);
+                (Value::Int(n), used, erange)
+            } else {
+                let (n, used, erange) = crate::parse::strtoull10(taken);
+                (i64::try_from(n).map_or(Value::Uint(n), Value::Int), used, erange)
+            };
+            self.errno = Some(if used == 0 {
+                EINVAL
+            } else if erange {
+                ERANGE
+            } else {
+                0
+            });
+            (used != 0).then_some(value)
+        };
+        // what json-c reads beyond JSON's number is refused (the module's text): at the root it would ignore the
+        // rest after `1.5` in `1.5.3`, so that is refused too
+        if !is_json_number(taken) || matches!(next, Some(b'.' | b'e' | b'E' | b'+' | b'-')) {
+            return None;
+        }
+        value
     }
+}
+
+/// Whether json-c's tokener lets a number in an array or an object end before the byte `c`: at any other byte, and
+/// at the end of the text, it fails the text (`json_tokener.c`, the number state).
+pub fn ends_a_number(c: u8) -> bool {
+    matches!(c, b',' | b']' | b'}' | b'/' | b'I' | b'i' | b' ' | b'\t' | b'\n' | b'\r')
+}
+
+/// JSON's number (RFC 8259): `-`? then `0` or digits without a leading zero, then an optional fraction and an
+/// optional exponent, each with at least one digit.
+fn is_json_number(text: &[u8]) -> bool {
+    let digits = |text: &[u8]| text.iter().take_while(|c| c.is_ascii_digit()).count();
+    let mut rest = text.strip_prefix(b"-").unwrap_or(text);
+    let whole = digits(rest);
+    if whole == 0 || (whole > 1 && rest[0] == b'0') {
+        return false;
+    }
+    rest = &rest[whole..];
+    if let Some(fraction) = rest.strip_prefix(b".") {
+        let count = digits(fraction);
+        if count == 0 {
+            return false;
+        }
+        rest = &fraction[count..];
+    }
+    if let Some(exponent) = rest.strip_prefix(b"e").or_else(|| rest.strip_prefix(b"E")) {
+        let exponent = exponent.strip_prefix(b"+").or_else(|| exponent.strip_prefix(b"-")).unwrap_or(exponent);
+        let count = digits(exponent);
+        if count == 0 {
+            return false;
+        }
+        rest = &exponent[count..];
+    }
+    rest.is_empty()
 }
 
 impl Value {
@@ -340,6 +414,25 @@ impl Value {
             Value::Bool(b) => i32::from(*b),
             Value::Null | Value::Array(_) | Value::Object(_) => 0,
         }
+    }
+
+    /// [`Value::get_int`], and the `errno` json-c leaves: a string is read by `json_parse_int64()`, which clears it,
+    /// then leaves `ERANGE` for a number out of range and `EINVAL` for none; nothing else touches it (`None`).
+    pub fn get_int_errno(&self) -> (i32, Option<i32>) {
+        let errno = match self {
+            Value::String(text) => {
+                let (_, used, erange) = crate::parse::strtoll10(c_str(text));
+                Some(if used == 0 {
+                    EINVAL
+                } else if erange {
+                    ERANGE
+                } else {
+                    0
+                })
+            }
+            _ => None,
+        };
+        (self.get_int(), errno)
     }
 
     /// `json_object_to_json_string()`: json-c's spaced print.

@@ -2,7 +2,7 @@
 
 mod common;
 
-use netdata_agent_text::jsonc_doc::{Value, parse};
+use netdata_agent_text::jsonc_doc::{Value, parse, parse_errno};
 
 fn printed(value: &Value) -> Vec<u8> {
     let mut out = Vec::new();
@@ -12,8 +12,9 @@ fn printed(value: &Value) -> Vec<u8> {
 
 /// Every text of the vectors: one flagged `A` must be read, and whatever is read must be what json-c made of it:
 /// its spaced print, whether it has a `version` member and that member as an int, and the print after `version`
-/// is set to 7 (in place when the member exists, at the end when not). A text flagged `R` may be refused. Every
-/// difference is listed, not only the first.
+/// is set to 7 (in place when the member exists, at the end when not), and the `errno` json-c leaves after the parse
+/// and the version's read (`-`: untouched), which is compared too when both refuse the text. A text flagged `R` may
+/// be refused. Every difference is listed, not only the first.
 #[test]
 fn documents_are_read_and_printed_as_json_c_does() {
     let rows = common::rows("jsonc_doc.tsv");
@@ -25,10 +26,14 @@ fn documents_are_read_and_printed_as_json_c_does() {
         let mut differs = |what: &str, rust: String, c: String| {
             differences.push(format!("line {} ({flag}) {}: {what}: rust {rust} | json-c {c}", row.line, show(text)));
         };
-        let Some(mut value) = parse(text) else {
+        let (parsed, mut errno) = parse_errno(text);
+        let shown_errno = |errno: Option<i32>| errno.map_or_else(|| "-".to_string(), |e| e.to_string());
+        let Some(mut value) = parsed else {
             refused += 1;
             if flag == "A" {
                 differs("refused", "nothing".into(), show(row.bytes(3)));
+            } else if !c_parsed && shown_errno(errno) != row.str(7) {
+                differs("errno", shown_errno(errno), row.str(7).to_string());
             }
             continue;
         };
@@ -44,6 +49,12 @@ fn documents_are_read_and_printed_as_json_c_does() {
         let (has, int) = (version.is_some(), version.map_or(0, Value::get_int));
         if (has, int) != (row.flag(4), row.num::<i32>(5)) {
             differs("version", format!("{has} {int}"), format!("{} {}", row.str(4), row.str(5)));
+        }
+        if let Some(read) = version.and_then(|v| v.get_int_errno().1) {
+            errno = Some(read);
+        }
+        if shown_errno(errno) != row.str(7) {
+            differs("errno", shown_errno(errno), row.str(7).to_string());
         }
         if matches!(value, Value::Object(_)) {
             value.object_set(b"version", Value::Int(7));

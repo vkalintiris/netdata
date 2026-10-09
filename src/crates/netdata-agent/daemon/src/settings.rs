@@ -43,10 +43,15 @@ fn valid_file(file: &[u8]) -> bool {
 }
 
 /// `settings_extract_json_version()`: a document's `version` as json-c reads it as an int, widened as C widens it
-/// to a `size_t` (a negative one becomes huge); 0 for a text that does not parse or has no such member.
-fn version_of(json: &[u8]) -> u64 {
-    let version = jsonc_doc::parse(json).and_then(|doc| doc.object_get(b"version").map(Value::get_int));
-    version.map_or(0, |version| i64::from(version) as u64)
+/// to a `size_t` (a negative one becomes huge); 0 for a text that does not parse or has no such member. With the
+/// `errno` json-c leaves behind (`None`: it touched none).
+fn version_of(json: &[u8]) -> (u64, Option<i32>) {
+    let (doc, parsed_errno) = jsonc_doc::parse_errno(json);
+    let Some(version) = doc.as_ref().and_then(|doc| doc.object_get(b"version")) else {
+        return (0, parsed_errno);
+    };
+    let (version, errno) = version.get_int_errno();
+    (i64::from(version) as u64, errno.or(parsed_errno))
 }
 
 /// `settings_get()`'s buffer: the stored file's bytes as they are when it parses and its version is not 0;
@@ -54,11 +59,16 @@ fn version_of(json: &[u8]) -> u64 {
 fn stored(dir: &str, file: &str) -> Vec<u8> {
     let path = filename_from_path_entry(dir, file, None);
     match read_text(Path::new(&path), MAX_SIZE) {
-        Some(content) if version_of(&content) != 0 => content,
-        Some(_) => {
-            nd_log!(Source::Daemon, Priority::Err, "file '{path}' cannot be parsed to extract version");
-            INITIAL.to_vec()
-        }
+        Some(content) => match version_of(&content) {
+            // C's logger attaches the thread's errno: what json-c left reading the file. What the request left
+            // before it (C clears it at each receive) is not modelled: decision D242 in the status repository
+            (0, errno) => {
+                nd_log!(Source::Daemon, Priority::Err, errno = errno.unwrap_or(0);
+                    "file '{path}' cannot be parsed to extract version");
+                INITIAL.to_vec()
+            }
+            _ => content,
+        },
         None => INITIAL.to_vec(),
     }
 }
@@ -104,7 +114,7 @@ fn put(dir: &str, file: &str, payload: &[u8]) -> Result<(), Refusal> {
     {
         return Err((status::BAD_REQUEST, "Settings path cannot be created or accessed."));
     }
-    let old_version = version_of(&stored(dir, file));
+    let (old_version, _) = version_of(&stored(dir, file));
     let Some(mut doc) = jsonc_doc::parse(payload) else {
         return Err((status::BAD_REQUEST, "Payload cannot be parsed as a JSON object"));
     };

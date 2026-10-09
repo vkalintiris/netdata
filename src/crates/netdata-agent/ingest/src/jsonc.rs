@@ -11,6 +11,7 @@ use std::borrow::Cow;
 use netdata_agent_log::netdata_log_error_errno;
 use netdata_agent_nrpc::reply::Reply;
 use netdata_agent_text::c::c_str;
+use netdata_agent_text::jsonc_doc::ends_a_number;
 use netdata_agent_text::parse::{strtod_range, strtoll10, strtoull10, uuid_parse_flexi};
 use netdata_agent_text::print::{print_int64, print_netdata_double};
 use serde_json::{Map, Number, Value};
@@ -229,7 +230,7 @@ fn after_number(text: &[u8], at: usize) -> bool {
     let Some(refused) = at.checked_sub(1) else {
         return false;
     };
-    if matches!(text[refused], b',' | b']' | b'}' | b'/' | b'I' | b'i' | b' ' | b'\t' | b'\n' | b'\r') {
+    if ends_a_number(text[refused]) {
         return false;
     }
     let start = text[..refused]
