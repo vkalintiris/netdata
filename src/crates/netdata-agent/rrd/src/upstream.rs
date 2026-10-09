@@ -18,6 +18,7 @@ use crate::clock::now_realtime_s;
 use crate::host::{Host, StreamSend, sender_flags};
 use crate::labels::FLAG_INTERNAL;
 use crate::pulse::host_status;
+use crate::status::SenderStatus;
 
 /// `STREAM_TRAFFIC_TYPE`, the per-type byte counters' index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +59,8 @@ pub trait Upstream: Send + Sync + std::fmt::Debug {
     fn free(&self);
     /// `stream_sender_structures_init()` of a freed sender: set up again as a new one, with `send`'s settings.
     fn reinit(&self, send: &StreamSend);
+    /// What the host's status reads of the sender, in one hold of its lock (`rrdhost_status_stream_internal()`).
+    fn status(&self) -> SenderStatus;
 }
 
 thread_local! {

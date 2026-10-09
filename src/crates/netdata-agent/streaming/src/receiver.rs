@@ -764,8 +764,8 @@ impl Receivers {
         );
         // nd_sock_socket_peers() and nd_sock_is_ssl() of the accepted socket, asked once: the status reads them from
         // the slot (D241 F4)
-        let [local, remote] = netdata_agent_tls::socket_peers(link.socket().map(std::os::fd::AsRawFd::as_raw_fd));
-        let peers = SocketPeers { local_ip: local.0, local_port: local.1, peer_ip: remote.0, peer_port: remote.1 };
+        let peers =
+            SocketPeers::from(netdata_agent_tls::socket_peers(link.socket().map(std::os::fd::AsRawFd::as_raw_fd)));
         let slot = slot.with_socket(peers, link.is_tls());
         // rpt->config.health.enabled, yes and auto alike: the detach then tells health (rrdcalc_child_disconnected())
         let slot = Arc::new(slot.with_health(config.health_enabled != netdata_agent_inicfg::BOOLEAN_NO));
@@ -2101,6 +2101,9 @@ mod tests {
         fn parents_reset(&self, _: i32) {}
         fn free(&self) {}
         fn reinit(&self, _: &StreamSend) {}
+        fn status(&self) -> netdata_agent_rrd::status::SenderStatus {
+            netdata_agent_rrd::status::SenderStatus::default()
+        }
     }
 
     /// A removed child's host leaves its thread before the host is detached, as C's `stream_thread_node_removed()`

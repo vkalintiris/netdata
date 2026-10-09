@@ -86,7 +86,8 @@ fn an_answer_walks_the_window_step_by_step() {
     let queries = &chart.storage().pulse().queries;
     let before = queries.replication();
     let (a, got) = answered(&host, &request("t.c", T + 2, T + 5, false), 1 << 20, true);
-    assert_eq!(a, Answered::Executed);
+    // the query's end, as REND prints it
+    assert_eq!(a, Answered::Executed(Some(T + 5)));
     let after = queries.replication();
     // one dimension query, its three points generated
     assert_eq!((after.queries - before.queries, after.points_generated - before.points_generated), (1, 3));
@@ -137,6 +138,16 @@ fn a_streaming_answer_carries_the_state_and_finishes() {
     assert_eq!(host.sender_replicating_charts(), 0);
     assert_eq!(host.pulse_state() & host_status::SENDER, host_status::SND_RUNNING);
     assert_eq!(chart.resync_time_s(), 0);
+}
+
+/// An answer whose window is empty runs no query (C's `q->query.execute` is false): it has no end for the sender's
+/// latest completed one.
+#[test]
+fn an_answer_without_a_query_has_no_end() {
+    let (host, _, _) = replicating_chart(&[10, 11, 12]);
+    let (a, got) = answered(&host, &request("t.c", 0, T + 2, false), 1 << 20, true);
+    assert_eq!(a, Answered::Executed(None));
+    assert!(got.last().unwrap().starts_with("REND "), "{got:?}");
 }
 
 /// An answer that does not count (its buffer flushed since the request, D105.6) leaves the replication claimed.
@@ -299,7 +310,7 @@ fn a_multi_tier_host_answers_from_tier_0() {
     f.dim.set_exposed_upstream(1);
     let mut out = Vec::new();
     let a = answer(&f.host, &request("t.c", B + 2, B + 12, false), PLAIN | caps::REPLICATION, 1 << 20, &mut out, |_| true);
-    assert_eq!(a, Answered::Executed);
+    assert_eq!(a, Answered::Executed(Some(B + 12)));
     let mut want = vec!["RBEGIN 't.c'".to_string()];
     for t in B + 3..=B + 12 {
         want.push(format!("RBEGIN '' {} {t} W", t - 1));

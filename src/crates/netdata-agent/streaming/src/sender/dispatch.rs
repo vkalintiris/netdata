@@ -20,6 +20,7 @@ use netdata_agent_rrd::clock::now_realtime_s;
 use netdata_agent_rrd::contexts::Taker;
 use netdata_agent_rrd::host::{Host, receiver_op, sender_flags};
 use netdata_agent_rrd::pulse::host_status;
+use netdata_agent_rrd::status::SocketPeers;
 use netdata_agent_text::duration::duration_to_string;
 use netdata_agent_text::size::size_to_string;
 use netdata_agent_tls::{Link, socket_peers};
@@ -176,18 +177,24 @@ impl StreamWorker {
                 break id;
             }
         } };
+        let peers = SocketPeers::from(socket_peers(link.socket().map(AsRawFd::as_raw_fd)));
         {
-            let mut out = sender.out();
-            out.session = Some(session);
-            out.remote_ip = remote_ip.clone();
-            out.capabilities = capabilities;
-            sender.negotiated.store(capabilities, Ordering::Relaxed);
-            out.algorithm = compressor.as_ref().map(|c| c.algorithm());
-            out.compressor = compressor;
-            sender.flush_buffer(&mut out);
-            sender.connector.replication().recalculate(sender.replication(), out.buffer.used_percent());
+            // C's one hold of the sender lock (stream-sender.c:353-367): the state around the commit lock, so a status
+            // read never pairs this connection's zeroed counters with the time and the ends of the one before
+            let mut state = sender.lock();
+            {
+                let mut out = sender.out();
+                out.session = Some(session);
+                out.remote_ip = remote_ip.clone();
+                out.capabilities = capabilities;
+                sender.negotiated.store(capabilities, Ordering::Relaxed);
+                out.algorithm = compressor.as_ref().map(|c| c.algorithm());
+                out.compressor = compressor;
+                sender.flush_buffer(&mut out);
+                sender.connector.replication().recalculate(sender.replication(), out.buffer.used_percent());
+            }
+            Sender::status_connected(&mut state, &host, peers, tls);
         }
-        sender.status_connected();
         let index = self.senders.iter().position(Option::is_none).unwrap_or_else(|| {
             self.senders.push(None);
             self.senders.len() - 1
@@ -658,6 +665,9 @@ impl StreamWorker {
                 reason
             };
             state.exit_reason = reason;
+            // the socket closes below
+            state.peers = super::not_connected();
+            state.tls = false;
             reason
         };
         d.sender.out().session = None;
@@ -725,11 +735,13 @@ pub(crate) fn opcode_ignored(thread: usize, bits: u32) {
 }
 
 impl Sender {
-    /// The dequeue's bookkeeping: the state's time. C also counts the connections here
-    /// (`host->stream.snd.status.connections`, `stream-sender.c:364`), read only by the host status's stream part
-    /// (`rrdhost-status.c:247,284`, the streaming Function's out-connections), which is not ported yet.
-    fn status_connected(&self) {
-        self.lock().last_state_since_s = now_realtime_s();
+    /// The dequeue's bookkeeping under the sender's state (`stream-sender.c:364-365`): the connection counted on the
+    /// host, the state's time, and the socket's two ends and TLS flag, which C asks the socket for at each status.
+    fn status_connected(state: &mut super::State, host: &Host, peers: SocketPeers, tls: bool) {
+        host.count_sender_connection();
+        state.last_state_since_s = now_realtime_s();
+        state.peers = peers;
+        state.tls = tls;
     }
 }
 
@@ -1042,5 +1054,53 @@ mod tests {
         fd.store(-1, Ordering::Release);
         assert_eq!(peer(Some(&fd)), None);
         assert_eq!(peer(None), None);
+    }
+
+    /// The dispatch's bookkeeping (`stream-sender.c:364-365`): the connection counted once on the host and the state's
+    /// time stamped, with the socket's two ends (a unix pair's are `unknown`); its disconnect clears the ends and
+    /// keeps the count and the time, which C stamps again only at a removal.
+    #[test]
+    fn a_dispatch_is_counted_once_and_its_ends_leave_with_it() {
+        let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000cb", false, info("127.0.0.1:1", "key")));
+        let before_s = now_realtime_s();
+        let mut l = linked(&host, caps::V2);
+        let up = Arc::clone(host.upstream().expect("a sender"));
+        let s = up.status();
+        let unknown = SocketPeers {
+            local_ip: "unknown".into(),
+            local_port: 0,
+            peer_ip: "unknown".into(),
+            peer_port: 0,
+        };
+        assert_eq!((s.connections, host.sender_connections()), (1, 1));
+        assert!((before_s..=now_realtime_s()).contains(&s.since_s), "{}", s.since_s);
+        assert_eq!((&s.peers, s.tls), (&unknown, false));
+        let _ = netdata_agent_log::capture(|| {
+            l.s.with(|w, cx| w.disconnect_sender(cx, 0, Reason::DISCONNECT_SOCKET_ERROR, Reason::NEVER, true))
+        });
+        let after = up.status();
+        assert_eq!((after.connections, after.since_s), (1, s.since_s));
+        assert_eq!((&after.peers, after.tls), (&crate::sender::not_connected(), false));
+    }
+
+    /// The status takes the sender's state and then its commit lock; commits take the commit lock alone. Both at once
+    /// on two threads end (a commit path that took the state inside the commit lock would deadlock here).
+    #[test]
+    fn the_status_reads_beside_commits() {
+        let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000cc", false, info("127.0.0.1:1", "key")));
+        let _l = linked(&host, caps::V2);
+        let up = Arc::clone(host.upstream().expect("a sender"));
+        let committer = {
+            let up = Arc::clone(&up);
+            std::thread::spawn(move || {
+                for _ in 0..5_000 {
+                    up.commit(b"BEGIN x\n", crate::sender::Traffic::Data);
+                }
+            })
+        };
+        for _ in 0..5_000 {
+            assert_eq!(up.status().connections, 1);
+        }
+        committer.join().unwrap();
     }
 }

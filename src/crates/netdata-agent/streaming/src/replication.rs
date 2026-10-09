@@ -43,6 +43,11 @@ pub(crate) struct SenderQueue {
     pub(crate) last_flush_ut: AtomicU64,
     /// `reached_max`: its buffer is too full for answers; set and cleared under the queue's lock.
     parked: AtomicBool,
+    /// `s->replication.oldest_request_after_t`: the earliest start asked since its requests were last deleted; 0 when
+    /// none (a request that asks from 0 unsets it, as C's).
+    oldest_request_after_s: AtomicI64,
+    /// `s->replication.latest_completed_before_t`: the end of the last of its queries that ran (not the largest).
+    latest_completed_before_s: AtomicI64,
 }
 
 impl SenderQueue {
@@ -54,7 +59,20 @@ impl SenderQueue {
             charts_replicating: AtomicUsize::new(0),
             last_flush_ut: AtomicU64::new(0),
             parked: AtomicBool::new(false),
+            oldest_request_after_s: AtomicI64::new(0),
+            latest_completed_before_s: AtomicI64::new(0),
         })
+    }
+
+    /// The two stamps the host's status computes the replication's completion from: the oldest start asked, the
+    /// latest end answered.
+    pub(crate) fn stamps(&self) -> (i64, i64) {
+        (self.oldest_request_after_s.load(Ordering::Relaxed), self.latest_completed_before_s.load(Ordering::Relaxed))
+    }
+
+    /// The latest end answered, forgotten with the sender at its free (C frees the struct that holds it).
+    pub(crate) fn latest_completed_zero(&self) {
+        self.latest_completed_before_s.store(0, Ordering::Relaxed);
     }
 
     /// `stream_sender_pending_replication_requests()` or `stream_sender_replicating_charts()`: the idle check waits.
@@ -239,6 +257,11 @@ impl Queue {
 
     fn add(&self, sender: Weak<Sender>, queue: &Arc<SenderQueue>, chart: String, after: i64, before: i64, start: bool) {
         let flush_ut = queue.last_flush_ut.load(Ordering::Relaxed);
+        // lowered before the dictionary is asked, so a duplicate and a refused empty chart id count too
+        // (stream-replication-sender.c:1312-1313)
+        let _ = queue.oldest_request_after_s.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |oldest| {
+            (oldest == 0 || after < oldest).then_some(after)
+        });
         if !chart.is_empty() {
             let mut state = self.lock();
             let State { order, senders } = &mut *state;
@@ -280,6 +303,7 @@ impl Queue {
     pub(crate) fn delete_pending(&self, queue: &SenderQueue) {
         let n = self.lock().flush(queue.id);
         self.flushed.fetch_add(n, Ordering::Relaxed);
+        queue.oldest_request_after_s.store(0, Ordering::Relaxed);
     }
 
     /// `replication_sender_recalculate_buffer_used_ratio_unsafe()`, under the sender's buffer lock after each commit,
@@ -377,7 +401,12 @@ impl Queue {
         }
         match answered {
             Answered::NotFound => self.not_found.fetch_add(1, Ordering::Relaxed),
-            Answered::Executed => self.executed.fetch_add(1, Ordering::Relaxed),
+            Answered::Executed(end) => {
+                if let Some(before_s) = end {
+                    sender.replication().latest_completed_before_s.store(before_s, Ordering::Relaxed);
+                }
+                self.executed.fetch_add(1, Ordering::Relaxed)
+            }
         };
         true
     }
@@ -809,12 +838,24 @@ mod tests {
         assert_eq!(full[1], format!("RBEGIN '' {} {} {}", T + 2, T + 3, full[1].rsplit(' ').next().unwrap()));
         assert_eq!(full[2], "RSET \"d\" 3 ''");
         assert_eq!(shape(&full), (6, vec!["false".to_string(), (T + 2).to_string(), (T + 8).to_string()]));
+        // the sender's latest completed end is each query's own, as REND prints it: the last one's, not the largest
+        assert_eq!(s.replication().stamps().1, T + 8);
         // the chart's line and one step
         let one_step: usize = full[..3].iter().map(|l| l.len() + 1).sum();
         let at = answer(4 * one_step);
         assert_eq!(shape(&at), (2, vec!["false".to_string(), (T + 2).to_string(), (T + 4).to_string()]));
         let below = answer(4 * one_step - 1);
         assert_eq!(shape(&below), (1, vec!["false".to_string(), (T + 2).to_string(), (T + 3).to_string()]));
+        assert_eq!(s.replication().stamps().1, T + 3);
+        // an answer that runs no query leaves it
+        q.request_add(&s, "no.such".into(), T + 2, T + 8, false);
+        let _ = netdata_agent_log::capture(|| assert!(q.execute_next(&mut Vec::new())));
+        assert_eq!(s.replication().stamps().1, T + 3);
+        // a free forgets both stamps with the sender (C frees the struct that holds them)
+        s.replication().latest_completed_before_s.store(T + 5, Ordering::Relaxed);
+        s.replication().oldest_request_after_s.store(T + 1, Ordering::Relaxed);
+        netdata_agent_rrd::upstream::Upstream::free(&*s);
+        assert_eq!(s.replication().stamps(), (0, 0));
     }
 
     /// A replication answer goes only into the session it was asked in: once the sender's buffer was flushed since,
@@ -891,6 +932,30 @@ mod tests {
         assert_eq!(q.duplicate.load(Ordering::Relaxed), 2);
         assert_eq!(q.received.load(Ordering::Relaxed), 4);
         assert_eq!(s.charts_replicating.load(Ordering::Relaxed), 1);
+    }
+
+    /// The oldest start asked (`stream-replication-sender.c:1312-1313`) is lowered by every request received, a
+    /// duplicate's and a refused empty chart id's too; a request from 0 unsets it, the next one sets it again; the
+    /// delete of the sender's requests zeroes it (`:1323`).
+    #[test]
+    fn the_oldest_start_asked_counts_every_request_until_the_delete() {
+        let q = Queue::default();
+        let s = SenderQueue::new();
+        let oldest = |s: &SenderQueue| s.stamps().0;
+        q.add(Weak::new(), &s, "c".into(), 30, 40, false);
+        assert_eq!(oldest(&s), 30);
+        q.add(Weak::new(), &s, "c".into(), 20, 40, false);
+        assert_eq!(oldest(&s), 20, "a duplicate");
+        q.add(Weak::new(), &s, String::new(), 10, 40, false);
+        assert_eq!(oldest(&s), 10, "an empty chart id");
+        q.add(Weak::new(), &s, "d".into(), 15, 40, false);
+        assert_eq!(oldest(&s), 10);
+        q.add(Weak::new(), &s, "e".into(), 0, 40, false);
+        assert_eq!(oldest(&s), 0);
+        q.add(Weak::new(), &s, "f".into(), 25, 40, false);
+        assert_eq!(oldest(&s), 25);
+        q.delete_pending(&s);
+        assert_eq!(s.stamps(), (0, 0));
     }
 
     /// The delete after a pick takes only the request picked: a newer one for the chart, asked after a reconnect,

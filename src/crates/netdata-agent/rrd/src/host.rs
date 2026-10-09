@@ -574,6 +574,9 @@ pub struct Host {
     /// `host->stream.snd.status.replication.charts`: the charts whose definition claimed a replication from the parent
     /// (it wraps below 0, as C's).
     sender_replicating_charts: AtomicU32,
+    /// `host->stream.snd.status.connections`: the sender's connections dispatched since the agent started. On the
+    /// host, as C's, so it outlives a freed sender.
+    sender_connections: AtomicU32,
     /// `sender->global_functions_spinlock`: the functions' render and commit, one call site at a time.
     global_functions: Mutex<()>,
 }
@@ -725,6 +728,7 @@ impl Host {
             labels_applied_version: AtomicU32::new(0),
             sender_flags: AtomicU32::new(0),
             sender_replicating_charts: AtomicU32::new(0),
+            sender_connections: AtomicU32::new(0),
             global_functions: Mutex::new(()),
             upstream: OnceLock::new(),
             meta_flags,
@@ -1641,6 +1645,16 @@ impl Host {
     /// `rrdhost_sender_replicating_charts_minus_one()`: the new count.
     pub fn sender_replicating_charts_minus_one(&self) -> u32 {
         self.sender_replicating_charts.fetch_sub(1, Ordering::Relaxed).wrapping_sub(1)
+    }
+
+    /// `host->stream.snd.status.connections`.
+    pub fn sender_connections(&self) -> u32 {
+        self.sender_connections.load(Ordering::Relaxed)
+    }
+
+    /// A connection of the sender reached its stream thread (`stream-sender.c:364`).
+    pub fn count_sender_connection(&self) {
+        self.sender_connections.fetch_add(1, Ordering::Relaxed);
     }
 
     /// `sender->global_functions_spinlock`.
@@ -2783,6 +2797,9 @@ mod tests {
         }
         fn free(&self) {}
         fn reinit(&self, _: &StreamSend) {}
+        fn status(&self) -> crate::status::SenderStatus {
+            crate::status::SenderStatus::default()
+        }
     }
 
     /// `rrdhost_clear_receiver()` empties the slot last (R55 M4): while the leaving receiver's parents reset waits,

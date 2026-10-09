@@ -11,6 +11,7 @@ use netdata_agent_rrd::clock::now_realtime_s;
 use netdata_agent_rrd::host::{Host, StreamSend, sender_flags};
 use netdata_agent_rrd::upstream::Upstream;
 use netdata_agent_rrd::pulse::host_status;
+use netdata_agent_rrd::status::{SenderStatus, SocketPeers};
 use netdata_agent_rrd::stream_buffer::CircularBuffer;
 
 mod commit;
@@ -93,6 +94,15 @@ pub(crate) struct State {
     pub last_state_since_s: i64,
     /// `host->stream.snd.api_key`: the key of the settings the sender was set up with (a revival replaces it).
     pub api_key: String,
+    /// `nd_sock_socket_peers(&s->sock)` and `nd_sock_is_ssl()`, asked once where a connection reaches its stream
+    /// thread and cleared where it leaves it (D241 F2): `not connected` between the two.
+    pub peers: SocketPeers,
+    pub tls: bool,
+}
+
+/// The two ends of a sender without a socket.
+pub(crate) fn not_connected() -> SocketPeers {
+    SocketPeers::from(netdata_agent_tls::socket_peers(None))
 }
 
 /// `s->thread.msg`: the stream thread and the random session of a dispatched connection.
@@ -230,6 +240,8 @@ impl Sender {
                 status_reason: Reason::NEVER,
                 last_state_since_s: 0,
                 api_key: send.api_key.clone(),
+                peers: not_connected(),
+                tls: false,
             }),
             ssl_parent: AtomicBool::new(parents.any_ssl()),
             parents: Mutex::new(parents),
@@ -292,6 +304,7 @@ impl Sender {
         }
         self.negotiated.store(0, Ordering::Relaxed);
         self.connector.replication().delete_pending(&self.replication);
+        self.replication.latest_completed_zero();
         self.replication.replicating_zero();
         self.counter_in.store(0, Ordering::Relaxed);
         self.counter_out.store(0, Ordering::Relaxed);
@@ -317,6 +330,11 @@ impl Sender {
                 state.hops = 0;
                 state.remote_ip.clear();
                 state.parent_using_h2o = false;
+                // C's revived sender is a new struct: its status is since the agent's start, with no socket (the
+                // host's reason, which C keeps on the host, stays)
+                state.last_state_since_s = 0;
+                state.peers = not_connected();
+                state.tls = false;
                 // a stop flag left from before the free cannot reach the revived sender
                 self.shutdown.store(false, Ordering::Relaxed);
             }
@@ -343,6 +361,7 @@ impl Sender {
         self.host().map(|h| h.hostname()).unwrap_or_default()
     }
 
+    /// The state. Taken before the commit lock where both are held (the dispatch, the status), never inside it.
     pub(crate) fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -351,7 +370,7 @@ impl Sender {
         self.parents.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The commit lock.
+    /// The commit lock. Never held while the state is taken: the dispatch and the status take the state first.
     pub(crate) fn out(&self) -> MutexGuard<'_, Out> {
         self.out.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -528,6 +547,27 @@ impl Upstream for Sender {
 
     fn reinit(&self, send: &StreamSend) {
         self.reinit_now(send);
+    }
+
+    /// C's one hold of the sender lock: the state, then the commit lock inside it.
+    fn status(&self) -> SenderStatus {
+        let state = self.lock();
+        let out = self.out();
+        let (oldest_request_after_s, latest_completed_before_s) = self.replication.stamps();
+        SenderStatus {
+            since_s: state.last_state_since_s,
+            reason: state.status_reason.0,
+            hops: state.hops,
+            capabilities: state.capabilities,
+            compression: out.compressor.is_some(),
+            peers: state.peers.clone(),
+            tls: state.tls,
+            sent_bytes: out.buffer.stats().bytes_sent_by_type,
+            oldest_request_after_s,
+            latest_completed_before_s,
+            // the dispatch counts it in the hold that writes `since`
+            connections: self.host().map_or(0, |h| h.sender_connections()),
+        }
     }
 
     /// `stream_sender_add_to_connector_queue()`.

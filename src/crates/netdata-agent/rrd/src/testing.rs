@@ -3,6 +3,7 @@
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 
+use crate::status::SenderStatus;
 use crate::upstream::{Traffic, Upstream};
 
 /// The sender as the collectors see it, recording what they commit.
@@ -16,6 +17,8 @@ pub struct Recorder {
     /// The lifecycle calls, in order: `("receiver_left", reason)`, `("parents_reset", reason)`, `("free", 0)`,
     /// `("reinit", 0)`.
     pub calls: Mutex<Vec<(&'static str, i32)>>,
+    /// What the host's status reads of it.
+    pub status: Mutex<SenderStatus>,
 }
 
 impl Upstream for Recorder {
@@ -71,6 +74,10 @@ impl Upstream for Recorder {
 
     fn reinit(&self, _send: &crate::host::StreamSend) {
         self.calls.lock().unwrap_or_else(PoisonError::into_inner).push(("reinit", 0));
+    }
+
+    fn status(&self) -> SenderStatus {
+        self.status.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 }
 

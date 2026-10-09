@@ -1,11 +1,11 @@
 //! A host's status (`rrdhost_status()`, `src/database/rrdhost-status.c`): whether its database is queryable, whether
 //! it is live, what feeds it and what it offers. [`Host::status_basic`] is C's `RRDHOST_STATUS_BASIC`, the six fields
-//! health and pulse ask on their own paths; [`Host::status`] is `RRDHOST_STATUS_ALL` without two parts: health's,
-//! which the daemon computes (health sits above this crate), and `stream`, the sender's, which is not ported yet.
+//! health and pulse ask on their own paths; [`Host::status`] is `RRDHOST_STATUS_ALL` without health's part, which the
+//! daemon computes (health sits above this crate).
 
 use std::sync::Arc;
 
-use crate::host::{Host, ReceiverSlot, local_flags, netdata_start_time};
+use crate::host::{Host, ReceiverSlot, local_flags, netdata_start_time, sender_flags};
 use crate::mode::DbMode;
 
 /// `RRDHOST_DB_STATUS`.
@@ -42,6 +42,15 @@ pub enum IngestStatus {
     Offline,
 }
 
+/// `RRDHOST_STREAMING_STATUS`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamStatus {
+    Disabled,
+    Replicating,
+    Online,
+    Offline,
+}
+
 /// `RRDHOST_ML_STATUS`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MlStatus {
@@ -64,6 +73,18 @@ pub enum MlType {
 pub enum DyncfgStatus {
     Unavailable,
     Available,
+}
+
+impl StreamStatus {
+    /// `rrdhost_streaming_status_to_string()`.
+    pub fn name(self) -> &'static str {
+        match self {
+            StreamStatus::Disabled => "disabled",
+            StreamStatus::Replicating => "replicating",
+            StreamStatus::Online => "online",
+            StreamStatus::Offline => "offline",
+        }
+    }
 }
 
 impl MlStatus {
@@ -220,7 +241,14 @@ pub struct SocketPeers {
     pub peer_port: u16,
 }
 
-/// `RRDHOST_STATUS`' `replication`, of the receiver here.
+impl From<[(String, u16); 2]> for SocketPeers {
+    /// The local end and the peer's, as the TLS crate's `socket_peers()` gives them.
+    fn from([(local_ip, local_port), (peer_ip, peer_port)]: [(String, u16); 2]) -> Self {
+        SocketPeers { local_ip, local_port, peer_ip, peer_port }
+    }
+}
+
+/// `RRDHOST_STATUS`' `replication`, of the receiver or of the sender.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Replication {
     pub in_progress: bool,
@@ -265,13 +293,61 @@ pub struct Ml {
     pub kind: MlType,
 }
 
-/// `RRDHOST_STATUS` with `RRDHOST_STATUS_ALL`, without the parts the module's note names.
+/// What `rrdhost_status_stream_internal()` reads of a sender under its lock (C's `stream_sender_lock()`), in one
+/// read ([`crate::upstream::Upstream::status`]). The default is a sender that never connected.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SenderStatus {
+    /// `s->last_state_since_t`: its last dispatch or removal; 0 for a sender that had neither.
+    pub since_s: i64,
+    /// `host->stream.snd.status.reason`, a `STREAM_HANDSHAKE` code.
+    pub reason: i32,
+    pub hops: i16,
+    /// `s->capabilities`: offered, then negotiated.
+    pub capabilities: u32,
+    /// Its compressor is set up.
+    pub compression: bool,
+    /// Its socket's two ends (`not connected` without a socket) and whether it has TLS.
+    pub peers: SocketPeers,
+    pub tls: bool,
+    /// The bytes sent on this connection, per `STREAM_TRAFFIC_TYPE`.
+    pub sent_bytes: [usize; 4],
+    /// `s->replication.oldest_request_after_t`: the earliest start the parent asked for since its requests were last
+    /// flushed; 0 when none.
+    pub oldest_request_after_s: i64,
+    /// `s->replication.latest_completed_before_t`: the end of the last replication query that ran.
+    pub latest_completed_before_s: i64,
+    /// `host->stream.snd.status.connections`: the connections dispatched since the agent started, read in the same
+    /// hold as `since_s`, which the dispatch writes with it.
+    pub connections: u32,
+}
+
+/// `RRDHOST_STATUS`' `stream`: where the host streams to. C's zeroes, but for `since`, for a host without a sender.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Stream {
+    /// `host->stream.snd.status.connections`.
+    pub id: u32,
+    /// The hops at the parent: the sender's while it is connected, else the ingestion's plus one.
+    pub hops: i16,
+    pub status: StreamStatus,
+    /// Since when the sender is in this state; the agent's start for one that never was in another.
+    pub since_s: i64,
+    pub reason: i32,
+    pub replication: Replication,
+    pub capabilities: u32,
+    pub peers: SocketPeers,
+    pub tls: bool,
+    pub compression: bool,
+    pub sent_bytes: [usize; 4],
+}
+
+/// `RRDHOST_STATUS` with `RRDHOST_STATUS_ALL`, without the part the module's note names.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Status {
     /// The clock the status was asked with: an online host's data ends there, and ages are counted from it.
     pub now: i64,
     pub db: Db,
     pub ingest: Ingest,
+    pub stream: Stream,
     pub ml: Ml,
     pub dyncfg: DyncfgStatus,
 }
@@ -301,7 +377,7 @@ impl Host {
         .basic
     }
 
-    /// `rrdhost_status(host, now, &s, RRDHOST_STATUS_ALL)`, without the parts the module's note names. The host's
+    /// `rrdhost_status(host, now, &s, RRDHOST_STATUS_ALL)`, without the part the module's note names. The host's
     /// contexts tree is walked once: its counts are the status's, and the questions the basic status asks the tree
     /// are answered from them.
     pub fn status(&self, now: i64) -> Status {
@@ -332,6 +408,7 @@ impl Host {
             (replication, slot.link.capabilities, slot.peers().clone(), slot.tls())
         });
         let (replication, capabilities, peers, tls) = child.unwrap_or_default();
+        let ingest_hops = self.ingestion_hops();
         // rrdhost_status_ingest()'s `since`. A host is local when it is localhost or a vnode, and its type says so:
         // a vnode takes no receiver, so it is never a child
         let local = matches!(basic.ingest_type, IngestType::Localhost | IngestType::Virtual);
@@ -356,7 +433,7 @@ impl Host {
             },
             ingest: Ingest {
                 id: receiver.connections,
-                hops: self.ingestion_hops(),
+                hops: ingest_hops,
                 kind: basic.ingest_type,
                 status: basic.ingest_status,
                 since_s: if since_s == 0 { start_s } else { since_s },
@@ -369,6 +446,7 @@ impl Host {
                 peers,
                 tls,
             },
+            stream: self.stream_status(now, ingest_hops, start_s),
             // rrdhost_status_ml_internal() of a host without an ML host: no host has one here
             ml: Ml {
                 status: MlStatus::Disabled,
@@ -380,6 +458,51 @@ impl Host {
                 DyncfgStatus::Unavailable
             },
         }
+    }
+
+    /// `rrdhost_status_stream_internal()`: the sender's values in one read; what a connected sender adds only while
+    /// the host's CONNECTED flag is set (C tests it in the same hold, after the values every sender has).
+    fn stream_status(&self, now: i64, ingest_hops: i16, start_s: i64) -> Stream {
+        let Some(up) = self.upstream() else {
+            return Stream {
+                id: self.sender_connections(),
+                hops: ingest_hops.wrapping_add(1),
+                status: StreamStatus::Disabled,
+                since_s: start_s,
+                reason: 0,
+                replication: Replication::default(),
+                capabilities: 0,
+                peers: SocketPeers::default(),
+                tls: false,
+                compression: false,
+                sent_bytes: [0; 4],
+            };
+        };
+        let s = up.status();
+        let mut stream = Stream {
+            id: s.connections,
+            hops: ingest_hops.wrapping_add(1),
+            status: StreamStatus::Offline,
+            since_s: if s.since_s == 0 { start_s } else { s.since_s },
+            reason: s.reason,
+            replication: Replication::default(),
+            capabilities: 0,
+            peers: s.peers,
+            tls: s.tls,
+            compression: false,
+            sent_bytes: s.sent_bytes,
+        };
+        if self.sender_flags() & sender_flags::CONNECTED != 0 {
+            let instances = self.sender_replicating_charts();
+            let completion =
+                sender_replication_completion(instances, s.oldest_request_after_s, s.latest_completed_before_s, now);
+            stream.hops = s.hops;
+            stream.capabilities = s.capabilities;
+            stream.replication = Replication { in_progress: instances > 0, completion, instances: u64::from(instances) };
+            stream.status = if instances > 0 { StreamStatus::Replicating } else { StreamStatus::Online };
+            stream.compression = s.compression;
+        }
+        stream
     }
 
     /// What both statuses decide alike (`rrdhost_status_db()` and `rrdhost_status_ingest()`): the retention, the
@@ -456,6 +579,20 @@ impl Host {
     }
 }
 
+/// `rrdhost_sender_replication_completion_unsafe()`: the percent of the window from the oldest start the parent asked
+/// for to `now` that the queries answered so far cover; 100 with nothing to replicate or nothing asked, 0 before the
+/// first answer ends past that start. Not clamped: a query that ends after `now` gives more than 100, and an oldest
+/// start at `now` divides by zero (no number, or an infinity), as C's.
+fn sender_replication_completion(charts: u32, oldest_after_s: i64, latest_before_s: i64, now: i64) -> f64 {
+    if charts == 0 || oldest_after_s == 0 {
+        100.0
+    } else if latest_before_s == 0 || latest_before_s < oldest_after_s {
+        0.0
+    } else {
+        (latest_before_s - oldest_after_s) as f64 * 100.0 / (now - oldest_after_s) as f64
+    }
+}
+
 /// What [`Host::status_decided`] found on its way that the full status reads too.
 struct Decided {
     basic: HostStatus,
@@ -509,6 +646,24 @@ mod tests {
         }
     }
 
+    /// The stream part of a host without a sender (`rrdhost-status.c:243-248`): disabled, one hop past its ingestion,
+    /// since the agent's start, C's zeroes for the rest.
+    fn no_sender(hops: i16) -> Stream {
+        Stream {
+            id: 0,
+            hops,
+            status: StreamStatus::Disabled,
+            since_s: START,
+            reason: 0,
+            replication: Replication::default(),
+            capabilities: 0,
+            peers: SocketPeers::default(),
+            tls: false,
+            compression: false,
+            sent_bytes: [0; 4],
+        }
+    }
+
     /// The full status of a host, which must agree with the basic one in the six fields both have.
     fn full(host: &Host, now: i64) -> Status {
         let s = host.status_started(now, START);
@@ -516,8 +671,8 @@ mod tests {
         s
     }
 
-    /// The texts of the three enums the full status adds (`rrdhost-status.c:44-69`): a host whose models run says
-    /// `online`, one trained here `self`, and DynCfg that is available `online`.
+    /// The texts of the four enums the full status adds (`rrdhost-status.c:37-69`): a host whose models run says
+    /// `online`, one trained here `self`, DynCfg that is available `online`, and the stream's four as C's.
     #[test]
     fn the_added_status_texts_are_cs() {
         let ml = [MlStatus::Disabled, MlStatus::Offline, MlStatus::Running].map(MlStatus::name);
@@ -526,6 +681,9 @@ mod tests {
         assert_eq!(kind, ["disabled", "self", "received"]);
         let dyncfg = [DyncfgStatus::Unavailable, DyncfgStatus::Available].map(DyncfgStatus::name);
         assert_eq!(dyncfg, ["unavailable", "online"]);
+        let stream =
+            [StreamStatus::Disabled, StreamStatus::Replicating, StreamStatus::Online, StreamStatus::Offline].map(StreamStatus::name);
+        assert_eq!(stream, ["disabled", "replicating", "online", "offline"]);
     }
 
     /// Localhost (`rrdhost-status.c:119-145`, `:169-234`): with nothing collected its database is initializing and
@@ -562,6 +720,7 @@ mod tests {
                 peers: SocketPeers::default(),
                 tls: false,
             },
+            stream: no_sender(1),
             ml: Ml {
                 status: MlStatus::Disabled,
                 kind: MlType::Disabled,
@@ -585,6 +744,7 @@ mod tests {
         };
         assert_eq!(s.ingest, collected);
         assert_eq!((s.ml, s.dyncfg), (nothing.ml, DyncfgStatus::Available));
+        assert_eq!(s.stream, nothing.stream);
     }
 
     /// A vnode a plugin of this agent collects is `virtual`, one hop away, with no receiver ever (id 0); it is
@@ -749,5 +909,98 @@ mod tests {
         assert_eq!((s.ingest.kind, s.ingest.status), (IngestType::Archived, IngestStatus::Offline));
         assert_eq!((s.ingest.id, s.ingest.since_s, s.ingest.reason), (1, disconnected, -6));
         assert!(!child.functions().exists() && child.upstream().is_none());
+    }
+
+    /// The stream part follows the sender (`rrdhost-status.c:238-291`): every sender gives its time (the agent's start
+    /// for none), its socket's ends and TLS, its bytes, the reason and the connections; only while the host's
+    /// CONNECTED flag is set do its hops, capabilities, compression and replication show, and the status says
+    /// whether charts replicate; otherwise it is offline, one hop past the ingestion.
+    #[test]
+    fn the_stream_part_follows_the_sender() {
+        let host = Host::new("guid-l", true, info("l"));
+        let recorder = Arc::new(crate::testing::Recorder::default());
+        host.set_upstream(Arc::clone(&recorder) as Arc<dyn crate::upstream::Upstream>);
+        let never = Stream { status: StreamStatus::Offline, ..no_sender(1) };
+        assert_eq!(full(&host, T0).stream, never);
+
+        let peers = SocketPeers {
+            local_ip: "10.0.0.1".into(),
+            local_port: 40000,
+            peer_ip: "10.0.0.2".into(),
+            peer_port: 19999,
+        };
+        *recorder.status.lock().unwrap() = SenderStatus {
+            since_s: T0 - 30,
+            reason: -3,
+            hops: 4,
+            capabilities: 0x41,
+            compression: true,
+            peers: peers.clone(),
+            tls: true,
+            sent_bytes: [1, 2, 3, 4],
+            oldest_request_after_s: 0,
+            latest_completed_before_s: 0,
+            connections: 2,
+        };
+        let offline = Stream {
+            id: 2,
+            hops: 1,
+            status: StreamStatus::Offline,
+            since_s: T0 - 30,
+            reason: -3,
+            replication: Replication::default(),
+            capabilities: 0,
+            peers,
+            tls: true,
+            compression: false,
+            sent_bytes: [1, 2, 3, 4],
+        };
+        assert_eq!(full(&host, T0).stream, offline);
+
+        host.sender_flags_set(sender_flags::CONNECTED);
+        let online = Stream {
+            hops: 4,
+            status: StreamStatus::Online,
+            replication: Replication { in_progress: false, completion: 100.0, instances: 0 },
+            capabilities: 0x41,
+            compression: true,
+            ..offline.clone()
+        };
+        assert_eq!(full(&host, T0).stream, online);
+
+        // two charts replicate: complete while nothing was asked; then half the window from the oldest start asked
+        host.sender_replicating_charts_plus_one();
+        host.sender_replicating_charts_plus_one();
+        let replicating = |completion| Stream {
+            status: StreamStatus::Replicating,
+            replication: Replication { in_progress: true, completion, instances: 2 },
+            ..online.clone()
+        };
+        assert_eq!(full(&host, T0).stream, replicating(100.0));
+        {
+            let mut s = recorder.status.lock().unwrap();
+            (s.oldest_request_after_s, s.latest_completed_before_s) = (T0 - 100, T0 - 50);
+        }
+        assert_eq!(full(&host, T0).stream, replicating(50.0));
+
+        host.sender_flags_clear(sender_flags::CONNECTED);
+        assert_eq!(full(&host, T0).stream, offline);
+    }
+
+    /// `rrdhost_sender_replication_completion_unsafe()`'s edges: nothing replicates or nothing was asked: 100; no
+    /// answer yet, or one that ends at or before the oldest start: 0; an end past `now`: above 100; an oldest start at
+    /// `now`: no number, or an infinity.
+    #[test]
+    fn the_sender_s_completion_is_cs_unclamped() {
+        let now = 1_000;
+        assert_eq!(sender_replication_completion(0, 900, 950, now), 100.0);
+        assert_eq!(sender_replication_completion(3, 0, 950, now), 100.0);
+        assert_eq!(sender_replication_completion(3, 900, 0, now), 0.0);
+        assert_eq!(sender_replication_completion(3, 900, 899, now), 0.0);
+        assert_eq!(sender_replication_completion(3, 900, 900, now), 0.0);
+        assert_eq!(sender_replication_completion(3, 900, 975, now), 75.0);
+        assert_eq!(sender_replication_completion(3, 900, 1_100, now), 200.0);
+        assert!(sender_replication_completion(3, now, now, now).is_nan());
+        assert_eq!(sender_replication_completion(3, now, now + 10, now), f64::INFINITY);
     }
 }

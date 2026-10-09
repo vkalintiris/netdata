@@ -39,8 +39,9 @@ pub struct Request {
 pub enum Answered {
     /// The chart is not the host's: the empty answer that unblocks the parent (`error_not_found`).
     NotFound,
-    /// Answered (`executed`).
-    Executed,
+    /// Answered (`executed`), with the end of its query as the walk left it when one ran (C's `q->query.execute`:
+    /// the window and some dimension to read); the sender's latest completed end (`replication_query_finalize()`).
+    Executed(Option<i64>),
 }
 
 /// The window the child answers for (`replication_response_prepare()`).
@@ -362,7 +363,8 @@ pub fn answer(
     }
     emit::rbegin_chart(out, &enc, u64::from(chart.chart_slot()), chart.id());
     let mut finished_with_gap = false;
-    if !dims.is_empty() {
+    let executed = !dims.is_empty();
+    if executed {
         if !window.streaming {
             let last_updated_s = chart.collection().last_updated.0;
             align_to_optimal_before(&mut dims, &mut window, &chart, last_updated_s, wall_s);
@@ -390,5 +392,5 @@ pub fn answer(
         finish(host, &chart, finished_with_gap);
     }
     drop(guard);
-    Answered::Executed
+    Answered::Executed(executed.then_some(window.before))
 }

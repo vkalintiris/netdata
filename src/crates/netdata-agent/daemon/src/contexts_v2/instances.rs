@@ -95,7 +95,8 @@ fn status_to_json(w: &mut JsonWriter, s: &Status, rfc3339: bool) {
 mod tests {
     use netdata_agent_rrd::mode::DbMode;
     use netdata_agent_rrd::status::{
-        Db, DbLiveness, DbStatus, DyncfgStatus, Ingest, Ml, MlStatus, MlType, Replication, SocketPeers,
+        Db, DbLiveness, DbStatus, DyncfgStatus, Ingest, Ml, MlStatus, MlType, Replication, SocketPeers, Stream,
+        StreamStatus,
     };
     use netdata_agent_text::json::JsonOptions;
 
@@ -131,6 +132,20 @@ mod tests {
                 capabilities: 0,
                 peers: SocketPeers::default(),
                 tls: false,
+            },
+            // an agent that streams nowhere
+            stream: Stream {
+                id: 0,
+                hops: 1,
+                status: StreamStatus::Disabled,
+                since_s: 1_791_312_184,
+                reason: 0,
+                replication: Replication::default(),
+                capabilities: 0,
+                peers: SocketPeers::default(),
+                tls: false,
+                compression: false,
+                sent_bytes: [0; 4],
             },
             ml: Ml {
                 status: MlStatus::Disabled,
