@@ -2800,6 +2800,9 @@ mod tests {
         fn status(&self) -> crate::status::SenderStatus {
             crate::status::SenderStatus::default()
         }
+        fn published_parents(&self) -> Vec<crate::status::ParentStatus> {
+            Vec::new()
+        }
     }
 
     /// `rrdhost_clear_receiver()` empties the slot last (R55 M4): while the leaving receiver's parents reset waits,

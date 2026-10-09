@@ -1,15 +1,17 @@
 //! A node's instances in the contexts v2 engine's NODE_INSTANCES mode: the `instances` array of
-//! `rrdcontext_to_json_v2_rrdhost()`, with `rrdhost_receiver_to_json()` and `host_dyncfg_to_json_v2()`
-//! (`src/database/contexts/api_v2_contexts.c`), over the host's status (`rrd::status`). Not written yet, with the
-//! parts of the status they print: the host's `stream`, and the counts of a host whose ML runs.
+//! `rrdcontext_to_json_v2_rrdhost()`, with `rrdhost_receiver_to_json()`, `rrdhost_sender_to_json()` and
+//! `host_dyncfg_to_json_v2()` (`src/database/contexts/api_v2_contexts.c`), over the host's status (`rrd::status`).
+//! Not written yet, with the part of the status it prints: the counts of a host whose ML runs.
 
 use netdata_agent_nrpc::catalog;
 use netdata_agent_pluginsd_proto::caps;
 use netdata_agent_query::jsonwrap_v2::agent_status_id;
 use netdata_agent_query::keys::Keys;
 use netdata_agent_query::tables::contexts_options::RFC3339;
+use netdata_agent_rrd::clock::now_realtime_ut;
 use netdata_agent_rrd::host::Host;
-use netdata_agent_rrd::status::{IngestStatus, IngestType, Status};
+use netdata_agent_rrd::status::{IngestStatus, IngestType, ParentStatus, SocketPeers, Status, StreamStatus};
+use netdata_agent_rrd::upstream::Traffic;
 use netdata_agent_streaming::reason::Reason;
 use netdata_agent_text::json::JsonWriter;
 
@@ -23,7 +25,10 @@ pub(super) fn to_json(w: &mut JsonWriter, host: &Host, shared: &Shared, k: Keys,
     w.member_add_array(Some(b"instances"));
     w.add_array_item_object();
     agent_status_id(w, k, 0, 0);
-    status_to_json(w, &s, options & RFC3339 != 0);
+    let localhost = shared.hosts.localhost();
+    status_to_json(w, &s, options & RFC3339 != 0, now_realtime_ut(), |w| {
+        netdata_agent_ingest::stream_path::to_json(w, host, localhost, b"streaming_path", false, None);
+    });
     health_to_json(w, b"health", host, shared.health.host(host).as_deref());
     catalog::to_json(host.functions(), w);
     capas::to_json(w, b"capabilities", host);
@@ -35,13 +40,14 @@ pub(super) fn to_json(w: &mut JsonWriter, host: &Host, shared: &Shared, k: Keys,
     w.array_close();
 }
 
-/// The members the status alone decides, in C's order: `db`, `ingest` (`rrdhost_receiver_to_json()`) and `ml`. With
-/// `rfc3339` the three times are UTC texts, `null` for 0; an age is always a number of seconds. A child (a host
-/// with an attached receiver) adds to its `ingest`: `replication` while it replicates, `source` (the two ends of
-/// its connection, each `[address]:port` with `:SSL` on TLS, and its capabilities by name) while it replicates or
-/// is online, and `reason` when it is offline. No state of C's receiver paths is a child that is offline; here a
-/// detach that ends between two reads of the status is one (D241 F5).
-fn status_to_json(w: &mut JsonWriter, s: &Status, rfc3339: bool) {
+/// The members the status decides, in C's order: `db`, `ingest` (`rrdhost_receiver_to_json()`), `stream`
+/// (`rrdhost_sender_to_json()`, none for a host without a sender) and `ml`. With `rfc3339` the four times are UTC
+/// texts, `null` for 0; an age is always a number of seconds. A child (a host with an attached receiver) adds to
+/// its `ingest`: `replication` while it replicates, `source` (the two ends of its connection, each `[address]:port`
+/// with `:SSL` on TLS, and its capabilities by name) while it replicates or is online, and `reason` when it is
+/// offline. No state of C's receiver paths is a child that is offline; here a detach that ends between two reads of
+/// the status is one (D241 F5). `now_ut` is the parents' clock; `path` writes the host's `streaming_path`.
+fn status_to_json(w: &mut JsonWriter, s: &Status, rfc3339: bool, now_ut: u64, path: impl FnOnce(&mut JsonWriter)) {
     w.member_add_object("db");
     w.member_add_string("status", s.db.status.name());
     w.member_add_string("liveness", s.db.liveness.name());
@@ -75,15 +81,15 @@ fn status_to_json(w: &mut JsonWriter, s: &Status, rfc3339: bool) {
             w.object_close();
         }
         if matches!(s.ingest.status, IngestStatus::Replicating | IngestStatus::Online) {
-            let (ends, ssl) = (&s.ingest.peers, if s.ingest.tls { ":SSL" } else { "" });
             w.member_add_object("source");
-            w.member_add_string("local", format!("[{}]:{}{ssl}", ends.local_ip, ends.local_port));
-            w.member_add_string("remote", format!("[{}]:{}{ssl}", ends.peer_ip, ends.peer_port));
+            ends_to_json(w, &s.ingest.peers, s.ingest.tls);
             caps::to_json_array(w, s.ingest.capabilities, Some(b"capabilities"));
             w.object_close();
         }
     }
     w.object_close();
+
+    stream_to_json(w, s, rfc3339, now_ut, path);
 
     w.member_add_object("ml");
     w.member_add_string("status", s.ml.status.name());
@@ -91,16 +97,108 @@ fn status_to_json(w: &mut JsonWriter, s: &Status, rfc3339: bool) {
     w.object_close();
 }
 
+/// A connection's two ends, each `[address]:port`, with `:SSL` on TLS.
+fn ends_to_json(w: &mut JsonWriter, ends: &SocketPeers, tls: bool) {
+    let ssl = if tls { ":SSL" } else { "" };
+    w.member_add_string("local", format!("[{}]:{}{ssl}", ends.local_ip, ends.local_port));
+    w.member_add_string("remote", format!("[{}]:{}{ssl}", ends.peer_ip, ends.peer_port));
+}
+
+/// `rrdhost_sender_to_json()`: where the host streams to. `reason` only while offline; the destination's ends,
+/// capabilities and bytes are the last connection's (the ends `not connected` without one).
+fn stream_to_json(w: &mut JsonWriter, s: &Status, rfc3339: bool, now_ut: u64, path: impl FnOnce(&mut JsonWriter)) {
+    let st = &s.stream;
+    if st.status == StreamStatus::Disabled {
+        return;
+    }
+    w.member_add_object("stream");
+    w.member_add_uint64("id", u64::from(st.id));
+    // C writes the int16_t through its unsigned writer
+    w.member_add_uint64("hops", st.hops as u64);
+    w.member_add_string("status", st.status.name());
+    w.member_add_time_t_formatted("since", st.since_s, rfc3339);
+    w.member_add_time_t("age", s.now - st.since_s);
+    if st.status == StreamStatus::Offline {
+        w.member_add_string("reason", Reason(st.reason).text());
+    }
+    w.member_add_object("replication");
+    w.member_add_boolean("in_progress", st.replication.in_progress);
+    w.member_add_double("completion", st.replication.completion);
+    w.member_add_uint64("instances", st.replication.instances);
+    w.object_close();
+    w.member_add_object("destination");
+    ends_to_json(w, &st.peers, st.tls);
+    caps::to_json_array(w, st.capabilities, Some(b"capabilities"));
+    w.member_add_object("traffic");
+    w.member_add_boolean("compression", st.compression);
+    let by_type = [
+        ("data", Traffic::Data),
+        ("metadata", Traffic::Metadata),
+        ("functions", Traffic::Functions),
+        ("replication", Traffic::Replication),
+    ];
+    for (key, traffic) in by_type {
+        w.member_add_uint64(key, st.sent_bytes[traffic as usize] as u64);
+    }
+    w.object_close();
+    w.member_add_array(Some(b"parents"));
+    for d in &st.parents {
+        parent_to_json(w, d, now_ut);
+    }
+    w.array_close();
+    path(w);
+    w.object_close();
+    w.object_close();
+}
+
+/// One parent of `rrdhost_stream_parents_to_json()` (`streaming/stream-parents.c:174-225`) at the clock `now_ut`:
+/// the times in local time with two fraction digits, the ages as duration texts; a banned parent says why and no
+/// more, any other its last handshake, its next check while postponed, and its place in the last pass.
+fn parent_to_json(w: &mut JsonWriter, d: &ParentStatus, now_ut: u64) {
+    w.add_array_item_object();
+    w.member_add_uint64("attempts", u64::from(d.attempts.wrapping_add(1)));
+    if d.ssl {
+        w.member_add_string("destination", format!("{}:SSL", d.destination));
+    } else {
+        w.member_add_string("destination", &d.destination);
+    }
+    w.member_add_string("since", netdata_agent_log::rfc3339_local(d.since_ut, 2));
+    w.member_add_duration_ut("age", if d.since_ut < now_ut { (now_ut - d.since_ut) as i64 } else { 0 });
+    if !d.banned_for_this_session && !d.banned_permanently && !d.banned_temporarily_erroneous {
+        w.member_add_string("last_handshake", Reason(d.reason).text());
+        if d.postpone_until_ut > now_ut {
+            w.member_add_string("next_check", netdata_agent_log::rfc3339_local(d.postpone_until_ut, 2));
+            w.member_add_duration_ut("next_in", (d.postpone_until_ut - now_ut) as i64);
+        }
+        if d.batch != 0 {
+            w.member_add_uint64("batch", d.batch as u64);
+            w.member_add_uint64("order", d.order as u64);
+            w.member_add_boolean("random", d.random);
+        }
+        w.member_add_boolean("info", d.info);
+        w.member_add_boolean("skipped", d.skipped);
+    } else if d.banned_permanently {
+        w.member_add_string("ban", "it is the localhost");
+    } else if d.banned_for_this_session {
+        w.member_add_string("ban", "it is our parent");
+    } else {
+        w.member_add_string("ban", "it is erroneous");
+    }
+    w.object_close();
+}
+
 #[cfg(test)]
 mod tests {
     use netdata_agent_rrd::mode::DbMode;
     use netdata_agent_rrd::status::{
-        Db, DbLiveness, DbStatus, DyncfgStatus, Ingest, Ml, MlStatus, MlType, Replication, SocketPeers, Stream,
-        StreamStatus,
+        Db, DbLiveness, DbStatus, DyncfgStatus, Ingest, Ml, MlStatus, MlType, Replication, Stream,
     };
     use netdata_agent_text::json::JsonOptions;
 
     use super::*;
+
+    /// The parents' clock in these units: a second after the status's.
+    const NOW_UT: u64 = 1_791_312_193_000_000;
 
     /// Localhost of an agent that collects nothing, as the oracle answered `/api/v3/node_instances` in the round
     /// the harness records (`tests/parity/dash_norm_contexts_test.go`, `ni`): asked at 1791312192 by an agent that
@@ -146,6 +244,7 @@ mod tests {
                 tls: false,
                 compression: false,
                 sent_bytes: [0; 4],
+                parents: Vec::new(),
             },
             ml: Ml {
                 status: MlStatus::Disabled,
@@ -157,7 +256,10 @@ mod tests {
 
     fn rendered(s: &Status, rfc3339: bool) -> String {
         let mut w = JsonWriter::new(JsonOptions::MINIFY);
-        status_to_json(&mut w, s, rfc3339);
+        status_to_json(&mut w, s, rfc3339, NOW_UT, |w| {
+            w.member_add_array(Some(b"streaming_path"));
+            w.array_close();
+        });
         w.finalize();
         String::from_utf8(w.into_bytes()).unwrap()
     }
@@ -294,5 +396,89 @@ mod tests {
                 assert_eq!(tail(&s), "}", "{kind:?} {status:?}");
             }
         }
+    }
+
+    /// A host that streams (`rrdhost_sender_to_json()`, `api_v2_contexts.c:382-433`): `stream` between `ingest` and
+    /// `ml`; the destination's two ends and capabilities, the bytes by traffic type, each parent at the parents' clock
+    /// (a usable one with its next check and its place in the last pass, a banned one with the ban alone), then the
+    /// path. Offline it says why; `hops` goes through C's unsigned writer.
+    #[test]
+    fn a_streaming_host_s_stream_is_cs() {
+        let usable = ParentStatus {
+            destination: "parent-a:19999".into(),
+            ssl: true,
+            reason: Reason::SP_CONNECTED.0,
+            attempts: 1,
+            since_ut: NOW_UT - 90_000_000,
+            postpone_until_ut: NOW_UT + 30_000_000,
+            batch: 1,
+            order: 2,
+            random: true,
+            info: true,
+            ..ParentStatus::default()
+        };
+        let banned = ParentStatus {
+            destination: "parent-b".into(),
+            banned_permanently: true,
+            since_ut: NOW_UT + 5,
+            ..ParentStatus::default()
+        };
+        let mut s = localhost();
+        s.stream = Stream {
+            id: 3,
+            hops: 2,
+            status: StreamStatus::Replicating,
+            since_s: 1_791_312_150,
+            reason: Reason::SP_CONNECTED.0,
+            replication: Replication { in_progress: true, completion: 37.5, instances: 2 },
+            capabilities: caps::VCAPS | caps::HLABELS,
+            peers: SocketPeers {
+                local_ip: "10.0.0.1".into(),
+                local_port: 40000,
+                peer_ip: "10.0.0.2".into(),
+                peer_port: 19999,
+            },
+            tls: true,
+            compression: true,
+            // by STREAM_TRAFFIC_TYPE: replication, functions, metadata, data
+            sent_bytes: [40, 30, 20, 10],
+            parents: vec![usable, banned],
+        };
+        // the time and duration texts by their own writers, which their crates' units pin
+        let local = |ut| netdata_agent_log::rfc3339_local(ut, 2);
+        let duration = |us| netdata_agent_text::duration::duration_to_string(us, "us", true).unwrap();
+        let want = format!(
+            concat!(
+                r#"}},"stream":{{"id":3,"hops":2,"status":"replicating","since":1791312150,"age":42,"#,
+                r#""replication":{{"in_progress":true,"completion":37.5,"instances":2}},"#,
+                r#""destination":{{"local":"[10.0.0.1]:40000:SSL","remote":"[10.0.0.2]:19999:SSL","#,
+                r#""capabilities":["VCAPS","HLABELS"],"#,
+                r#""traffic":{{"compression":true,"data":10,"metadata":20,"functions":30,"replication":40}},"#,
+                r#""parents":[{{"attempts":2,"destination":"parent-a:19999:SSL","since":"{}","age":"{}","#,
+                r#""last_handshake":"{}","next_check":"{}","next_in":"{}","batch":1,"order":2,"random":true,"#,
+                r#""info":true,"skipped":false}},"#,
+                r#"{{"attempts":1,"destination":"parent-b","since":"{}","age":"{}","ban":"it is the localhost"}}],"#,
+                r#""streaming_path":[]}}}},"ml":"#
+            ),
+            local(NOW_UT - 90_000_000),
+            duration(90_000_000),
+            Reason::SP_CONNECTED.text(),
+            local(NOW_UT + 30_000_000),
+            duration(30_000_000),
+            local(NOW_UT + 5),
+            duration(0),
+        );
+        let text = rendered(&s, false);
+        assert!(text.contains(&want), "{text}\n{want}");
+
+        s.stream.status = StreamStatus::Offline;
+        s.stream.hops = -1;
+        s.stream.reason = Reason::SP_CONNECTION_REFUSED.0;
+        let text = rendered(&s, false);
+        let want = format!(
+            r#""hops":18446744073709551615,"status":"offline","since":1791312150,"age":42,"reason":"{}","replication":"#,
+            Reason::SP_CONNECTION_REFUSED.text()
+        );
+        assert!(text.contains(&want), "{text}");
     }
 }

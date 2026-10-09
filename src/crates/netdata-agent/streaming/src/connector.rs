@@ -1098,4 +1098,25 @@ pub(crate) mod tests {
         drop(attempt);
         assert!(returned.is_ok(), "start() waited for the parents lock an attempt holds");
     }
+
+    /// The host's status reads the parents as the last hold of them left them (D241 F1 C): as made with the sender,
+    /// unchanged while a pass holds them (and read without waiting for it), changed once the hold ends.
+    #[test]
+    fn the_parents_are_published_when_a_hold_of_them_ends() {
+        use netdata_agent_rrd::upstream::Upstream;
+        let (_pool, c) = connector();
+        let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000c3", false, info("127.0.0.1:1 127.0.0.1:2:SSL", "key")));
+        let s = Sender::attach(&host, &c).expect("created");
+        let seen = |s: &Sender| -> Vec<(String, bool, i32, u32)> {
+            s.published_parents().into_iter().map(|d| (d.destination, d.ssl, d.reason, d.attempts)).collect()
+        };
+        let first = ("127.0.0.1:1".to_string(), false, Reason::NEVER.0, 0);
+        assert_eq!(seen(&s), [first.clone(), ("127.0.0.1:2".to_string(), true, Reason::NEVER.0, 0)]);
+        let mut pass = s.parents();
+        pass.list[0].reason = Reason::SP_CONNECTION_REFUSED;
+        pass.list[0].attempts = 3;
+        assert_eq!(seen(&s)[0], first, "the list before the pass, at once");
+        drop(pass);
+        assert_eq!(seen(&s)[0], ("127.0.0.1:1".to_string(), false, Reason::SP_CONNECTION_REFUSED.0, 3));
+    }
 }

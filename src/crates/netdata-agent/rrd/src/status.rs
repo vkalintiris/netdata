@@ -321,6 +321,29 @@ pub struct SenderStatus {
     pub connections: u32,
 }
 
+/// `STREAM_PARENT` as `rrdhost_stream_parents_to_json()` prints it: one of a host's parents, as the connector's last
+/// pass left it (D241 F1).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ParentStatus {
+    /// As configured, without its `:SSL`.
+    pub destination: String,
+    pub ssl: bool,
+    pub banned_permanently: bool,
+    pub banned_for_this_session: bool,
+    pub banned_temporarily_erroneous: bool,
+    /// The last handshake's `STREAM_HANDSHAKE` code.
+    pub reason: i32,
+    pub attempts: u32,
+    pub since_ut: u64,
+    pub postpone_until_ut: u64,
+    /// `d->selection`: where the last pass placed it; a `batch` of 0 is excluded.
+    pub batch: usize,
+    pub order: usize,
+    pub random: bool,
+    pub info: bool,
+    pub skipped: bool,
+}
+
 /// `RRDHOST_STATUS`' `stream`: where the host streams to. C's zeroes, but for `since`, for a host without a sender.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Stream {
@@ -338,6 +361,8 @@ pub struct Stream {
     pub tls: bool,
     pub compression: bool,
     pub sent_bytes: [usize; 4],
+    /// The host's parents, which C's writer reads beside the status; none without a sender.
+    pub parents: Vec<ParentStatus>,
 }
 
 /// `RRDHOST_STATUS` with `RRDHOST_STATUS_ALL`, without the part the module's note names.
@@ -476,6 +501,7 @@ impl Host {
                 tls: false,
                 compression: false,
                 sent_bytes: [0; 4],
+                parents: Vec::new(),
             };
         };
         let s = up.status();
@@ -491,6 +517,7 @@ impl Host {
             tls: s.tls,
             compression: false,
             sent_bytes: s.sent_bytes,
+            parents: up.published_parents(),
         };
         if self.sender_flags() & sender_flags::CONNECTED != 0 {
             let instances = self.sender_replicating_charts();
@@ -661,6 +688,7 @@ mod tests {
             tls: false,
             compression: false,
             sent_bytes: [0; 4],
+            parents: Vec::new(),
         }
     }
 
@@ -954,6 +982,7 @@ mod tests {
             tls: true,
             compression: false,
             sent_bytes: [1, 2, 3, 4],
+            parents: Vec::new(),
         };
         assert_eq!(full(&host, T0).stream, offline);
 
@@ -985,6 +1014,11 @@ mod tests {
 
         host.sender_flags_clear(sender_flags::CONNECTED);
         assert_eq!(full(&host, T0).stream, offline);
+
+        // the parents, as the sender publishes them
+        let parent = ParentStatus { destination: "p:19999".into(), reason: -5, attempts: 2, ..ParentStatus::default() };
+        *recorder.parents.lock().unwrap() = vec![parent.clone()];
+        assert_eq!(full(&host, T0).stream.parents, [parent]);
     }
 
     /// `rrdhost_sender_replication_completion_unsafe()`'s edges: nothing replicates or nothing was asked: 100; no

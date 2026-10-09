@@ -11,7 +11,7 @@ use netdata_agent_log::{Field, Priority, Value, push};
 use netdata_agent_rrd::clock::now_realtime_ut;
 use netdata_agent_rrd::host::Host;
 use netdata_agent_rrd::pulse::host_status;
-use netdata_agent_rrd::status::{DbLiveness, DbStatus, IngestStatus, IngestType};
+use netdata_agent_rrd::status::{DbLiveness, DbStatus, IngestStatus, IngestType, ParentStatus};
 use netdata_agent_rrd::stream_path::PathEntry;
 use netdata_agent_text::c::c_str;
 use netdata_agent_tls::SslContext;
@@ -193,6 +193,29 @@ impl Parents {
     /// `rrdhost_stream_parents_update_from_destination()` from the destination's entries, each with its `:SSL`.
     pub fn new<'a>(entries: impl Iterator<Item = (&'a str, bool)>) -> Self {
         Parents { list: entries.map(|(d, ssl)| Parent::new(d, ssl)).collect(), current: None }
+    }
+
+    /// What the host's status prints of them (`rrdhost_stream_parents_to_json()`), in the list's order.
+    pub fn published(&self) -> Vec<ParentStatus> {
+        self.list
+            .iter()
+            .map(|d| ParentStatus {
+                destination: d.destination.clone(),
+                ssl: d.ssl,
+                banned_permanently: d.banned_permanently,
+                banned_for_this_session: d.banned_for_this_session,
+                banned_temporarily_erroneous: d.banned_temporarily_erroneous,
+                reason: d.reason.0,
+                attempts: d.attempts,
+                since_ut: d.since_ut,
+                postpone_until_ut: d.postpone_until_ut,
+                batch: d.selection.batch,
+                order: d.selection.order,
+                random: d.selection.random,
+                info: d.selection.info,
+                skipped: d.selection.skipped,
+            })
+            .collect()
     }
 
     /// Whether one of them is reached over TLS.

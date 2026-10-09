@@ -2104,6 +2104,9 @@ mod tests {
         fn status(&self) -> netdata_agent_rrd::status::SenderStatus {
             netdata_agent_rrd::status::SenderStatus::default()
         }
+        fn published_parents(&self) -> Vec<netdata_agent_rrd::status::ParentStatus> {
+            Vec::new()
+        }
     }
 
     /// A removed child's host leaves its thread before the host is detached, as C's `stream_thread_node_removed()`

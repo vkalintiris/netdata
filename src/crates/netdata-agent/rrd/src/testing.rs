@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 
-use crate::status::SenderStatus;
+use crate::status::{ParentStatus, SenderStatus};
 use crate::upstream::{Traffic, Upstream};
 
 /// The sender as the collectors see it, recording what they commit.
@@ -19,6 +19,7 @@ pub struct Recorder {
     pub calls: Mutex<Vec<(&'static str, i32)>>,
     /// What the host's status reads of it.
     pub status: Mutex<SenderStatus>,
+    pub parents: Mutex<Vec<ParentStatus>>,
 }
 
 impl Upstream for Recorder {
@@ -78,6 +79,10 @@ impl Upstream for Recorder {
 
     fn status(&self) -> SenderStatus {
         self.status.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    fn published_parents(&self) -> Vec<ParentStatus> {
+        self.parents.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 }
 

@@ -11,7 +11,7 @@ use netdata_agent_rrd::clock::now_realtime_s;
 use netdata_agent_rrd::host::{Host, StreamSend, sender_flags};
 use netdata_agent_rrd::upstream::Upstream;
 use netdata_agent_rrd::pulse::host_status;
-use netdata_agent_rrd::status::{SenderStatus, SocketPeers};
+use netdata_agent_rrd::status::{ParentStatus, SenderStatus, SocketPeers};
 use netdata_agent_rrd::stream_buffer::CircularBuffer;
 
 mod commit;
@@ -105,6 +105,33 @@ pub(crate) fn not_connected() -> SocketPeers {
     SocketPeers::from(netdata_agent_tls::socket_peers(None))
 }
 
+/// A hold of a sender's parents. When it drops, the list as it left it is published (still inside the hold, so two
+/// holds publish in their order).
+pub(crate) struct ParentsGuard<'a> {
+    parents: MutexGuard<'a, Parents>,
+    published: &'a Mutex<Vec<ParentStatus>>,
+}
+
+impl std::ops::Deref for ParentsGuard<'_> {
+    type Target = Parents;
+
+    fn deref(&self) -> &Parents {
+        &self.parents
+    }
+}
+
+impl std::ops::DerefMut for ParentsGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Parents {
+        &mut self.parents
+    }
+}
+
+impl Drop for ParentsGuard<'_> {
+    fn drop(&mut self) {
+        *self.published.lock().unwrap_or_else(PoisonError::into_inner) = self.parents.published();
+    }
+}
+
 /// `s->thread.msg`: the stream thread and the random session of a dispatched connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Session {
@@ -166,6 +193,9 @@ pub struct Sender {
     state: Mutex<State>,
     /// `host->stream.snd.parents`: held by the connector for an attempt, briefly by everyone else.
     parents: Mutex<Parents>,
+    /// The parents as each guard of `parents` left them (D241 F1 C): the host's status reads them without waiting for
+    /// a pass. Taken only inside `parents`, when its guard drops.
+    published: Mutex<Vec<ParentStatus>>,
     /// Whether one of the parents is reached over TLS: what the collectors' gate needs of them, without the lock an
     /// attempt holds for its whole connect (C's gate takes only a read lock, which the connector's does not exclude).
     ssl_parent: AtomicBool,
@@ -244,6 +274,7 @@ impl Sender {
                 tls: false,
             }),
             ssl_parent: AtomicBool::new(parents.any_ssl()),
+            published: Mutex::new(parents.published()),
             parents: Mutex::new(parents),
             out: Mutex::new(Out {
                 buffer: CircularBuffer::default(),
@@ -366,8 +397,12 @@ impl Sender {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    pub(crate) fn parents(&self) -> MutexGuard<'_, Parents> {
-        self.parents.lock().unwrap_or_else(PoisonError::into_inner)
+    /// The parents, published for the host's status when the guard drops.
+    pub(crate) fn parents(&self) -> ParentsGuard<'_> {
+        ParentsGuard {
+            parents: self.parents.lock().unwrap_or_else(PoisonError::into_inner),
+            published: &self.published,
+        }
     }
 
     /// The commit lock. Never held while the state is taken: the dispatch and the status take the state first.
@@ -547,6 +582,10 @@ impl Upstream for Sender {
 
     fn reinit(&self, send: &StreamSend) {
         self.reinit_now(send);
+    }
+
+    fn published_parents(&self) -> Vec<ParentStatus> {
+        self.published.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
     /// C's one hold of the sender lock: the state, then the commit lock inside it.
