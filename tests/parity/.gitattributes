@@ -1,0 +1,3 @@
+# the pins the harness agents record from C (decision D242 Q6 in the status repository): generated, re-recorded by
+# their tools, not edited by hand
+*_data_test.go linguist-generated=true

@@ -102,7 +102,7 @@ type v2Answer struct {
 // v2Windowed tells whether target asks C's v2 walk for a window: an `after` or a `before` whose number is not 0, as the
 // route reads them (web/api/v2/api_v2_contexts.c:13-18, :35-38: the last one of a name wins, a parameter without a
 // value is skipped; str2l, libnetdata/inlined.h:159-171: leading blanks, a sign, then digits). It reads the target as
-// it is written: C splits the query after decoding it (web_client.c:2109-2110), so a row must spell these two
+// it is written: C splits the query after decoding it (web_client.c:2118-2126), so a row must spell these two
 // parameters without percent-escapes (every row does).
 func v2Windowed(target string) bool {
 	_, query, _ := strings.Cut(target, "?")

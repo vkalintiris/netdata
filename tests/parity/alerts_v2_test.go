@@ -47,6 +47,11 @@ var (
 	// (buffer_json_member_add_time_t_formatted, libnetdata/buffer/buffer.h:1119-1128: a 0 prints null, and a second of
 	// three years or less, a relative time, stays a number, :12, :1120; libnetdata/datetime/rfc3339.c:139-156)
 	alertsV2DateRe = regexp.MustCompile(`^"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ"$`)
+	// a transition as `options=mcp` writes it, without its id (api_v2_contexts_alert_transitions.c:403-409): its global
+	// id, then its alert's name, and after them its second and its two statuses (:400-401, :431, :438, :445), which
+	// name its entry of the side's alert log (alertsV2Log.changed)
+	alertsV2ChangeRe = regexp.MustCompile(`(?s)^"(?:gi|global_id)":\s*\d+,\s*"alert":\s*"([^"\\]*)",.*?"when":\s*(\d+|"[^"\\]*"),` +
+		`.*?"new":\s*\{\s*"status":\s*"([A-Z]+)",.*?"old":\s*\{\s*"status":\s*"([A-Z]+)"`)
 )
 
 // alertsV2UUID is a UUID as C prints one: lower case, with its dashes (uuid_unparse_lower).
@@ -82,6 +87,9 @@ type alertsV2Entry struct {
 	NonClear  int64  `json:"non_clear_duration"`
 	ExecRun   int64  `json:"exec_run"`
 	DelayUpTo int64  `json:"delay_up_to_timestamp"`
+	// the alert's name: with the two statuses and the second it names the entry of a transition that is written
+	// without its id (alertsV2Log.changed)
+	Name string `json:"name"`
 	// as, when set, is the name the entry's transition id prints under: an entry of another host than the answering
 	// agent's own, named by that host's normalizer (alertsV2Host)
 	as string
@@ -129,6 +137,23 @@ func alertsV2LogOf(body []byte) (alertsV2Log, error) {
 	return log, nil
 }
 
+// changed is the log's entry for a change of the alert `name` from the status `old` to `status` at the second
+// `when`, when the log holds exactly one: what names the entry of a transition that is written without its id (the
+// MCP form, alertsV2ChangeRe). An alert goes from one status to another once in a second at most, so its own
+// changes are told apart; the entries its links make are not (a new alert is linked, unlinked and linked again in
+// one second, healthPair.create), and neither are those of two alerts of one name that change alike in one second:
+// none of them is named then, and the comparison shows them as the agents wrote them.
+func (log alertsV2Log) changed(name, old, status string, when int64) (alertsV2Entry, bool) {
+	var found alertsV2Entry
+	n := 0
+	for _, e := range log {
+		if e.Name == name && e.OldStatus == old && e.Status == status && e.When == when {
+			found, n = e, n+1
+		}
+	}
+	return found, n == 1
+}
+
 // join adds another host's alert log to a side's (body: that host's `/api/v1/alarm_log`), each entry named
 // `<host>:t+k` by the host's own normalizer n, which takes the log first (healthNorm.observe). An id both logs hold
 // is an error: a transition id is one entry's.
@@ -173,8 +198,11 @@ func (log alertsV2Log) join(host string, n *healthNorm, body []byte) error {
 // With `options=long-json-keys` the members are read by their long names (alertsV2LongKeys), and with
 // `options=rfc3339` an alert's two seconds as the dates C prints (alertsV2Second; the mark then ends alertsV2Dated).
 // An entry of another host than n's is named by its own host (alertsV2Entry.named). The MCP form of the alerts
-// answer has no keys and no global id: its instance rows are rendered by position (alertsV2RenderMCP). In either
-// form a byte that is no part of a UTF-8 sequence is first written out (alertsV2Bytes).
+// answer has no keys and no global id: its instance rows are rendered by position (alertsV2RenderMCP). The MCP form
+// of a transition has no id: its entry is the one of the side's log for its alert's change at its second, when the
+// log holds exactly one (alertsV2ChangeRe, alertsV2Log.changed); a transition whose second is not its entry's finds
+// none, and nothing of it is named. In either form a byte that is no part of a UTF-8 sequence is first written out
+// (alertsV2Bytes).
 func alertsV2Render(n *healthNorm, log alertsV2Log, flight [2]int64, body []byte) ([]byte, []int64) {
 	body = alertsV2Bytes(body)
 	if bytes.Contains(body, []byte(`"alert_instances_header"`)) {
@@ -195,6 +223,11 @@ func alertsV2Render(n *healthNorm, log alertsV2Log, flight [2]int64, body []byte
 		known := false
 		if g := alertsV2TidRe.FindStringSubmatch(span); g != nil {
 			entry, known = log[g[3]]
+		} else if g := alertsV2ChangeRe.FindStringSubmatch(span); g != nil {
+			// a transition without its id: the entry of its alert's change at its second
+			if when, _, ok := alertsV2Second(g[2]); ok {
+				entry, known = log.changed(g[1], g[4], g[3], when)
+			}
 		}
 		whens := 0
 		span = alertsV2ClockRe.ReplaceAllStringFunc(span, func(m string) string {
@@ -545,7 +578,8 @@ func alertsV2AccessCase(routes ...string) func(t *testing.T, h *healthPair) {
 }
 
 // TestAlertsV2 (checks `api.v2-alerts` = `TestAlertsV2/alerts`, `/sets` and `/off`, and `api.v2-alert-transitions` =
-// `TestAlertsV2/transitions`, milestone 10 commit 0, D224; the rows of D234 F2 and F3 since commit 4): the alert
+// `TestAlertsV2/transitions`, `/rules` and `/rules-order`, milestone 10 commit 0, D224; the rows of D234 F2 and F3
+// since commit 4, those of D234 F7 since commit 5): the alert
 // endpoints of the contexts v2 engine, on the health runner. Each case compares a v1 answer of the same state first
 // (the green anchor), reads each side's alert log for its ids' aliases, then asks the v2 endpoints (compareV2: the
 // oracle's status and guard, then the candidate's answer within healthCandidateWait), and, for `alerts` and
@@ -560,10 +594,18 @@ func alertsV2AccessCase(routes ...string) func(t *testing.T, h *healthPair) {
 //     variables, a module cut inside a character, and at its end a child with a chart on the template's context
 //     (alertsV2SetsConf, alertsV2PlaySets): what a summary entry holds of several alerts, and of two hosts;
 //   - `off`: health off and one collected chart: a window lists no host (alertsV2PlayOff);
+//   - `rules`: four rules with what `health.transitions`' have none of (a template, a class, a type and a component,
+//     recipients, a summary with a variable, `green` and `red`, a text longer than a transition keeps), three of
+//     them through WARNING on one chart (alertsV2RulesConf, alertsV2PlayRules): `/api/v3/alert_transitions`' facets
+//     over several values each, a transition's texts, and the rules as `options=config` writes them;
 //   - `transitions`: `health.transitions`' three alerts through CLEAR, WARNING, CRITICAL and CLEAR:
 //     `/api/v2/alert_transitions` over the last ten minutes, its newest four after the second switch (`anchor_gi`), and
 //     `/api/v3/alert_transitions` of one transition by its id, each side's own (v2Req.targets): a change to WARNING,
-//     which the window lists too, and a first status, which it does not.
+//     which the window lists too, and a first status, which it does not; then the rows of D234 F7
+//     (alertsV2TransitionsRows and its kin);
+//   - `rules-order` (D234 F5): two alarms and a restart: `configurations[]` before any stop (the rules' first
+//     appearance in `transitions[]`), after the stop wrote statistics (C: alert_hash's rowid order), and over a
+//     window where the two orders are one (alertsV2RulesOrderCase).
 //
 // The alerts rows of two hosts with an alert each are `health.child` `two-hosts`' (alertsV2TwoHosts). Neither endpoint
 // runs a data query: asking them does not pause HEALTH (stream-control.c:99-103).
@@ -586,6 +628,11 @@ func TestAlertsV2(t *testing.T) {
 			sc:   healthValues("hoff.values", "hoff.ctx", []string{"a"}, map[string]int64{"a": 10}),
 			play: alertsV2PlayOff,
 		},
+		"rules": {
+			conf: alertsV2RulesConf,
+			sc:   alertsV2RulesScenario(),
+			play: alertsV2PlayRules,
+		},
 		"transitions": {
 			conf:  healthSigConf,
 			grid:  healthSigGrid,
@@ -593,6 +640,7 @@ func TestAlertsV2(t *testing.T) {
 			play:  alertsV2PlayTransitions,
 			after: alertsV2AccessCase("/api/v2/alert_transitions", "/api/v3/alert_transitions"),
 		},
+		"rules-order": alertsV2RulesOrderCase(),
 	})
 }
 
@@ -924,9 +972,10 @@ var alertsV2AlertRows = func() []v2Req {
 			})},
 
 		// the request's echo with every selector and a window: the texts as they came, `minify` named though the
-		// answer is pretty, and no `configurations` (C drops it from an alerts request first: database/contexts/
+		// answer is pretty, and no `config`, which the request sends (the option's one word,
+		// web/api/maps/contexts_options.c:12): C drops it from an alerts request first (database/contexts/
 		// api_v2_contexts.c:1301-1303)
-		{name: "debug-selectors", target: at("options=summary,instances,values,configurations,debug,minify&alert=ha_low" +
+		{name: "debug-selectors", target: at("options=summary,instances,values,config,debug,minify&alert=ha_low" +
 			"&scope_nodes=*&nodes=*&scope_contexts=hsig*&contexts=*sig*&after=-600&before=0&cardinality=3"), status: "200",
 			guard: dashGuard([]dashFact{
 				dashIs(`{"mode":["nodes","alerts"],"options":["minify","debug","instances","values","summary"],`+
@@ -1551,16 +1600,18 @@ var (
 //     direct statement has no status clause, so hs_calc's first status, UNINITIALIZED to CLEAR, answers too, where the
 //     window leaves it out), and `last` 1 when the request has none (web/api/v2/api_v2_contexts.c:70-71).
 //
-// The phases are health.transitions' (healthPlayPhases), played here to keep the second of the second switch.
+// The phases are health.transitions' (healthPlayPhases), played here to keep the seconds of the switches. Then the
+// rows of D234 F7 (alertsV2TransitionsRows; alertsV2TransitionsOneRows by each side's own ids;
+// alertsV2TransitionsAgoRow; alertsV2TimeoutRows).
 func alertsV2PlayTransitions(t *testing.T, h *healthPair) {
 	names := []string{"hs_avg", "hs_calc", "hs_max"}
-	var switched int64
+	// the second each phase's value was first collected, on both sides (healthPair.release): the rows' windows and
+	// anchors are cut in the gaps between the changes these switches make
+	var sw [4]int64
 	h.create(t)
 	for k := range healthSigPhases {
 		if k > 0 {
-			if second := h.release(t, fmt.Sprintf("p%d", k), k, healthSigHold); k == 2 {
-				switched = second
-			}
+			sw[k] = h.release(t, fmt.Sprintf("p%d", k), k, healthSigHold)
 		}
 		h.compareNow(t, fmt.Sprintf("phase %d: /api/v1/alarms?all", k), func(i int) string { return h.get(i, "/api/v1/alarms?all") },
 			healthAll(healthSigStatus[k], names...))
@@ -1613,7 +1664,7 @@ func alertsV2PlayTransitions(t *testing.T, h *healthPair) {
 				alertsV2Rows{member: "items", keys: items, items: []string{"9 9 9 200 0 0"}})},
 		// the newest four after the second switch: phase 3's three changes and hs_avg's change to CRITICAL, which its
 		// window shows after phase 2 began (S2 = the switch's second, one value for both sides)
-		{name: "anchor", target: fmt.Sprintf("/api/v2/alert_transitions?after=-600&last=4&anchor_gi=%d&options=minify", switched*1_000_000),
+		{name: "anchor", target: fmt.Sprintf("/api/v2/alert_transitions?after=-600&last=4&anchor_gi=%d&options=minify", sw[2]*1_000_000),
 			status: "200",
 			guard: alertsV2Guard(
 				alertsV2Rows{member: "transitions", keys: alertsV2TransitionKeys, items: alertsV2Newest, sorted: true},
@@ -1628,5 +1679,1053 @@ func alertsV2PlayTransitions(t *testing.T, h *healthPair) {
 			status: "200", guard: alertsV2OneClear},
 	} {
 		compareV2(t, h.p, req, fam)
+	}
+	// D234 F7's rows: the facets, the rules, the filters, the windows, the echo, the forms of the answer
+	for _, req := range slices.Concat(alertsV2TransitionsRows(sw), alertsV2TransitionsOneRows(raised, first)) {
+		compareV2(t, h.p, req, fam)
+	}
+	// a window that ends some seconds ago, counted from now: asked once, since each further ask would move its end
+	once := fam
+	once.settle = 0
+	compareV2(t, h.p, alertsV2TransitionsAgoRow(time.Now().Unix(), sw), once)
+	// the timeout's answer is no JSON and holds nothing of a side's own
+	for _, req := range alertsV2TimeoutRows {
+		compareV2(t, h.p, req, alertsV2Family([2]*healthNorm{}, nil))
+	}
+}
+
+// alertsV2FacetList are the transitions answer's nine facets as C lists them, in the order of its enum and not by
+// their `order` (api_v2_contexts_alert_transitions.c:6-60, :356-361; database/contexts/rrdcontext.h:614-627): each
+// `<id> <name> <order>`. A facet's id is its request parameter too (:10, web/api/v2/api_v2_contexts.c:61-64).
+var alertsV2FacetList = []string{"f_status Alert Status 1", "f_class Alert Class 4", "f_type Alert Type 2",
+	"f_component Alert Component 5", "f_role Recipient Role 3", "f_node Alert Node 6", "f_alert Alert Name 7",
+	"f_instance Instance Name 8", "f_context Context 9"}
+
+// alertsV2Facets is a guard on a transitions answer's `facets`: the nine facets of alertsV2FacetList, in that order,
+// each with the options `want` has for its id, in the answer's order and joined by blanks: `<id>=<count>`, or
+// `<id>(<name>)=<count>` for an option whose name is not its id (a host's: its GUID and its hostname,
+// api_v2_contexts_alert_transitions.c:369-380). A facet `want` does not name has no option. A nil `want` wants the
+// answer without the member (`options=mcp`, :354).
+func alertsV2Facets(want map[string]string) func(Value) error {
+	text := func(v Value, key string, kind Kind) (string, error) {
+		m, err := dashMember(v, key)
+		if err != nil {
+			return "", err
+		}
+		if m.Kind != kind {
+			return "", fmt.Errorf("%s is %s", key, m)
+		}
+		return m.Text, nil
+	}
+	return func(v Value) error {
+		facets, err := dashMember(v, "facets")
+		if want == nil {
+			if err == nil {
+				return fmt.Errorf("the answer has facets")
+			}
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if facets.Kind != KindArray || len(facets.Items) != len(alertsV2FacetList) {
+			return fmt.Errorf("facets is %s, want the %d facets", facets, len(alertsV2FacetList))
+		}
+		for i, f := range facets.Items {
+			var head [3]string
+			for k, key := range []string{"id", "name", "order"} {
+				kind := KindString
+				if key == "order" {
+					kind = KindNumber
+				}
+				if head[k], err = text(f, key, kind); err != nil {
+					return fmt.Errorf("facets[%d]: %v", i, err)
+				}
+			}
+			if got := strings.Join(head[:], " "); got != alertsV2FacetList[i] {
+				return fmt.Errorf("facets[%d] is %q, want %q", i, got, alertsV2FacetList[i])
+			}
+			if got := memberKeys(f); !slices.Equal(got, []string{"id", "name", "order", "options"}) {
+				return fmt.Errorf("facets[%d] has the members %q", i, got)
+			}
+			options, _ := dashMember(f, "options")
+			if options.Kind != KindArray {
+				return fmt.Errorf("%s: options is %s", head[0], options)
+			}
+			var got []string
+			for _, o := range options.Items {
+				id, err := text(o, "id", KindString)
+				if err != nil {
+					return fmt.Errorf("%s: an option: %v", head[0], err)
+				}
+				name, err := text(o, "name", KindString)
+				if err != nil {
+					return fmt.Errorf("%s: an option: %v", head[0], err)
+				}
+				count, err := text(o, "count", KindNumber)
+				if err != nil {
+					return fmt.Errorf("%s: an option: %v", head[0], err)
+				}
+				if name != id {
+					id += "(" + name + ")"
+				}
+				got = append(got, id+"="+count)
+			}
+			if got := strings.Join(got, " "); got != want[head[0]] {
+				return fmt.Errorf("%s has the options %q, want %q", head[0], got, want[head[0]])
+			}
+		}
+		return nil
+	}
+}
+
+// alertsV2Is is dashIs for a want written as the agent writes it: dashIs compares Value.String, which writes the
+// characters `<`, `>` and `&` of a text as escapes (encoding/json), and a threshold's text holds one.
+func alertsV2Is(want string, path ...string) dashFact {
+	return dashIs(strings.NewReplacer("<", `\u003c`, ">", `\u003e`, "&", `\u0026`).Replace(want), path...)
+}
+
+// alertsV2ItemKeys are the members of a transitions answer's `items`, as alertsV2Items reads them
+// (api_v2_contexts_alert_transitions.c:495-515).
+var alertsV2ItemKeys = []string{"evaluated", "matched", "returned", "max_to_return", "before", "after"}
+
+// alertsV2Items is what a guard reads of a transitions answer's `items`: the six counts, joined by blanks.
+func alertsV2Items(want string) alertsV2Rows {
+	return alertsV2Rows{member: "items", keys: alertsV2ItemKeys, items: []string{want}}
+}
+
+// alertsV2Stats is what a guard reads of a transitions answer's `stats` (`options=debug`: what the keep did,
+// api_v2_contexts_alert_transitions.c:517-530): first, prepend, append, backwards, forwards, shifts, skips_before,
+// skips_after.
+func alertsV2Stats(want string) alertsV2Rows {
+	return alertsV2Rows{member: "stats", keys: []string{"first", "prepend", "append", "backwards", "forwards", "shifts",
+		"skips_before", "skips_after"}, items: []string{want}}
+}
+
+// alertsV2Changes is what a guard reads of a transitions answer's `transitions`: each one's alert, statuses and new
+// value (alertsV2TransitionKeys), in the answer's order: newest first (sqlite_health.c:1558).
+func alertsV2Changes(want ...string) alertsV2Rows {
+	return alertsV2Rows{member: "transitions", keys: alertsV2TransitionKeys, items: append([]string{}, want...)}
+}
+
+// alertsV2RulesFirstSeen is a guard on a transitions answer with `options=config`: its `configurations` are the
+// rules of the returned transitions, each once, in the order the transitions first show them
+// (api_v2_contexts_alert_transitions.c:468-479: a dictionary of the kept rows' hashes, walked in the order they
+// were set; sqlite_health.c:1658-1664 joins a temporary table of them to `alert_hash` without an ORDER BY, and a
+// fresh agent's answer follows the temporary table). `names` are the rules' names in that order (`null` for a rule
+// whose name is null: a template's; none for an answer whose rules have no name: `options=mcp`).
+func alertsV2RulesFirstSeen(names ...string) func(Value) error {
+	return func(v Value) error {
+		transitions, err := dashMember(v, "transitions")
+		if err != nil {
+			return err
+		}
+		var seen []string
+		for _, tr := range transitions.Items {
+			hash, err := dashMember(tr, "config_hash_id")
+			if err != nil {
+				return err
+			}
+			if !slices.Contains(seen, hash.Text) {
+				seen = append(seen, hash.Text)
+			}
+		}
+		rules, err := dashMember(v, "configurations")
+		if err != nil {
+			return err
+		}
+		var got, gotNames []string
+		for _, rule := range rules.Items {
+			hash, err := dashMember(rule, "config_hash_id")
+			if err != nil {
+				return err
+			}
+			got = append(got, hash.Text)
+			if name, err := dashMember(rule, "name"); err == nil {
+				gotNames = append(gotNames, cmp.Or(name.Text, name.String()))
+			}
+		}
+		if rules.Kind != KindArray || !slices.Equal(got, seen) {
+			return fmt.Errorf("configurations are the rules %q, the transitions show %q in that order", got, seen)
+		}
+		if !slices.Equal(gotNames, names) {
+			return fmt.Errorf("configurations are named %q, want %q", gotNames, names)
+		}
+		return nil
+	}
+}
+
+// alertsV2Window are the `transitions` case's nine rows in the order every answer lists them, newest first, as
+// alertsV2Changes reads them. The order is the fixture's: a pass walks the alerts in the rules' order (hs_calc,
+// hs_max, hs_avg) and each entry's global id is the clock as it is made (health/health_log.c:226), so of two changes
+// of one pass the later rule's is the newer; hs_calc changes in the pass that reads a switch's value, hs_max, a
+// lookup over the stored points, in that pass or a later one, and hs_avg when its aligned window ends, the same pass
+// as hs_max after the last switch (the order of every answer of every run of 2026-10-08, C against C and on the
+// Rust build).
+//
+// One interleaving swaps the two newest rows, by reading (never seen): a pass makes every lookup first, in the rules'
+// order, then the status changes (health/health_event_loop.c:441-633, :638-791), and each lookup reads up to the
+// chart's last stored second as its query is made (web/api/queries/query-window.c:131-133). After the last switch
+// hs_max and hs_avg wait for the same stored point: when it is stored between the two lookups of one pass, hs_avg
+// changes a pass before hs_max, and hs_max's entry is the newer. The committed rows carry the same race (they
+// compare `transitions[]` in order). Its signatures: at the oracle's guards, hs_max before hs_avg among the newest
+// rows and in `f_alert`; or a difference at `transitions[0]` and `[1]` with one side's hs_max entry a pass after
+// its hs_avg entry. Either is no verdict on the candidate: run again.
+var alertsV2Window = []string{
+	"hs_avg CRITICAL CLEAR 44", "hs_max CRITICAL CLEAR 10", "hs_calc CRITICAL CLEAR 10",
+	"hs_avg WARNING CRITICAL 95", "hs_max WARNING CRITICAL 95", "hs_calc WARNING CRITICAL 95",
+	"hs_avg CLEAR WARNING 70", "hs_max CLEAR WARNING 70", "hs_calc CLEAR WARNING 70",
+}
+
+// alertsV2SigFacets is alertsV2Facets for an answer over the `transitions` case's rows: `status` and `alert` are the
+// options of those two facets (the statuses and the alerts in the order the rows show them, alertsV2Window), and
+// every other facet has the one value all nine rows have, with the count `rest`, or its own in `but`: no class, type
+// or component (`unknown`, api_v2_contexts_alert_transitions.c:277), localhost's default recipient (:269), the
+// host's GUID named by its hostname, the chart's name and its context. Empty `status` and `alert`: the answer of a
+// request that evaluated no row, whose facets have no option.
+func alertsV2SigFacets(status, alert string, rest int, but map[string]int) func(Value) error {
+	if status == "" && alert == "" {
+		return alertsV2Facets(map[string]string{})
+	}
+	one := func(id, value string) string {
+		n, own := but[id]
+		if !own {
+			n = rest
+		}
+		return fmt.Sprintf("%s=%d", value, n)
+	}
+	return alertsV2Facets(map[string]string{
+		"f_status":    status,
+		"f_class":     one("f_class", "unknown"),
+		"f_type":      one("f_type", "unknown"),
+		"f_component": one("f_component", "unknown"),
+		"f_role":      one("f_role", "root"),
+		"f_node":      one("f_node", parentIdentity.MachineGUID+"("+parentIdentity.Hostname+")"),
+		"f_alert":     alert,
+		"f_instance":  one("f_instance", "hsig.values"),
+		"f_context":   one("f_context", "hsig.ctx"),
+	})
+}
+
+// alertsV2NoFacets is the echo of a transitions request that names no facet (alertsV2Echo).
+const alertsV2NoFacets = `"f_status":null,"f_class":null,"f_type":null,"f_component":null,"f_role":null,"f_node":null,` +
+	`"f_alert":null,"f_instance":null,"f_context":null`
+
+// alertsV2Echo is the `request` member of a transitions answer with `options=debug`, as C writes it
+// (database/contexts/api_v2_contexts.c:1382-1443): the mode's two names, the options (`options`: the names quoted
+// and joined by commas), the nodes' scope, the nodes' selector and the alerts' (`alerts`: the members of
+// `selectors.alerts`), the window as the request has it (`after` -3600 in every row) and the nine facets' texts
+// (`facets`). For this mode neither `scope_contexts` nor `contexts` is printed (:1391-1392, :1400-1401).
+func alertsV2Echo(options, scopeNodes, nodes, alerts, facets string) string {
+	return `{"mode":["nodes","alert_transitions"],"options":[` + options + `],"scope":{"scope_nodes":` + scopeNodes +
+		`},"selectors":{"nodes":` + nodes + `,"alerts":{` + alerts + `}},"filters":{"after":-3600,"before":0},"facets":{` +
+		facets + `}}`
+}
+
+// alertsV2McpKeys are the members of a transition with `options=mcp` (api_v2_contexts_alert_transitions.c:400-462:
+// no transition id, no GUID, no node id, and the chart's name as `instance`), and alertsV2TransitionMembers those
+// of the plain form on a host that is known and not claimed.
+const (
+	alertsV2McpKeys = "gi alert config_hash_id hostname instance context component classification type when info " +
+		"summary units new old notification"
+	alertsV2TransitionMembers = "gi alert transition_id machine_guid config_hash_id hostname instance instance_n context " +
+		"component classification type when info summary units new old notification"
+)
+
+// alertsV2TransitionsRows are the rows of D234 F7 on the `transitions` case that ask both sides one target (sw: the
+// seconds of the three switches, alertsV2PlayTransitions). But for the window's own rows, each asks the last hour
+// (the committed rows ask ten minutes; these are many, and a candidate that fails each of them is asked for
+// healthCandidateWait each). The
+// guards read what C answers (probed C against C, 2026-10-08):
+//   - the facets (api_v2_contexts_alert_transitions.c:257-324). Every evaluated row's nine values are options of
+//     their facets, in the order the rows show them, whatever the request selects (:276-283). A facet the request
+//     names has a pattern: the web's separators (a comma, a pipe; not a blank), whole values, whatever the case,
+//     with `*` and `!` (:339-340); a text of separators alone is no pattern, a lone `*` selects everything, a lone
+//     negative word nothing. A row every facet selects is matched and counts on every facet; a row all but one
+//     select counts on that one alone; a row two reject counts nowhere (:285-322). So a facet shows what each of its
+//     own values would give under the other facets' selection. The node's facet holds GUIDs, not hostnames. A
+//     parameter given twice is its last value (web/api/v2/api_v2_contexts.c:61-64);
+//   - the rules (`options=config`, :468-479): those of the returned rows, in the order the rows first show them
+//     (alertsV2RulesFirstSeen), written by the rule writer with the request's `debug`, `rfc3339` and `mcp`
+//     (api_v2_contexts_alert_config.c:5-105): with `debug` the lookup, the calculation and the two thresholds
+//     `green` and `red` are printed for a rule without them (C stores no rule's `green` or `red`: it binds a NaN for
+//     both, sqlite_health.c:937-939, so they are `null` in every rule); with `rfc3339` a lookup's ends go through
+//     the time writer, where a relative second stays a number and a 0 is `null`; with `mcp` a rule has no `name`;
+//   - the filters: `alert=` and `context=` are the statement's own, whole texts compared as they are
+//     (sqlite_health.c:1552-1556, :1569-1573), so they cut `evaluated` too, and a pattern or another case finds
+//     nothing; `contexts=` writes the same field as `context=`, the later of the two wins
+//     (web/api/v2/api_v2_contexts.c:29-30, :55-56); `scope_contexts=` and `nodes=` select hosts (a host without a
+//     context in scope is not asked for, database/contexts/api_v2_contexts.c:658-674); `status=` and `cardinality=`
+//     are not this mode's;
+//   - the window (libnetdata/libnetdata.c:484-580; sqlite_health.c:1474, :1566-1567): two absolute ends, in either
+//     order; one end alone (no `before`: now; no `after`: ten minutes before `before`); none: nothing (both ends 0);
+//   - `last` and `anchor_gi` (api_v2_contexts_alert_transitions.c:187-255): no `last` is 1
+//     (web/api/v2/api_v2_contexts.c:70-71); an anchor above every row leaves them all `before`; an anchor of 0 is
+//     none, and so is an empty `anchor_gi=`, as the dashboard sends it (:14-18);
+//   - `options=debug` (database/contexts/api_v2_contexts.c:1382-1443; api_v2_contexts_alert_transitions.c:517-530):
+//     the request's echo (alertsV2Echo), `stats`, and a pretty answer whatever `minify` says
+//     (database/contexts/api_v2_contexts.c:1376-1377); `instances` is stripped before the echo (:1305-1307). `last`
+//     is `strtoul(value, NULL, 0)` into 32 bits (web/api/v2/api_v2_contexts.c:54): a sign, base 8 and 16 and, since
+//     the oracle is built against `__isoc23_strtoul` (glibc 2.38 and later, C23), base 2; more than 32 bits are
+//     cut. `anchor_gi` is str2ull, which wraps at 64 bits (:58; libnetdata/inlined.h:190-216);
+//   - the forms: `long-json-keys` names the global id `global_id`; `rfc3339` writes a transition's three seconds as
+//     dates (api_v2_contexts_alert_transitions.c:431, :454, :456); `mcp` leaves out `api`, `facets` and `timings`,
+//     and of a transition its id, its GUID and `instance_n` (:354, :403-423;
+//     database/contexts/api_v2_contexts.c:1379-1380, :1545-1546); no option at all is a pretty answer;
+//   - `transition=` of a text that is no UUID: nothing, with status 200 (sqlite_health.c:1503-1506).
+func alertsV2TransitionsRows(sw [4]int64) []v2Req {
+	const t2, t3 = "/api/v2/alert_transitions", "/api/v3/alert_transitions"
+	w := alertsV2Window
+	pick := func(at ...int) []string {
+		out := []string{}
+		for _, i := range at {
+			out = append(out, w[i])
+		}
+		return out
+	}
+	st := func(clear, critical, warning int) string {
+		return fmt.Sprintf("CLEAR=%d CRITICAL=%d WARNING=%d", clear, critical, warning)
+	}
+	al := func(avg, mx, calc int) string { return fmt.Sprintf("hs_avg=%d hs_max=%d hs_calc=%d", avg, mx, calc) }
+	every := alertsV2SigFacets(st(3, 3, 3), al(3, 3, 3), 9, nil)
+	none := alertsV2SigFacets("", "", 0, nil)
+	row := func(name, target, items string, changes []string, facets func(Value) error, more ...dashFact) v2Req {
+		return v2Req{name: name, target: target, status: "200", guard: dashGuard([]dashFact{
+			alertsV2Guard(alertsV2Items(items), alertsV2Changes(changes...)), facets}, more)}
+	}
+	// the last hour, minified: every row that matches, or the newest `n` of them
+	all := func(query string) string { return t2 + "?after=-3600&last=200&options=minify&" + query }
+	top := func(n int, query string) string {
+		return fmt.Sprintf("%s?after=-3600&last=%d&options=minify&%s", t2, n, query)
+	}
+	nothing := func(name, target string) v2Req { return row(name, target, "0 0 0 200 0 0", nil, none) }
+	// the gaps between the switches' changes: three seconds before the second and the third switch
+	g2, g3 := sw[2]-3, sw[3]-3
+	abs := func(n int, query string) string { return fmt.Sprintf("%s?last=%d&options=minify&%s", t2, n, query) }
+	guid, host := parentIdentity.MachineGUID, parentIdentity.Hostname
+	dbg := func(options string, n int, query string) string {
+		return fmt.Sprintf("%s?after=-3600&last=%d&options=%s%s", t2, n, options, query)
+	}
+	is := alertsV2Is
+	// what the render names of a transition (alertsV2Render)
+	marks := func(dated string, alerts ...string) alertsV2Rows {
+		keys := []string{"alert", "when", "old.duration", "notification.when", "notification.delay_up_to_time"}
+		items := []string{}
+		for _, name := range alerts {
+			items = append(items, name+" WHEN"+dated+" DURATION EXEC_RUN"+dated+" DELAY_UP_TO"+dated)
+		}
+		return alertsV2Rows{member: "transitions", keys: keys, items: items}
+	}
+	// the three rules as `options=config,debug` writes them: the members a rule does not have, printed
+	const (
+		debugStatus = `{"green":null,"red":null,"warn":"$this > 50","crit":"$this > 90"}`
+		calcValue   = `{"units":"things","update_every":1,"db":{"after":%s,"before":%s,"time_group_condition":"=",` +
+			`"time_group_value":0,"dims_group":"sum","data_source":"samples","method":null,"dimensions":null,"options":[]},` +
+			`"calc":"$a"}`
+		avgValue = `{"units":"things","update_every":1,"db":{"after":-5,"before":%s,"time_group_condition":"=",` +
+			`"time_group_value":0,"dims_group":"sum","data_source":"samples","method":"average","dimensions":"a","options":[]}%s}`
+		ruleKeys = "config_hash_id selectors value status notification class component type info summary"
+	)
+	lastForm := func(name, text, read string) v2Req {
+		return row(name, t2+"?after=-3600&options=debug,mcp&f_alert=nothing&last="+text, "9 0 0 "+read+" 0 0", nil,
+			alertsV2Facets(nil), is(read, "request", "selectors", "alerts", "last"), dashKeys("request transitions items stats"))
+	}
+	return []v2Req{
+		// the facets
+		row("facets", all("f_status=warning&f_alert=hs_calc%7Chs_max"), "9 2 2 200 0 0", pick(7, 8),
+			alertsV2SigFacets(st(2, 2, 2), al(1, 1, 1), 2, nil)),
+		row("facet-select", all("f_alert=hs_calc"), "9 3 3 200 0 0", pick(2, 5, 8),
+			alertsV2SigFacets(st(1, 1, 1), al(3, 3, 3), 3, nil)),
+		row("facet-reject", all("f_status=nothing"), "9 0 0 200 0 0", nil, alertsV2SigFacets(st(3, 3, 3), al(0, 0, 0), 0, nil)),
+		row("facet-negative-or", top(2, "f_alert=!hs_calc%7C*"), "9 6 2 2 0 4", pick(0, 1),
+			alertsV2SigFacets(st(2, 2, 2), al(3, 3, 3), 6, nil)),
+		row("facet-negative", all("f_alert=!hs_calc"), "9 0 0 200 0 0", nil, alertsV2SigFacets(st(0, 0, 0), al(3, 3, 3), 0, nil)),
+		row("facet-wildcard", top(1, "f_alert=hs_*c"), "9 3 1 1 0 2", pick(2), alertsV2SigFacets(st(1, 1, 1), al(3, 3, 3), 3, nil)),
+		row("facet-star", top(1, "f_alert=*"), "9 9 1 1 0 8", pick(0), every),
+		row("facet-wordless", top(1, "f_alert=,%7C"), "9 9 1 1 0 8", pick(0), every),
+		row("facet-case", all("f_status=WARNING&f_alert=HS_CALC"), "9 1 1 200 0 0", pick(8),
+			alertsV2SigFacets(st(1, 1, 1), al(1, 1, 1), 1, nil)),
+		row("facet-blank", all("f_alert=hs_calc%20hs_max"), "9 0 0 200 0 0", nil, alertsV2SigFacets(st(0, 0, 0), al(3, 3, 3), 0, nil)),
+		row("facet-repeat", top(1, "f_alert=hs_calc&f_alert=hs_max"), "9 3 1 1 0 2", pick(1),
+			alertsV2SigFacets(st(1, 1, 1), al(3, 3, 3), 3, nil)),
+		row("facet-two-reject", all("f_status=nothing&f_alert=nothing"), "9 0 0 200 0 0", nil,
+			alertsV2SigFacets(st(0, 0, 0), al(0, 0, 0), 0, nil)),
+		row("facet-third", all("f_status=warning&f_alert=hs_calc&f_context=nothing"), "9 0 0 200 0 0", nil,
+			alertsV2SigFacets(st(0, 0, 0), al(0, 0, 0), 0, map[string]int{"f_context": 1})),
+		row("facet-node", top(1, "f_node="+strings.ToUpper(guid)), "9 9 1 1 0 8", pick(0), every),
+		row("facet-node-name", all("f_node="+host), "9 0 0 200 0 0", nil,
+			alertsV2SigFacets(st(0, 0, 0), al(0, 0, 0), 0, map[string]int{"f_node": 9})),
+		row("facet-values", top(1, "f_instance=hsig.values&f_context=hsig.ctx&f_role=root&f_class=unknown&f_type=unknown&"+
+			"f_component=unknown"), "9 9 1 1 0 8", pick(0), every),
+
+		// the rules
+		// (the newest four rows are of the three rules, the last stored rule's first and a fourth time: each rule is
+		// listed once)
+		row("config", dbg("minify,config", 4, ""), "9 9 4 4 0 5", pick(0, 1, 2, 3), every,
+			alertsV2RulesFirstSeen("hs_avg", "hs_max", "hs_calc"), dashKeys("api facets transitions configurations items timings")),
+		row("config-last2", dbg("minify,config", 2, ""), "9 9 2 2 0 7", pick(0, 1), every, alertsV2RulesFirstSeen("hs_avg", "hs_max")),
+		// a rule without a lookup, with `debug`: the lookup's members, the two ends 0
+		row("config-debug", dbg("minify,config,debug", 1, "&alert=hs_calc"), "3 3 1 1 0 2", pick(2),
+			alertsV2SigFacets(st(1, 1, 1), "hs_calc=3", 3, nil), alertsV2RulesFirstSeen("hs_calc"),
+			alertsV2Guard(alertsV2Stats("1 0 0 0 0 0 0 2")),
+			is(fmt.Sprintf(calcValue, "0", "0"), "configurations", "[0]", "value"), is(debugStatus, "configurations", "[0]", "status"),
+			dashKeys("api request facets transitions configurations items stats timings")),
+		// a rule with a lookup, with `debug` and `rfc3339`: no calculation, the lookup's relative start a number and its
+		// end, 0, null; the request's `before` too
+		row("config-debug-rfc3339", dbg("minify,config,debug,rfc3339", 1, ""), "9 9 1 1 0 8", pick(0), every,
+			alertsV2RulesFirstSeen("hs_avg"), alertsV2Guard(marks(alertsV2Dated, "hs_avg")),
+			is(fmt.Sprintf(avgValue, "null", `,"calc":null`), "configurations", "[0]", "value"),
+			is(debugStatus, "configurations", "[0]", "status"), is(`{"after":-3600,"before":null}`, "request", "filters")),
+		row("config-mcp", dbg("minify,config,mcp", 3, ""), "9 9 3 3 0 6", pick(0, 1, 2), alertsV2Facets(nil),
+			alertsV2RulesFirstSeen(), alertsV2Guard(marks("", "hs_avg", "hs_max", "hs_calc")),
+			dashKeys("transitions configurations items"), dashKeys(alertsV2McpKeys, "transitions", "[0]"),
+			dashKeys(ruleKeys, "configurations", "[0]"), is(fmt.Sprintf(avgValue, "0", ""), "configurations", "[0]", "value"),
+			is(`"G"`, "transitions", "[2]", "gi")),
+
+		// the filters
+		row("context", top(2, "context=hsig.ctx"), "9 9 2 2 0 7", pick(0, 1), every),
+		row("alert", all("alert=hs_calc"), "3 3 3 200 0 0", pick(2, 5, 8),
+			alertsV2SigFacets(st(1, 1, 1), "hs_calc=3", 3, nil)),
+		row("alert-context", top(1, "alert=hs_calc&context=hsig.ctx"), "3 3 1 1 0 2", pick(2),
+			alertsV2SigFacets(st(1, 1, 1), "hs_calc=3", 3, nil)),
+		nothing("alert-pattern", all("alert=hs_*")),
+		nothing("alert-case", all("alert=HS_CALC")),
+		nothing("context-pattern", all("context=hsig.*")),
+		nothing("contexts-other", all("contexts=other.ctx")),
+		row("context-later", top(1, "contexts=other.ctx&context=hsig.ctx"), "9 9 1 1 0 8", pick(0), every),
+		nothing("contexts-later", all("context=hsig.ctx&contexts=other.ctx")),
+		nothing("scope-contexts-none", all("scope_contexts=nothing*")),
+		nothing("nodes-none", all("nodes=nothing*")),
+		row("unread", top(1, "status=critical&cardinality=1"), "9 9 1 1 0 8", pick(0), every),
+
+		// the window
+		row("window-abs", abs(200, fmt.Sprintf("after=%d&before=%d", g2, g3)), "3 3 3 200 0 0", pick(3, 4, 5),
+			alertsV2SigFacets("CRITICAL=3", al(1, 1, 1), 3, nil)),
+		row("window-after", abs(1, fmt.Sprintf("after=%d", g2)), "6 6 1 1 0 5", pick(0),
+			alertsV2SigFacets("CLEAR=3 CRITICAL=3", al(2, 2, 2), 6, nil)),
+		row("window-before", abs(1, fmt.Sprintf("before=%d", g2)), "3 3 1 1 0 2", pick(6),
+			alertsV2SigFacets("WARNING=3", al(1, 1, 1), 3, nil)),
+		row("window-flipped", abs(1, fmt.Sprintf("after=%d&before=%d", g3, g2)), "3 3 1 1 0 2", pick(3),
+			alertsV2SigFacets("CRITICAL=3", al(1, 1, 1), 3, nil)),
+		nothing("no-window", t2+"?last=200&options=minify"),
+		row("no-last", t2+"?after=-3600&options=minify", "9 9 1 1 0 8", pick(0), every),
+
+		// the anchor
+		row("anchor-above", all("anchor_gi=9999999999999999"), "9 9 0 200 9 0", nil, every),
+		row("anchor-last1", top(1, fmt.Sprintf("anchor_gi=%d", sw[2]*1_000_000)), "9 9 1 1 3 5", pick(0), every),
+		row("anchor-zero", top(2, "anchor_gi=0"), "9 9 2 2 0 7", pick(0, 1), every),
+		row("dashboard", t2+"?after=-3600&last=2&anchor_gi=&options=minify&scope_nodes=*", "9 9 2 2 0 7", pick(0, 1), every),
+
+		// the echo and the keep's counts
+		row("debug", dbg("debug", 4, fmt.Sprintf("&anchor_gi=%d", sw[2]*1_000_000)), "9 9 4 4 3 2", pick(0, 1, 2, 3), every,
+			alertsV2Guard(alertsV2Stats("1 0 3 0 0 0 3 2")),
+			is(alertsV2Echo(`"debug"`, "null", "null", fmt.Sprintf(`"context":null,"anchor_gi":%d,"last":4,"alert":null,"transition":null`,
+				sw[2]*1_000_000), alertsV2NoFacets), "request"),
+			dashKeys("api request facets transitions items stats timings")),
+		row("debug-all", dbg("debug", 4, "&scope_nodes=*&nodes=parity*&scope_contexts=hsig*&context=hsig.ctx&alert=hs_calc"+
+			"&f_status=warning&f_class=unknown&f_type=unknown&f_component=unknown&f_role=root&f_node="+guid+
+			"&f_alert=hs_calc&f_instance=hsig.values&f_context=hsig.ctx&timeout=30000&cardinality=3"), "3 1 1 4 0 0", pick(8),
+			alertsV2SigFacets(st(1, 1, 1), "hs_calc=1", 1, nil), alertsV2Guard(alertsV2Stats("1 0 0 0 0 0 0 0")),
+			is(alertsV2Echo(`"debug"`, `"*"`, `"parity*"`, `"context":"hsig.ctx","anchor_gi":0,"last":4,"alert":"hs_calc","transition":null`,
+				`"f_status":"warning","f_class":"unknown","f_type":"unknown","f_component":"unknown","f_role":"root","f_node":"`+guid+
+					`","f_alert":"hs_calc","f_instance":"hsig.values","f_context":"hsig.ctx"`), "request")),
+		row("debug-options", dbg("debug,instances,minify,summary,values", 1, ""), "9 9 1 1 0 8", pick(0), every,
+			alertsV2Guard(alertsV2Stats("1 0 0 0 0 0 0 8")), is(`["minify","debug","values","summary"]`, "request", "options"),
+			dashKeys("api request facets transitions items stats timings")),
+		row("debug-mcp", dbg("debug,mcp", 1, ""), "9 9 1 1 0 8", pick(0), alertsV2Facets(nil),
+			alertsV2Guard(alertsV2Stats("1 0 0 0 0 0 0 8"), marks("", "hs_avg")),
+			is(alertsV2Echo(`"debug","mcp"`, "null", "null", `"context":null,"anchor_gi":0,"last":1,"alert":null,"transition":null`,
+				alertsV2NoFacets), "request"),
+			dashKeys("request transitions items stats"), dashKeys(alertsV2McpKeys, "transitions", "[0]")),
+		lastForm("last-negative", "-1", "4294967295"),
+		lastForm("last-wrap", "4294967296", "1"),
+		lastForm("last-plus", "%2B5", "5"),
+		lastForm("last-octal", "010", "8"),
+		lastForm("last-binary", "0b11", "3"),
+		row("anchor-wrap", t2+"?after=-3600&options=debug,mcp&last=1&anchor_gi=18446744073709551616", "9 9 1 1 0 8", pick(0),
+			alertsV2Facets(nil), is("0", "request", "selectors", "alerts", "anchor_gi")),
+
+		// the forms of the answer
+		row("long", dbg("long-json-keys,minify", 1, ""), "9 9 1 1 0 8", pick(0), every,
+			dashKeys(strings.Replace(alertsV2TransitionMembers, "gi ", "global_id ", 1), "transitions", "[0]"),
+			is(`"G"`, "transitions", "[0]", "global_id")),
+		row("rfc3339", dbg("minify,rfc3339", 1, ""), "9 9 1 1 0 8", pick(0), every, alertsV2Guard(marks(alertsV2Dated, "hs_avg")),
+			dashKeys(alertsV2TransitionMembers, "transitions", "[0]")),
+		row("mcp", dbg("mcp", 2, ""), "9 9 2 2 0 7", pick(0, 1), alertsV2Facets(nil), alertsV2Guard(marks("", "hs_avg", "hs_max")),
+			dashKeys("transitions items"), dashKeys(alertsV2McpKeys, "transitions", "[1]"), is(`"G"`, "transitions", "[1]", "gi")),
+		row("mcp-rfc3339", dbg("mcp,minify,rfc3339", 1, ""), "9 9 1 1 0 8", pick(0), alertsV2Facets(nil),
+			alertsV2Guard(marks(alertsV2Dated, "hs_avg")), dashKeys("transitions items")),
+		row("pretty", t3+"?after=-3600&last=1", "9 9 1 1 0 8", pick(0), every, dashKeys("api facets transitions items timings")),
+
+		// a text that is no UUID, and a timeout that no host is asked for
+		row("one-text", t3+"?options=minify&transition=x", "0 0 0 1 0 0", nil, none),
+		row("timeout-no-host", t3+"?timeout=-1&options=minify&scope_nodes=nothing*", "0 0 0 1 0 0", nil, none),
+	}
+}
+
+// alertsV2TransitionsAgoRow is the row of a window that ends some seconds ago, counted from the request's second
+// (`before=-N`; now: the second the row is made, right before it is asked): C reads its clock, steps a second
+// back, and ends the window N seconds before that (libnetdata/libnetdata.c:549-555); without an `after` the window
+// starts ten minutes earlier. N is chosen to end it three or four seconds before the third switch (four when the
+// agent answers in the second the row was made in), in the gap of about six seconds or more after the second
+// switch's last change (hs_avg's, at its window's end): the six rows before the last switch, the newest of them
+// hs_avg's change to CRITICAL.
+func alertsV2TransitionsAgoRow(now int64, sw [4]int64) v2Req {
+	return v2Req{name: "window-ago", target: fmt.Sprintf("/api/v2/alert_transitions?last=1&options=minify&before=-%d", now-(sw[3]-3)),
+		status: "200", guard: dashGuard([]dashFact{
+			alertsV2Guard(alertsV2Items("6 6 1 1 0 5"), alertsV2Changes(alertsV2Window[3])),
+			alertsV2SigFacets("CRITICAL=3 WARNING=3", "hs_avg=2 hs_max=2 hs_calc=2", 6, nil)})}
+}
+
+// alertsV2TransitionsOneRows are the rows of D234 F7 that name a transition of each side's own alert log (raised:
+// hs_calc's change to WARNING; first: its first status). The guards read what C answers:
+//   - the id is read as `uuid_parse_flexi` reads it (sqlite_health.c:1503; libnetdata/uuid/uuid.h:70): without
+//     its dashes, in upper case, and with anything after its 32 digits;
+//   - the direct statement reads no host, no window and no filter (sqlite_health.c:1476-1479, :1508-1512): the
+//     request's `scope_nodes`, `nodes`, `after`, `alert` and `context` change nothing;
+//   - the facets and the keep do apply to its one row (api_v2_contexts_alert_transitions.c:257-324, :187-194): a
+//     facet that rejects it leaves it evaluated and not matched, counted on that facet alone; an anchor above it
+//     leaves it `before`; `last` is the request's (`max_to_return` 2);
+//   - `options=config` lists its rule, `options=mcp` writes it without its id (the render names its entry by its
+//     change, alertsV2Log.changed);
+//   - a first status' notification never ran: its second is 0, which `options=rfc3339` writes `null`
+//     (libnetdata/buffer/buffer.h:1119-1128).
+func alertsV2TransitionsOneRows(raised, first [2]string) []v2Req {
+	const one = "/api/v3/alert_transitions?options=minify&transition="
+	change := alertsV2Changes("hs_calc CLEAR WARNING 70")
+	facets := alertsV2SigFacets("WARNING=1", "hs_calc=1", 1, nil)
+	row := func(name string, id [2]string, form func(string) string, more, items string, changes alertsV2Rows, f func(Value) error,
+		facts ...dashFact) v2Req {
+		return v2Req{name: name, target: one + "<" + name + ">" + more, targets: [2]string{one + form(id[0]) + more, one + form(id[1]) + more},
+			status: "200", guard: dashGuard([]dashFact{alertsV2Guard(alertsV2Items(items), changes), f}, facts)}
+	}
+	asIs := func(id string) string { return id }
+	return []v2Req{
+		row("one-bare", raised, func(id string) string { return strings.ToUpper(strings.ReplaceAll(id, "-", "")) }, "",
+			"1 1 1 1 0 0", change, facets),
+		row("one-appended", raised, func(id string) string { return id + "zz" }, "", "1 1 1 1 0 0", change, facets),
+		row("one-last2", raised, asIs, "&last=2", "1 1 1 2 0 0", change, facets),
+		row("one-filters", raised, asIs, "&after=-3600&alert=hs_max&context=other.ctx&scope_nodes=nothing*&nodes=nothing*",
+			"1 1 1 1 0 0", change, facets),
+		row("one-facet", raised, asIs, "&f_alert=hs_max", "1 0 0 1 0 0", alertsV2Changes(),
+			alertsV2SigFacets("WARNING=0", "hs_calc=1", 0, nil)),
+		row("one-anchor", raised, asIs, "&anchor_gi=9999999999999999", "1 1 0 1 1 0", alertsV2Changes(), facets),
+		row("one-config", raised, asIs, "&options=config", "1 1 1 1 0 0", change, facets, alertsV2RulesFirstSeen("hs_calc")),
+		row("one-mcp", raised, asIs, "&options=mcp", "1 1 1 1 0 0", change, alertsV2Facets(nil),
+			dashKeys("transitions items"), dashKeys(alertsV2McpKeys, "transitions", "[0]"),
+			alertsV2Guard(alertsV2Rows{member: "transitions", keys: []string{"gi", "when", "old.duration", "notification.when"},
+				items: []string{"G WHEN DURATION EXEC_RUN"}})),
+		row("first-rfc3339", first, asIs, "&options=rfc3339", "1 1 1 1 0 0", alertsV2Changes("hs_calc UNINITIALIZED CLEAR 10"),
+			alertsV2SigFacets("CLEAR=1", "hs_calc=1", 1, nil),
+			alertsV2Guard(alertsV2Rows{member: "transitions", keys: []string{"when", "notification.when", "notification.delay_up_to_time"},
+				items: []string{"WHEN" + alertsV2Dated + " null DELAY_UP_TO" + alertsV2Dated}})),
+	}
+}
+
+// alertsV2TimeoutRows are the rows of a request whose timeout has passed when its first host is reached: C adds the
+// request's milliseconds to its unsigned clock (database/contexts/api_v2_contexts.c:640-642), so a negative timeout
+// is always past. The answer is 504 with the text `query timeout` in the buffer the JSON was begun in, which keeps
+// its content type (:1451-1457; the comparison holds the candidate's head to the oracle's, the type with it),
+// whatever else the request asks: a transition's id is looked up after the hosts' walk.
+var alertsV2TimeoutRows = []v2Req{
+	{name: "timeout", target: "/api/v3/alert_transitions?timeout=-1", status: "504", guard: dashText("query timeout")},
+	{name: "timeout-v2", target: "/api/v2/alert_transitions?timeout=-1&after=-3600&last=200&options=minify&transition=x",
+		status: "504", guard: dashText("query timeout")},
+}
+
+// alertsV2LongClass is the class of the `rules` case's hr_two, 55 bytes, and alertsV2LongInfo the info of its
+// hr_plain, 510 bytes and then a character of two. C keeps a returned transition in a struct of fixed fields
+// (api_v2_contexts_alert_transitions.c:71-111, :150-162; strncpyz): 47 bytes of a class (alertsV2CutClass), 511 of
+// an info, the last of them here the character's first byte alone, which C prints as it is (the render writes it
+// out, alertsV2Bytes). A facet's values are read before that copy (:264-282): the class whole.
+var (
+	alertsV2LongClass = "Latency_" + strings.Repeat("c", 47)
+	alertsV2CutClass  = alertsV2LongClass[:47]
+	alertsV2LongInfo  = strings.Repeat("i", 510) + "ézz"
+)
+
+// alertsV2RulesConf are the `rules` case's rules: three on the collected chart hrul.values, each `calc: $a`, and one
+// on hrul.plain, which is never collected (alertsV2RulesScenario):
+//   - hr_tpl, a template on the chart's context, with a class, a type and a component of two words, two recipients,
+//     and an info and a summary that name the chart's family: WARNING above 30, CRITICAL above 60;
+//   - hr_two, an alarm with another class (alertsV2LongClass), type and component, the recipient `silent`, and
+//     `green` and `red`, the second of which its `crit` reads: WARNING above 50;
+//   - hr_plain, an alarm with none of these and no units, which does not notify a return to CLEAR, its info
+//     alertsV2LongInfo: WARNING above 50;
+//   - hr_idle, an alarm with a delay and a repeat, whose chart has no value: its one status is UNINITIALIZED.
+var alertsV2RulesConf = `template: hr_tpl
+      on: hrul.ctx
+    calc: $a
+   every: 1s
+    warn: $this > 30
+    crit: $this > 60
+   units: things
+   class: Errors
+    type: Type One
+component: Part One
+      to: sysadmin webmaster
+    info: the template of ${family}
+ summary: tpl ${family}
+
+   alarm: hr_two
+      on: hrul.values
+    calc: $a
+   every: 1s
+   green: 20
+     red: 80
+    warn: $this > 50
+    crit: $this > $red
+   units: things
+   class: ` + alertsV2LongClass + `
+    type: Type Two
+component: Part Two
+      to: silent
+    info: two on values
+
+   alarm: hr_plain
+      on: hrul.values
+    calc: $a
+   every: 1s
+    warn: $this > 50
+ options: no-clear-notification
+    info: ` + alertsV2LongInfo + `
+
+   alarm: hr_idle
+      on: hrul.plain
+    calc: $b
+   every: 1s
+    warn: $this > 1000
+   units: idles
+   delay: up 1m down 2m multiplier 1.5 max 1h
+  repeat: warning 2m critical 30s
+ options: no-clear-notification
+    info: idle
+`
+
+// alertsV2RulesScenario is the `rules` case's plugin: hrul.plain of the context hrul.idle, never collected, then the
+// collected hrul.values of hrul.ctx with a family, through 10, 40, 70 and 10.
+func alertsV2RulesScenario() *plugin.Scenario {
+	emit := "CHART hrul.plain '' 'title' 'units' 'fam idle' 'hrul.idle' line 1000 1 '' '' ''\n" +
+		"DIMENSION b '' absolute 1 1\n"
+	sc := healthScenario(emit, "hrul.values", "hrul.ctx", []string{"a"}, map[string]int64{"a": 10}, map[string]int64{"a": 40},
+		map[string]int64{"a": 70}, map[string]int64{"a": 10})
+	healthChart(sc).Family = "fam r"
+	return sc
+}
+
+// alertsV2PlayRules plays `rules`: hrul.values through 40 (hr_tpl WARNING), 70 (hr_tpl CRITICAL, hr_two and
+// hr_plain WARNING) and 10 (all CLEAR), each compared through /api/v1/alarms?all, which does not list the alert of
+// the chart never collected; the alert log's transitions (the green anchor); then the v2 rows (alertsV2RulesRows,
+// and alertsV2RulesOneRows with each side's id of hr_idle's last entry).
+func alertsV2PlayRules(t *testing.T, h *healthPair) {
+	h.create(t)
+	want := func(tpl, other string) func(string) error {
+		return healthWant(map[string]string{"hr_tpl": tpl, "hr_two": other, "hr_plain": other})
+	}
+	h.waitOracle(t, "the chart's alerts", func() (string, error) {
+		v := h.get(0, "/api/v1/alarms?all")
+		return v, want("CLEAR", "CLEAR")(v)
+	})
+	for k, state := range [][2]string{{"WARNING", "CLEAR"}, {"CRITICAL", "WARNING"}, {"CLEAR", "CLEAR"}} {
+		h.release(t, fmt.Sprintf("p%d", k+1), k+1, healthCalcHold)
+		h.compareNow(t, fmt.Sprintf("phase %d: /api/v1/alarms?all", k+1), func(i int) string { return h.get(i, "/api/v1/alarms?all") },
+			want(state[0], state[1]))
+	}
+	h.compareNow(t, "the alert log's transitions", func(i int) string { return h.transitions(i, "") },
+		alertsV2LogHolds("hr_tpl: WARNING->CRITICAL 70 things", "hr_plain: WARNING->CLEAR 10 units", "hr_idle: REMOVED->UNINITIALIZED -"))
+	// hr_idle's last entry, each side's own: its second link (healthPair.create)
+	var idle [2]string
+	var newest int64
+	for i, side := range h.p.Each() {
+		entries, err := h.entriesAs(h.n[i], i, "/api/v1/alarm_log")
+		if err != nil {
+			t.Fatalf("%s: %v", side.Role, err)
+		}
+		for _, e := range entries {
+			if e.Name == "hr_idle" && e.OldStatus == "REMOVED" && e.Status == "UNINITIALIZED" {
+				idle[i] = e.Tid
+			}
+			if i == 0 {
+				newest = max(newest, e.When)
+			}
+		}
+		if idle[i] == "" {
+			if side.Role == Oracle {
+				t.Fatalf("oracle: its alert log has no link of hr_idle")
+			}
+			// the row is still asked, without an id: it shows what the candidate answers then
+			t.Errorf("candidate: its alert log has no link of hr_idle")
+		}
+	}
+	// the newest change is in a relative window from its second + 2 on, one more for a side a second behind
+	// (alertsV2PlayTransitions)
+	time.Sleep(time.Until(time.Unix(newest+3, 0)))
+	fam := alertsV2Family(h.n, alertsV2LogReader(h))
+	for _, req := range slices.Concat(alertsV2RulesRows(), alertsV2RulesOneRows(idle)) {
+		compareV2(t, h.p, req, fam)
+	}
+}
+
+// alertsV2RulesKeys are the members of a transition the `rules` case's guards read, and alertsV2RulesWindow its
+// seven rows as they read: newest first, the changes of one pass in the reverse of the rules' order
+// (alertsV2Window). A transition's class, type and component are its rule's (sqlite_health.c:1466, :1468; a class
+// cut at 47 bytes, alertsV2CutClass), its units the alert's, which are its chart's when the rule has none
+// (hr_plain's), and its recipient the rule's.
+var (
+	alertsV2RulesKeys   = []string{"alert", "old.status", "new.status", "new.value", "classification", "type", "component", "units", "notification.to"}
+	alertsV2RulesWindow = func() []string {
+		plain, two, tpl := " null null null units root", " "+alertsV2CutClass+" Type Two Part Two things silent",
+			" Errors Type One Part One things sysadmin webmaster"
+		return []string{"hr_plain WARNING CLEAR 10" + plain, "hr_two WARNING CLEAR 10" + two, "hr_tpl CRITICAL CLEAR 10" + tpl,
+			"hr_plain CLEAR WARNING 70" + plain, "hr_two CLEAR WARNING 70" + two, "hr_tpl WARNING CRITICAL 70" + tpl,
+			"hr_tpl CLEAR WARNING 40" + tpl}
+	}()
+)
+
+// alertsV2RulesFacets is alertsV2Facets for an answer over the `rules` case's seven rows: `status` are the options
+// of the status facet; the class, type, component, recipient and alert facets each have three options, hr_plain's
+// value, hr_two's and hr_tpl's in that order (the order the rows show them), with the counts `own` has for the
+// facet, or `each`; the node, the chart's name and the context have one, with the count `rest`.
+func alertsV2RulesFacets(status string, each [3]int, own map[string][3]int, rest int) func(Value) error {
+	three := func(id string, values ...string) string {
+		n, has := own[id]
+		if !has {
+			n = each
+		}
+		return fmt.Sprintf("%s=%d %s=%d %s=%d", values[0], n[0], values[1], n[1], values[2], n[2])
+	}
+	return alertsV2Facets(map[string]string{
+		"f_status":    status,
+		"f_class":     three("f_class", "unknown", alertsV2LongClass, "Errors"),
+		"f_type":      three("f_type", "unknown", "Type Two", "Type One"),
+		"f_component": three("f_component", "unknown", "Part Two", "Part One"),
+		"f_role":      three("f_role", "root", "silent", "sysadmin webmaster"),
+		"f_node":      fmt.Sprintf("%s(%s)=%d", parentIdentity.MachineGUID, parentIdentity.Hostname, rest),
+		"f_alert":     three("f_alert", "hr_plain", "hr_two", "hr_tpl"),
+		"f_instance":  fmt.Sprintf("hrul.values=%d", rest),
+		"f_context":   fmt.Sprintf("hrul.ctx=%d", rest),
+	})
+}
+
+// alertsV2RulesRows are the `rules` case's rows that ask both sides one target. The guards read what C answers
+// (probed C against C, 2026-10-08):
+//   - a transition's texts: its rule's class, type and component from `alert_hash`, the class cut at 47 bytes; the
+//     info cut at 511, inside a character; the summary and the info with their variables replaced; the units of a
+//     rule without any are the chart's; a return to CLEAR that is not notified has the flag NO_CLEAR_NOTIFICATION
+//     and no notification second (health/health_json.c:308-335);
+//   - the facets over several values each (alertsV2TransitionsRows has the rules): a value is matched whole, with
+//     its blanks (a recipient list is one value), whatever the case; a `+` of the query is a blank
+//     (libnetdata/url/url.c:229; web/server/web_client.c:2119 decodes the query before it is split); `unknown`
+//     selects the rows without the
+//     member; the class is matched uncut (alertsV2LongClass), so the 47 bytes a transition prints select nothing;
+//     two facets that select different rows leave nothing matched, and each shows the rows the other selects;
+//   - the rules (`options=config`): a template's `name` is null and its `on` the template's name, its selector
+//     type `template` (api_v2_contexts_alert_config.c:18, :24-26: the writer reads the row's `alarm` as the name and
+//     its `template` as the target; sqlite_health.c:914-922 stores a template's name there); a rule's `crit` that
+//     read `$red` has the number in its text, and no rule has `green` or `red` (health/health_config.c:477-493;
+//     sqlite_health.c:937-939 stores a NaN for both), which `options=debug` prints null (hr_two's, asked alone); a
+//     rule without units has null there; the class whole;
+//   - `context=` of the other context finds nothing, `scope_contexts=` of it everything: the scope selects the
+//     host, which has that context, and the statement reads no scope (database/contexts/api_v2_contexts.c:658-674;
+//     sqlite_health.c:1552-1553).
+func alertsV2RulesRows() []v2Req {
+	const r = "/api/v3/alert_transitions?after=-3600"
+	w := alertsV2RulesWindow
+	pick := func(at ...int) alertsV2Rows {
+		out := []string{}
+		for _, i := range at {
+			out = append(out, w[i])
+		}
+		return alertsV2Rows{member: "transitions", keys: alertsV2RulesKeys, items: out}
+	}
+	st := func(clear, warning, critical int) string {
+		return fmt.Sprintf("CLEAR=%d WARNING=%d CRITICAL=%d", clear, warning, critical)
+	}
+	n3 := func(plain, two, tpl int) [3]int { return [3]int{plain, two, tpl} }
+	every := alertsV2RulesFacets(st(3, 3, 1), n3(2, 2, 3), nil, 7)
+	row := func(name, query, items string, changes alertsV2Rows, facets func(Value) error, more ...dashFact) v2Req {
+		return v2Req{name: name, target: r + query, status: "200", guard: dashGuard([]dashFact{
+			alertsV2Guard(alertsV2Items(items), changes), facets}, more)}
+	}
+	is := alertsV2Is
+	all := "&last=200&options=minify"
+	class := map[string][3]int{"f_class": n3(2, 2, 3)}
+	// the facets over hr_two's two rows alone: the statement's own filter
+	two := alertsV2Facets(map[string]string{
+		"f_status": "CLEAR=1 WARNING=1", "f_class": alertsV2LongClass + "=2", "f_type": "Type Two=2", "f_component": "Part Two=2",
+		"f_role": "silent=2", "f_node": parentIdentity.MachineGUID + "(" + parentIdentity.Hostname + ")=2", "f_alert": "hr_two=2",
+		"f_instance": "hrul.values=2", "f_context": "hrul.ctx=2"})
+	const (
+		quiet    = `["PROCESSED","SAVED","NO_CLEAR_NOTIFICATION"]`
+		template = `{"type":"template","on":"hr_tpl","families":null,"host_labels":null,"chart_labels":null}`
+		notify   = `{"type":"agent","exec":null,"to":%s,"delay":"multiplier 1.0 ","repeat":null,"options":%s}`
+	)
+	return []v2Req{
+		row("window", all, "7 7 7 200 0 0", pick(0, 1, 2, 3, 4, 5, 6), every,
+			is(quiet, "transitions", "[0]", "notification", "flags"), is("0", "transitions", "[0]", "notification", "when"),
+			is(`["PROCESSED","UPDATED","EXEC_RUN","SAVED","NO_CLEAR_NOTIFICATION"]`, "transitions", "[3]", "notification", "flags"),
+			is(`"tpl fam r"`, "transitions", "[2]", "summary"), is(`"the template of fam r"`, "transitions", "[2]", "info"),
+			is(`""`, "transitions", "[1]", "summary"),
+			is(`"`+alertsV2LongInfo[:510]+string(alertsV2Marker)+`c3"`, "transitions", "[0]", "info")),
+		row("config", "&last=3&options=minify,config", "7 7 3 3 0 4", pick(0, 1, 2), every,
+			alertsV2RulesFirstSeen("hr_plain", "hr_two", "null"),
+			is(template, "configurations", "[2]", "selectors"),
+			is(`{"warn":"$this > 50","crit":"$this > 80"}`, "configurations", "[1]", "status"),
+			is(`"`+alertsV2LongClass+`"`, "configurations", "[1]", "class"),
+			is(fmt.Sprintf(notify, `"silent"`, "null"), "configurations", "[1]", "notification"),
+			is(`{"units":null,"update_every":1,"calc":"$a"}`, "configurations", "[0]", "value"),
+			is(`{"warn":"$this > 50"}`, "configurations", "[0]", "status"),
+			is(fmt.Sprintf(notify, `"root"`, `"no-clear-notification"`), "configurations", "[0]", "notification"),
+			is(`"`+alertsV2LongInfo+`"`, "configurations", "[0]", "info"),
+			is(`"tpl ${family}"`, "configurations", "[2]", "summary")),
+		row("config-debug", "&last=1&alert=hr_two&options=minify,config,debug", "2 2 1 1 0 1", pick(1), two,
+			alertsV2RulesFirstSeen("hr_two"),
+			is(`{"green":null,"red":null,"warn":"$this > 50","crit":"$this > 80"}`, "configurations", "[0]", "status")),
+		row("config-mcp", "&last=3&options=minify,config,mcp", "7 7 3 3 0 4", pick(0, 1, 2), alertsV2Facets(nil),
+			alertsV2RulesFirstSeen(), dashKeys(alertsV2McpKeys, "transitions", "[0]"),
+			is(`{"warn":"$this > 50","crit":"$this > 80"}`, "configurations", "[1]", "status"),
+			is(template, "configurations", "[2]", "selectors"),
+			alertsV2Guard(alertsV2Rows{member: "transitions", keys: []string{"gi", "alert", "when", "instance", "notification.when"},
+				items: []string{"G hr_plain WHEN hrul.values 0", "G hr_two WHEN hrul.values EXEC_RUN", "G hr_tpl WHEN hrul.values EXEC_RUN"}})),
+
+		row("facet-class", all+"&f_class=errors", "7 3 3 200 0 0", pick(2, 5, 6),
+			alertsV2RulesFacets(st(1, 1, 1), n3(0, 0, 3), class, 3)),
+		row("facet-cross", all+"&f_class=Errors&f_type=Type%20Two", "7 0 0 200 0 0", pick(),
+			alertsV2RulesFacets(st(0, 0, 0), n3(0, 0, 0), map[string][3]int{"f_class": n3(0, 2, 0), "f_type": n3(0, 0, 3)}, 0)),
+		row("facet-blank", "&last=1&options=minify&f_type=Type+One&f_role=sysadmin%20webmaster", "7 3 1 1 0 2", pick(2),
+			alertsV2RulesFacets(st(1, 1, 1), n3(0, 0, 3), nil, 3)),
+		row("facet-word", all+"&f_role=sysadmin", "7 0 0 200 0 0", pick(),
+			alertsV2RulesFacets(st(0, 0, 0), n3(0, 0, 0), map[string][3]int{"f_role": n3(2, 2, 3)}, 0)),
+		row("facet-unknown", "&last=1&options=minify&f_class=unknown", "7 2 1 1 0 1", pick(0),
+			alertsV2RulesFacets(st(1, 1, 0), n3(2, 0, 0), class, 2)),
+		row("facet-negative", "&last=1&options=minify&f_class=!Errors%7C*", "7 4 1 1 0 3", pick(0),
+			alertsV2RulesFacets(st(2, 2, 0), n3(2, 2, 0), class, 4)),
+		row("facet-long", "&last=1&options=minify&f_class="+alertsV2LongClass, "7 2 1 1 0 1", pick(1),
+			alertsV2RulesFacets(st(1, 1, 0), n3(0, 2, 0), class, 2)),
+		row("facet-cut", all+"&f_class="+alertsV2CutClass, "7 0 0 200 0 0", pick(),
+			alertsV2RulesFacets(st(0, 0, 0), n3(0, 0, 0), class, 0)),
+
+		row("context-other", all+"&context=hrul.idle", "0 0 0 200 0 0", pick(), alertsV2Facets(map[string]string{})),
+		row("scope-contexts-other", "&last=1&options=minify&scope_contexts=hrul.idle", "7 7 1 1 0 6", pick(0), every),
+		row("alert-context", all+"&alert=hr_two&context=hrul.ctx", "2 2 2 200 0 0", pick(1, 4), two),
+	}
+}
+
+// alertsV2RulesOneRows are the `rules` case's rows that name hr_idle's last entry, each side's own id: the link of
+// an alert whose chart has no value, from REMOVED to UNINITIALIZED, which no window lists and its id finds
+// (sqlite_health.c:1476-1479), with its chart, its context and its rule: an alarm on the chart's id, with its
+// delay and its repeat as C stores their texts (sqlite_health.c:955-982), the entry flagged RECURRING.
+func alertsV2RulesOneRows(idle [2]string) []v2Req {
+	const one = "/api/v3/alert_transitions?options=minify,config&transition="
+	return []v2Req{
+		{name: "idle", target: one + "<hr_idle's last link>", targets: [2]string{one + idle[0], one + idle[1]}, status: "200",
+			guard: dashGuard([]dashFact{
+				alertsV2Guard(alertsV2Items("1 1 1 1 0 0"),
+					alertsV2Rows{member: "transitions", keys: append(slices.Clone(alertsV2RulesKeys), "instance", "context"),
+						items: []string{"hr_idle REMOVED UNINITIALIZED 0 null null null idles root hrul.plain hrul.idle"}}),
+				alertsV2Facets(map[string]string{"f_status": "UNINITIALIZED=1", "f_class": "unknown=1", "f_type": "unknown=1",
+					"f_component": "unknown=1", "f_role": "root=1", "f_node": parentIdentity.MachineGUID + "(" + parentIdentity.Hostname + ")=1",
+					"f_alert": "hr_idle=1", "f_instance": "hrul.plain=1", "f_context": "hrul.idle=1"}),
+				alertsV2RulesFirstSeen("hr_idle"),
+				dashIs(`["PROCESSED","RECURRING","SAVED"]`, "transitions", "[0]", "notification", "flags"),
+				dashIs(`{"type":"alarm","on":"hrul.plain","families":null,"host_labels":null,"chart_labels":null}`,
+					"configurations", "[0]", "selectors"),
+				dashIs(`{"type":"agent","exec":null,"to":"root","delay":"up 60s down 120s multiplier 1.5 max 3600s",`+
+					`"repeat":"warning 120s critical 30s","options":"no-clear-notification"}`, "configurations", "[0]", "notification"),
+			})},
+	}
+}
+
+// The `rules-order` case (D234 F5): its rules, rows, guards and plugin.
+
+// alertsV2RulesOrderConf are two alarms on one chart, hs_calc stored first (alert_hash rowid 1) and hs_max second
+// (rowid 2). hs_max's `lookup: max -3s unaligned` holds a dropped value two to three seconds more, so its return to
+// CLEAR is the newest transition, and its rule the one with the higher rowid. Both go no higher than WARNING (the
+// window's statement takes a transition with WARNING or CRITICAL on a side, sqlite_health.c:1474).
+const alertsV2RulesOrderConf = `# the rules-order case: two alarms on hsig.values
+ alarm: hs_calc
+    on: hsig.values
+  calc: $a
+ every: 1s
+  warn: $this > 50
+  crit: $this > 90
+ units: things
+  info: the last value of a
+
+ alarm: hs_max
+    on: hsig.values
+lookup: max -3s unaligned of a
+ every: 1s
+  warn: $this > 50
+  crit: $this > 90
+ units: things
+  info: the maximum of a over 3 seconds
+`
+
+// alertsV2RulesOrderFull is what the case's window lists over the whole run, newest first: each alert's return to
+// CLEAR, then its change to WARNING (alertsV2TransitionKeys). hs_max's return to CLEAR is the newest of the four.
+var alertsV2RulesOrderFull = []string{
+	"hs_max WARNING CLEAR 10", "hs_calc WARNING CLEAR 10", "hs_max CLEAR WARNING 70", "hs_calc CLEAR WARNING 70",
+}
+
+// alertsV2RulesOrderCut is the same window ended at the second of hs_max's return to CLEAR
+// (alertsV2RulesOrderCutEnd), which leaves that one change out: three rows, whose rules first appear in the order
+// [hs_calc, hs_max].
+var alertsV2RulesOrderCut = []string{
+	"hs_calc WARNING CLEAR 10", "hs_max CLEAR WARNING 70", "hs_calc CLEAR WARNING 70",
+}
+
+// alertsV2RulesOrderGuards are the three rows' guards. Each holds the transitions in their order (newest first), the
+// rules of `configurations[]` by name in their order, and the counters:
+//   - `first-seen` wants the rules in the order of their first appearance in transitions[]: [hs_max, hs_calc];
+//   - `rowid` wants [hs_calc, hs_max] under the same transitions: what C answers once a stop has written
+//     sqlite_stat1 saying alert_hash holds two rows (the close's `PRAGMA optimize`,
+//     database/sqlite/sqlite_functions.c:672);
+//   - `cut` wants [hs_calc, hs_max] where that is the order of first appearance too.
+//
+// The Rust build lists the rules in the order of first appearance always, so on it `rowid` differs from C at
+// `configurations[]`, and there only, until `alert_configs` follows C's join.
+//
+// What `rowid` cannot tell: that C's order is alert_hash's rowid order rests on C's plan (`SCAN ah`, `SCAN t`) and on
+// the health oracle's C-made vectors, not on this row. Here the rowid order, the order of the rules' hash ids
+// (`cbc27ceb…` before `f090fc72…`) and the order of their names are one, [hs_calc, hs_max]. Three wrong candidates
+// would pass it: one that lists the rules by hash id, one that lists them by name, and one that lists them in
+// alert_hash's order whenever statistics exist (C does so only for a table of one or two rules).
+func alertsV2RulesOrderGuards() map[string]func(Value) error {
+	items := []string{"evaluated", "matched", "returned", "max_to_return", "before", "after"}
+	tr := func(lines []string) alertsV2Rows {
+		return alertsV2Rows{member: "transitions", keys: alertsV2TransitionKeys, items: lines}
+	}
+	cfg := func(names ...string) alertsV2Rows {
+		return alertsV2Rows{member: "configurations", keys: []string{"name"}, items: names}
+	}
+	it := func(n int) alertsV2Rows {
+		return alertsV2Rows{member: "items", keys: items, items: []string{fmt.Sprintf("%d %d %d 200 0 0", n, n, n)}}
+	}
+	return map[string]func(Value) error{
+		"first-seen": alertsV2Guard(tr(alertsV2RulesOrderFull), cfg("hs_max", "hs_calc"), it(4)),
+		"rowid":      alertsV2Guard(tr(alertsV2RulesOrderFull), cfg("hs_calc", "hs_max"), it(4)),
+		"cut":        alertsV2Guard(tr(alertsV2RulesOrderCut), cfg("hs_calc", "hs_max"), it(3)),
+	}
+}
+
+// alertsV2RulesOrderScenario is the case's plugin: the chart, then 10, 70 and 10 on `a` (CLEAR, WARNING, CLEAR). Its
+// second start waits for a file nothing makes: the second run has no chart, so HEALTH makes no pass and adds no entry
+// (the endpoint lists localhost's stored transitions all the same: a host is selected without a walk of its
+// contexts).
+func alertsV2RulesOrderScenario() *plugin.Scenario {
+	sc := healthValues("hsig.values", "hsig.ctx", []string{"a"},
+		map[string]int64{"a": 10}, map[string]int64{"a": 70}, map[string]int64{"a": 10})
+	sc.Starts = append(sc.Starts, plugin.Start{Steps: []plugin.Step{{WaitFile: "rules-order-never"}}})
+	return sc
+}
+
+// alertsV2RulesOrderCutEnd is the second of hs_max's newest change from WARNING to CLEAR in an alert log (an
+// `/api/v1/alarm_log` body): where the `cut` row ends its window. A window ends at its last second's first
+// microsecond (sqlite_health.c:1567), and an entry's global id is read after the pass's clock gave its `when`
+// (health/health_log.c:226), so it is past that microsecond: hs_max's change is left out. hs_calc's return to CLEAR
+// is two seconds or more older and stays in, whichever second its own global id fell in. 0 when the log holds no
+// such entry.
+func alertsV2RulesOrderCutEnd(log []byte) int64 {
+	var entries []healthEntry
+	if json.Unmarshal(log, &entries) != nil {
+		return 0
+	}
+	when := int64(0)
+	for _, e := range entries {
+		if e.Name == "hs_max" && e.OldStatus == "WARNING" && e.Status == "CLEAR" && e.When > when {
+			when = e.When
+		}
+	}
+	return when
+}
+
+// alertsV2RulesOrderWindow is the request of the case's `first-seen` and `rowid` rows: the last ten minutes'
+// transitions with their rules.
+const alertsV2RulesOrderWindow = "/api/v2/alert_transitions?after=-600&last=200&options=minify,config"
+
+// alertsV2RulesOrderRows are the case's three rows, each with its guard (alertsV2RulesOrderGuards); ends are each
+// side's own end of the `cut` row's window (alertsV2RulesOrderCutEnd).
+func alertsV2RulesOrderRows(ends [2]int64) []v2Req {
+	guards := alertsV2RulesOrderGuards()
+	var cut [2]string
+	for i := range cut {
+		cut[i] = fmt.Sprintf("/api/v2/alert_transitions?after=-600&before=%d&last=200&options=minify,config", ends[i])
+	}
+	return []v2Req{
+		{name: "first-seen", target: alertsV2RulesOrderWindow, status: "200", guard: guards["first-seen"]},
+		{name: "rowid", target: alertsV2RulesOrderWindow, status: "200", guard: guards["rowid"]},
+		{name: "cut", target: cut[0], targets: cut, status: "200", guard: guards["cut"]},
+	}
+}
+
+// alertsV2RulesOrderCase is the `rules-order` case (D234 F5): what `configurations[]` lists after a restart.
+//
+// The first run takes hs_calc and hs_max to WARNING and back to CLEAR (hs_max's return is the newest transition),
+// waits for the logs and the unclaimed queue so that the stop drops nothing, and asks `first-seen`: no statistics
+// exist yet, and both agents list the rules in the order of their first appearance in transitions[].
+//
+// Then both agents stop (C's close runs `PRAGMA optimize`, database/sqlite/sqlite_functions.c:672, which writes
+// sqlite_stat1: alert_hash holds two rows) and start again on their own directories. The second run collects no
+// chart, so HEALTH makes no pass and the alert log in SQLite is the first run's. The answers are not the first run's
+// in one member: a rule's `notification.to` prints "" where it printed "root", since localhost's default recipient
+// is set by HEALTH's first pass too (health/health_event_loop.c:269; api_v2_contexts_alert_config.c:88); both agents
+// print "", and the rows hold it.
+//
+// Until HEALTH's first pass of a run C serves an empty `/api/v1/alarm_log` (the log's limit is the host's
+// `health_log.max`, set by that pass: health/health_event_loop.c:266, sqlite_health.c:1074), so the answers' ids and
+// clocks are read against each side's log as it served it at the end of the first run. `rowid` asks the first
+// request again: C now scans alert_hash and lists the rules in its order (sqlite_health.c:1658-1664: a join without
+// an order, whose plan follows the statistics), where the first rule of transitions[] is the one stored second.
+// `cut` ends the window at the second of hs_max's return to CLEAR, each side's own (alertsV2RulesOrderCutEnd): the
+// rules' first appearance is then [hs_calc, hs_max] as well, and both orders give one answer.
+//
+// A stop that skips the close: C has one, when SQLite's teardown is not safe (sqlite_functions.c:737-750), and the
+// close's `PRAGMA optimize` goes with it. By reading, the next open's `PRAGMA optimize=0x10002` (:277) then writes
+// the statistics (not probed); if it did not, `rowid` would fail at the oracle's guard, loudly.
+//
+// Not compared: the live `/api/v1/alarm_log` after the restart (C serves `[]`).
+func alertsV2RulesOrderCase() healthCase {
+	var logs [2][]byte
+	recorded := func(i int) ([]byte, error) {
+		if logs[i] == nil {
+			return nil, fmt.Errorf("the alert log was not read before the stop")
+		}
+		return logs[i], nil
+	}
+	return healthCase{
+		conf:   alertsV2RulesOrderConf,
+		dbMode: "alloc",
+		sc:     alertsV2RulesOrderScenario(),
+		play: func(t *testing.T, h *healthPair) {
+			h.create(t)
+			h.release(t, "p1", 1, healthCalcHold)
+			h.release(t, "p2", 2, healthCalcHold)
+			for _, name := range []string{"hs_calc", "hs_max"} {
+				h.processed(t, "the first run's return to CLEAR", name, "CLEAR")
+			}
+			h.waitCandidate("/api/v1/alarm_log", func(i int) string { return h.transitions(i, "") })
+			time.Sleep(healthQueueHold)
+			compareV2(t, h.p, alertsV2RulesOrderRows([2]int64{})[0], alertsV2Family(h.n, alertsV2LogReader(h)))
+			for i, side := range h.p.Each() {
+				b, err := alertsV2LogReader(h)(i)
+				if err != nil && side.Role == Oracle {
+					t.Fatalf("oracle: %v", err)
+				}
+				logs[i] = b
+			}
+		},
+		again: func(t *testing.T, h *healthPair) {
+			var ends [2]int64
+			for i, side := range h.p.Each() {
+				if ends[i] = alertsV2RulesOrderCutEnd(logs[i]); ends[i] == 0 && side.Role == Oracle {
+					t.Fatalf("oracle: its alert log has no change of hs_max from WARNING to CLEAR")
+				}
+			}
+			fam := alertsV2Family(h.n, recorded)
+			for _, req := range alertsV2RulesOrderRows(ends)[1:] {
+				compareV2(t, h.p, req, fam)
+			}
+		},
 	}
 }
