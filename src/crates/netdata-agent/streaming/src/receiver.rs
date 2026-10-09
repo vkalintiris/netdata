@@ -2546,8 +2546,8 @@ mod tests {
     /// The host keeps the receiver's own account of why it ended (`stream-receiver.c:1498`). A removal's reason is
     /// that account when nothing was said before (`:681`); what was said first stays (`:334-338`): a stopper's forced
     /// reason over the "signaled to stop" the thread then disconnects with (`:1526-1530`, `:344`), and a failed
-    /// write on the opcode path, which removes nothing (`:957`), over the reason of the removal that follows; the
-    /// stream thread's shutdown forces its own over anything (`:1337`).
+    /// write on the opcode path, which removes nothing (`:957`), over the reason of the removal that follows, while
+    /// it stays under a stopper's given before; the stream thread's shutdown forces its own over anything (`:1337`).
     #[test]
     fn the_host_keeps_the_receiver_s_own_exit_reason() {
         use std::io::Write;
@@ -2591,6 +2591,19 @@ mod tests {
         s.turn(Duration::from_millis(50));
         assert!(host.receiver().is_none());
         assert_eq!(host.receiver_status().reason, said);
+
+        // a failed write after a stopper forced its reason leaves the stopper's
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, _host, slot, theirs) = child(0xb5, crate::caps::V2, &pool, &hosts, &connector);
+        let stale = Reason::RCV_DISCONNECT_STALE_RECEIVER.0;
+        s.with(|w, cx| {
+            w.attach(cx, attached);
+            assert_eq!(slot.set_exit_reason(stale, true), stale);
+            drop(theirs);
+            assert_eq!(slot.send_to_child(b"x\n", Traffic::Functions), 2);
+            w.drain_inline(cx);
+        });
+        assert_eq!(slot.exit_reason(), stale);
 
         // the thread's shutdown forces its own reason over one given before
         let (mut s, pool, hosts, connector) = stepper();

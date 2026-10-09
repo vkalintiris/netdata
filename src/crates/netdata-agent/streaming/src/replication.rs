@@ -840,6 +840,11 @@ mod tests {
         assert_eq!(shape(&full), (6, vec!["false".to_string(), (T + 2).to_string(), (T + 8).to_string()]));
         // the sender's latest completed end is each query's own, as REND prints it: the last one's, not the largest
         assert_eq!(s.replication().stamps().1, T + 8);
+        // and the sender's status reads both stamps in their places
+        let (oldest, latest) = s.replication().stamps();
+        assert_ne!(oldest, latest);
+        let status = netdata_agent_rrd::upstream::Upstream::status(&*s);
+        assert_eq!((status.oldest_request_after_s, status.latest_completed_before_s), (oldest, latest));
         // the chart's line and one step
         let one_step: usize = full[..3].iter().map(|l| l.len() + 1).sum();
         let at = answer(4 * one_step);

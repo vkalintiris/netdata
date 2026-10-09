@@ -890,11 +890,14 @@ mod tests {
         assert_eq!((s.db.liveness, s.db.last_time_s, s.ingest.since_s), (DbLiveness::Live, connected + 5, connected));
         assert_eq!((s.db.metrics, s.ingest.metrics), (1, 1));
 
-        // a chart of it replicates: the status says so, with the count, in the basic status too
+        // a chart of it replicates: the status says so, with the count and the stored completion, in the basic
+        // status too
         child.replicating_charts_plus_one();
+        child.set_replication_percent(37.5);
         let s = full(&child, connected + 5);
         assert_eq!(s.ingest.status, IngestStatus::Replicating);
-        assert_eq!((s.ingest.replication.in_progress, s.ingest.replication.instances), (true, 1));
+        assert_eq!(s.ingest.replication, Replication { in_progress: true, completion: 37.5, instances: 1 });
+        child.set_replication_percent(100.0);
         child.replicating_charts_minus_one();
         assert_eq!(full(&child, connected + 5).ingest.status, IngestStatus::Online);
 
@@ -919,6 +922,8 @@ mod tests {
         assert_eq!(child.set_receiver(slot_with(0x43)), Attach::Attached);
         let s = full(&child, disconnected + 5);
         assert_eq!((s.ingest.kind, s.ingest.status, s.ingest.id), (IngestType::Child, IngestStatus::Replicating, 2));
+        // no chart is in replication: C's in_progress is a count above 0 (`:216`)
+        assert_eq!(s.ingest.replication, Replication { in_progress: false, completion: 100.0, instances: 0 });
         assert_eq!((s.db.status, s.db.liveness), (DbStatus::Queryable, DbLiveness::Stale));
         assert_eq!((s.db.metrics, s.ingest.metrics, s.ingest.reason), (1, 0, 0x43));
     }
@@ -1006,20 +1011,22 @@ mod tests {
         };
         assert_eq!(full(&host, T0).stream, online);
 
-        // two charts replicate: complete while nothing was asked; then half the window from the oldest start asked
-        host.sender_replicating_charts_plus_one();
-        host.sender_replicating_charts_plus_one();
-        let replicating = |completion| Stream {
+        // one chart replicates, then two: complete while nothing was asked; then half the window from the oldest
+        // start asked
+        let replicating = |completion, instances| Stream {
             status: StreamStatus::Replicating,
-            replication: Replication { in_progress: true, completion, instances: 2 },
+            replication: Replication { in_progress: true, completion, instances },
             ..online.clone()
         };
-        assert_eq!(full(&host, T0).stream, replicating(100.0));
+        host.sender_replicating_charts_plus_one();
+        assert_eq!(full(&host, T0).stream, replicating(100.0, 1));
+        host.sender_replicating_charts_plus_one();
+        assert_eq!(full(&host, T0).stream, replicating(100.0, 2));
         {
             let mut s = recorder.status.lock().unwrap();
             (s.oldest_request_after_s, s.latest_completed_before_s) = (T0 - 100, T0 - 50);
         }
-        assert_eq!(full(&host, T0).stream, replicating(50.0));
+        assert_eq!(full(&host, T0).stream, replicating(50.0, 2));
 
         recorder.status.lock().unwrap().connected = false;
         assert_eq!(full(&host, T0).stream, offline);

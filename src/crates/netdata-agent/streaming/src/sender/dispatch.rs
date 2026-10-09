@@ -1107,6 +1107,20 @@ mod tests {
         assert!(up.status().compression);
     }
 
+    /// The stream's reason is the host's status reason (`host->stream.snd.status.reason`, `rrdhost-status.c:283`),
+    /// which the connector and a removal write, not the reason the sender's last connection exited with.
+    #[test]
+    fn the_status_says_the_host_s_reason_not_the_exit_s() {
+        let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000ce", false, info("127.0.0.1:1", "key")));
+        let mut l = linked(&host, caps::V2);
+        let up = Arc::clone(host.upstream().expect("a sender"));
+        l.s.with(|w, _| {
+            let mut state = w.senders[0].as_ref().expect("dispatched").sender.lock();
+            (state.status_reason, state.exit_reason) = (Reason::SP_CONNECTION_REFUSED, Reason::DISCONNECT_SOCKET_ERROR);
+        });
+        assert_eq!(up.status().reason, Reason::SP_CONNECTION_REFUSED.0);
+    }
+
     /// The status takes the sender's state and then its commit lock; commits take the commit lock alone. Both at once
     /// on two threads end (a commit path that took the state inside the commit lock would deadlock here).
     #[test]

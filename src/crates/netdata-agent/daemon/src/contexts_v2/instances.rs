@@ -383,6 +383,9 @@ mod tests {
                 r#""capabilities":["VCAPS","HLABELS","CLABELS","INTERPOLATED"]}}"#
             )
         );
+        // a child that returned and has not collected yet replicates with no chart in progress: still printed
+        s.ingest.replication = Replication { in_progress: false, completion: 37.5, instances: 0 };
+        assert!(tail(&s).starts_with(r#","replication":{"in_progress":false,"completion":37.5,"instances":0},"source":"#));
         s.ingest.status = IngestStatus::Initializing;
         assert_eq!(tail(&s), "}");
         s.ingest.status = IngestStatus::Offline;
@@ -403,7 +406,9 @@ mod tests {
     /// A host that streams (`rrdhost_sender_to_json()`, `api_v2_contexts.c:382-433`): `stream` between `ingest` and
     /// `ml`; the destination's two ends and capabilities, the bytes by traffic type, each parent at the parents' clock
     /// (a usable one with its next check and its place in the last pass, a banned one with the ban alone), then the
-    /// path. Offline it says why; `hops` goes through C's unsigned writer.
+    /// path. Online it says no reason, offline it says why; `hops` goes through C's unsigned writer; with rfc3339 the
+    /// stream's time is a UTC text. A parent placed in a pass prints its place whether or not it was drawn at random;
+    /// a banned one the text of its ban, the localhost's first, then a parent's, then an erroneous one's.
     #[test]
     fn a_streaming_host_s_stream_is_cs() {
         let usable = ParentStatus {
@@ -472,6 +477,24 @@ mod tests {
         );
         let text = rendered(&s, false);
         assert!(text.contains(&want), "{text}\n{want}");
+        let text = rendered(&s, true);
+        assert!(text.contains(r#""status":"replicating","since":"2026-10-06T18:42:30Z","age":42,"#), "{text}");
+
+        s.stream.status = StreamStatus::Online;
+        s.stream.replication = Replication { in_progress: false, completion: 37.5, instances: 0 };
+        let text = rendered(&s, false);
+        let want = r#""status":"online","since":1791312150,"age":42,"replication":{"in_progress":false,"#;
+        assert!(text.contains(want), "{text}");
+
+        s.stream.parents[0].random = false;
+        assert!(rendered(&s, false).contains(r#""batch":1,"order":2,"random":false,"info":true,"#));
+        s.stream.parents[1].banned_for_this_session = true;
+        assert!(rendered(&s, false).contains(r#""ban":"it is the localhost"}"#));
+        s.stream.parents[1].banned_permanently = false;
+        assert!(rendered(&s, false).contains(r#""ban":"it is our parent"}"#));
+        s.stream.parents[1].banned_for_this_session = false;
+        s.stream.parents[1].banned_temporarily_erroneous = true;
+        assert!(rendered(&s, false).contains(r#""ban":"it is erroneous"}"#));
 
         s.stream.status = StreamStatus::Offline;
         s.stream.hops = -1;

@@ -2866,8 +2866,8 @@ mod tests {
         );
     }
 
-    /// `pluginsd_host_claim_as_local_vnode()`: no receiver, a receiver that leaves when told, one that does not (C's
-    /// record after 2 s).
+    /// `pluginsd_host_claim_as_local_vnode()`: no receiver, a receiver that leaves when told (with the claim's own
+    /// reason, which the host keeps), one that does not (C's record after 2 s).
     #[test]
     fn a_claim_evicts_a_receiver_as_c() {
         let hosts = Hosts::new(Host::new("guid-l", true, info("l")));
@@ -2885,6 +2885,8 @@ mod tests {
             host.claim_as_local_vnode()
         });
         assert_eq!(claim, Claim::Evicted);
+        let claimed = stop_reason::LOCAL_VNODE_CLAIMED;
+        assert_eq!((leaving.exit_reason(), host.receiver_status().reason), (claimed, claimed));
         let stuck = Arc::new(ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {})));
         assert_eq!(host.set_receiver(Arc::clone(&stuck)), Attach::Attached);
         let (claim, records) = netdata_agent_log::capture(|| host.claim_as_local_vnode());

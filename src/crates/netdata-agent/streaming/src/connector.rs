@@ -852,7 +852,7 @@ pub(crate) mod tests {
 
     /// The free at a host's cleanup (HOST CLEANUP) takes a queued sender off the connector at once, without the
     /// connector's record, and the host streams no more; the revival sets the same sender up with its new key and
-    /// parents (D118).
+    /// parents (D118), published at once, and since the agent's start as C's new sender is.
     #[test]
     fn a_free_takes_a_queued_sender_off_the_connector_and_a_revival_sets_it_up_again() {
         let (_pool, c) = connector();
@@ -868,10 +868,18 @@ pub(crate) mod tests {
         let texts: Vec<String> = records.iter().filter_map(|r| r.message.clone()).collect();
         assert!(!texts.iter().any(|t| t.contains("removed host") || t.contains("giving up")), "{texts:?}");
         assert!(s.parents().list.is_empty());
+        assert_ne!(netdata_agent_rrd::upstream::Upstream::status(&*s).since_s, 0, "the removal's time");
         host.update(&info("127.0.0.2:2", "key-b"), 1, 3600, false, 0, 0);
         // a stop flag left from before cannot reach the revived sender
         s.shutdown.store(true, Ordering::Relaxed);
         assert!(Sender::attach(&host, &c).is_none(), "set up again, not created");
+        // before any other hold of the parents
+        let published: Vec<String> = netdata_agent_rrd::upstream::Upstream::published_parents(&*s)
+            .into_iter()
+            .map(|d| d.destination)
+            .collect();
+        assert_eq!(published, ["127.0.0.2:2"]);
+        assert_eq!(netdata_agent_rrd::upstream::Upstream::status(&*s).since_s, 0);
         assert!(!s.shutdown.load(Ordering::Relaxed));
         assert!(host.upstream().is_some());
         assert_eq!(s.lock().api_key, "key-b");
