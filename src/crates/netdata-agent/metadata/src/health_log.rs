@@ -153,12 +153,19 @@ static HOST_LISTS: AtomicU64 = AtomicU64::new(0);
 
 const USEC_PER_SEC: i64 = 1_000_000;
 
-// C selects through a temporary table `c_<pointer>` that holds the request's hashes; this asks hash by hash
-const SQL_SEARCH_CONFIG_LIST: &str = "SELECT ah.hash_id, alarm, template, on_key, class, component, type, lookup, \
-     every,  units, calc, families, green, red, warn, crit,  exec, to_key, info, delay, options, repeat, \
-     host_labels, p_db_lookup_dimensions, p_db_lookup_method,  p_db_lookup_options, p_db_lookup_after, \
-     p_db_lookup_before, p_update_every, source, chart_labels, summary,   time_group_condition, time_group_value, \
-     dims_group, data_source  FROM alert_hash ah where ah.hash_id = @hash_id";
+/// The temporary tables of the rule lists, one name per call (C's `c_%p`, the address of the request's dictionary).
+static CONFIG_LISTS: AtomicU64 = AtomicU64::new(0);
+
+/// `SQL_SEARCH_CONFIG_LIST` over the rule list `table`: no ORDER BY, so the rows come as SQLite's plan gives them.
+fn sql_search_config_list(table: &str) -> String {
+    format!(
+        "SELECT ah.hash_id, alarm, template, on_key, class, component, type, lookup, every,  units, calc, families, \
+         green, red, warn, crit,  exec, to_key, info, delay, options, repeat, host_labels, p_db_lookup_dimensions, \
+         p_db_lookup_method,  p_db_lookup_options, p_db_lookup_after, p_db_lookup_before, p_update_every, source, \
+         chart_labels, summary,   time_group_condition, time_group_value, dims_group, data_source  FROM alert_hash \
+         ah, {table} t where ah.hash_id = t.hash_id"
+    )
+}
 
 // sqlite_aclk_alert.c
 const SQL_SELECT_VARIABLE_ALERT_BY_UNIQUE_ID: &str = "SELECT hld.unique_id FROM health_log hl, alert_hash ah, \
@@ -517,15 +524,15 @@ fn transition_row<'r>(row: &'r Row<'_>) -> Result<TransitionRow<'r>, BadId> {
     })
 }
 
-/// The host list of a window as C fills it: one row per host; an insert that fails is reported and the others go
-/// on. False when the insert cannot be prepared (reported).
-fn fill_host_list(c: &Connection, table: &str, hosts: &[[u8; 16]]) -> bool {
-    let Ok(mut stmt) = c.prepare(&format!("INSERT INTO {table} (host_id) VALUES (@host_id)")) else {
+/// A temporary list as C fills it (a window's hosts in `host_id`, a request's rules in `hash_id`): one row per id;
+/// an insert that fails is reported and the others go on. False when the insert cannot be prepared (reported).
+fn fill_temp_list(c: &Connection, table: &str, column: &str, ids: &[[u8; 16]]) -> bool {
+    let Ok(mut stmt) = c.prepare(&format!("INSERT INTO {table} ({column}) VALUES (@{column})")) else {
         netdata_log_error!("Failed to prepare statement to INSERT into {table}");
         return false;
     };
-    for host in hosts {
-        let params: [&dyn ToSql; 1] = [&&host[..]];
+    for id in ids {
+        let params: [&dyn ToSql; 1] = [&&id[..]];
         if conn::retry(|| stmt.execute(&params[..])).is_err() {
             netdata_log_error!("Error while populating temp table");
         }
@@ -1305,37 +1312,47 @@ impl MetaDb {
         Ok(found)
     }
 
-    /// `sql_get_alert_configuration()` for several hashes: every rule's row, hash by hash in the order given,
-    /// under one hold of the connection. C joins a temporary table of the hashes to `alert_hash` without an
-    /// order and takes the rows as SQLite's plan gives them. A plan that scans the hashes and seeks each rule by
-    /// its key answers in the order the hashes went in, which is this order; whether C's plan is always that one
-    /// (with statistics that say `alert_hash` holds a few rows it may scan that table instead) is settled only
-    /// by a run (decision D234 F5 in the status repository). A hash without a row gives nothing; a row
-    /// whose hash is no 16-byte blob is skipped, and one record counts them. `Err` when the statement cannot be
-    /// prepared.
+    /// `sql_get_alert_configuration()` for several hashes: the hashes go into a temporary table, in the order
+    /// given, which is joined to `alert_hash` without an order, under one hold of the connection. The rows come as
+    /// SQLite's plan gives them, as C's do (the same SQLite and statistics; decision D242 in the status repository):
+    /// on a fresh database in the order given; once a stop's `PRAGMA optimize` has written that `alert_hash` holds
+    /// one or two rows, in that table's row order. A hash without a row gives nothing; a row whose hash is no
+    /// 16-byte blob is skipped, and one record counts them. `Err` when the table cannot be made or a statement
+    /// cannot be prepared (reported); the table is dropped either way, unless it was never made.
     #[allow(clippy::result_unit_err)]
     pub fn alert_configs(&self, hashes: &[[u8; 16]], mut each: impl FnMut(AlertConfigRow)) -> Result<(), ()> {
         let c = self.lock();
-        let mut stmt = c.prepare(SQL_SEARCH_CONFIG_LIST).map_err(|_| {
-            netdata_log_error!("Failed to prepare statement sql_get_alert_configuration");
-        })?;
-        let mut invalid = 0usize;
-        for hash_id in hashes {
-            let params: &[(&str, &dyn ToSql)] = &[("@hash_id", &&hash_id[..])];
-            let Ok(mut rows) = stmt.query(params) else {
-                continue;
-            };
-            while let Some(row) = next_row(&mut rows, End::Finalize, "sql_get_alert_configuration") {
-                match alert_config_row(row) {
-                    Some(config) => each(config),
-                    None => invalid += 1,
+        let markers = self.markers();
+        let table = format!("c_{}", CONFIG_LISTS.fetch_add(1, Ordering::Relaxed));
+        let create = format!("CREATE TEMP TABLE IF NOT EXISTS {table} (hash_id blob)");
+        conn::db_execute(&c, &create, &markers).map_err(|_| ())?;
+        // (the statement is gone before the table is dropped)
+        let read = fill_temp_list(&c, &table, "hash_id", hashes)
+            && match c.prepare(&sql_search_config_list(&table)) {
+                Ok(mut stmt) => {
+                    let mut invalid = 0usize;
+                    if let Ok(mut rows) = stmt.query([]) {
+                        while let Some(row) = next_row(&mut rows, End::Finalize, "sql_get_alert_configuration") {
+                            match alert_config_row(row) {
+                                Some(config) => each(config),
+                                None => invalid += 1,
+                            }
+                        }
+                    }
+                    if invalid != 0 {
+                        netdata_log_error!(
+                            "HEALTH: Ignored {invalid} alert configuration rows with invalid config_hash_id."
+                        );
+                    }
+                    true
                 }
-            }
-        }
-        if invalid != 0 {
-            netdata_log_error!("HEALTH: Ignored {invalid} alert configuration rows with invalid config_hash_id.");
-        }
-        Ok(())
+                Err(_) => {
+                    netdata_log_error!("Failed to prepare statement sql_get_alert_configuration");
+                    false
+                }
+            };
+        let _ = conn::db_execute(&c, &format!("DROP TABLE IF EXISTS {table}"), &markers);
+        if read { Ok(()) } else { Err(()) }
     }
 
     /// `sql_alert_transitions()`: the log entries asked for, each handed to `each` as C hands it to its callback,
@@ -1369,7 +1386,7 @@ impl MetaDb {
                 if conn::db_execute(&c, &create, &markers).is_err() {
                     return;
                 }
-                if fill_host_list(&c, &table, hosts) {
+                if fill_temp_list(&c, &table, "host_id", hosts) {
                     let sql = sql_search_alert_transition(&table, context.is_some(), alert_name.is_some());
                     // (the statement is gone before the table is dropped)
                     match c.prepare(&sql) {
@@ -1834,8 +1851,9 @@ mod tests {
         assert!(dump(&meta, "SELECT name FROM sqlite_temp_master").is_empty());
     }
 
-    /// `sql_get_alert_configuration()` for several hashes: the rules in the order asked, a hash without a rule
-    /// giving nothing, a hash asked twice giving its rule twice.
+    /// `sql_get_alert_configuration()` for several hashes on a fresh database (no statistics: SQLite scans the
+    /// hashes and seeks each rule): the rules in the order asked, a hash without a rule giving nothing, a hash asked
+    /// twice giving its rule twice; no rule list is left behind.
     #[test]
     fn several_rules_are_read_in_the_order_asked() {
         let (_dir, meta) = db();
@@ -1862,6 +1880,39 @@ mod tests {
         // the single read is the same lookup
         assert_eq!(meta.alert_config(&first).unwrap().map(|row| row.update_every), Some(10));
         assert_eq!(meta.alert_config(&missing), Ok(None));
+        assert!(dump(&meta, "SELECT name FROM sqlite_temp_master").is_empty());
+    }
+
+    /// C's join after a stop (decision D242): the stop's `PRAGMA optimize` writes that `alert_hash` holds two rows,
+    /// and the next life's plan scans that table first, so the rules come in its row order, not the order asked
+    /// (the oracle's order, and its alert transitions row `rules-order/rowid`).
+    #[test]
+    fn after_a_stop_two_rules_come_in_their_row_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let open = || MetaDb::open(dir.path(), &SqliteSettings::default()).unwrap();
+        let (aa, bb) = ([0xaa_u8; 16], [0xbb_u8; 16]);
+        let read = |meta: &MetaDb| {
+            let mut names = Vec::new();
+            meta.alert_configs(&[aa, bb], |row| names.push(String::from_utf8(row.alarm.unwrap()).unwrap())).unwrap();
+            names
+        };
+        let meta = open();
+        {
+            let c = meta.lock();
+            let rule = "INSERT INTO alert_hash (hash_id, alarm) VALUES (?1, ?2)";
+            c.execute(rule, rusqlite::params![&bb[..], "bb"]).unwrap();
+            c.execute(rule, rusqlite::params![&aa[..], "aa"]).unwrap();
+        }
+        assert_eq!(read(&meta), ["aa", "bb"]);
+        meta.close();
+        let meta = open();
+        let stat: String = meta
+            .lock()
+            .query_row("SELECT stat FROM sqlite_stat1 WHERE tbl = 'alert_hash'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stat, "2 1");
+        assert_eq!(read(&meta), ["bb", "aa"]);
+        assert!(dump(&meta, "SELECT name FROM sqlite_temp_master").is_empty());
     }
 
     const DETAIL: &str = "SELECT health_log_id, unique_id, alarm_event_id, updated_by_id, updates_id, when_key, \
