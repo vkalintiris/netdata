@@ -5,6 +5,7 @@ package parity
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -171,25 +172,202 @@ func TestLocalhostIdentity(t *testing.T) {
 const infoTailAge = 12 * time.Second
 
 // infoTailFamily compares `/api/v1/info` whole: its host labels as a map (C adds them from concurrent startup threads,
-// `null.streamed-chart`'s rule; a label map is flat, so the layout is compared whole).
-var infoTailFamily = v2Family{unordered: []string{"host_labels"}, flat: true}
+// `null.streamed-chart`'s rule; a label map is flat, so the layout is compared whole), and `buildinfo` by name
+// (infoBuildinfoCheck, D251 F2 A): masked for the comparison of values and escapes, judged once the rest agrees.
+var infoTailFamily = v2Family{
+	masks:     []Mask{{Pattern: "buildinfo", Reason: "compared by name (infoBuildinfoCheck)"}},
+	unordered: []string{"host_labels"},
+	flat:      true,
+	check:     infoBuildinfoCheck,
+}
 
-// infoTailGuard checks the oracle's members after `functions` (api_v1_info.c:134-171) in the 12-115 s phase: no
-// collector (localhost's charts' plugin and module pairs, api_v1_info.c:5-18: no chart with the pulse off and no
-// plugin), the fixed cloud flag, the immutable analytics (exporting connectors "" once gathered, null before:
-// analytics.c:317-325, :1350), the mutable ones not gathered yet (charts 0 and notification methods null until the
-// 120th second: analytics.c:603-611, :1345-1395), and ML off.
-var infoTailGuard = dashGuard(dashMembers(nil, "collectors", "[]", "cloud-enabled", "true", "exporting-connectors",
-	`""`, "charts-count", "0", "notification-methods", "null", "ml-info", `{"enabled":false}`))
+// infoBuildinfoNames are C's 40 analytics names of the build info slots, in the slots' order, each with its slot as
+// -W buildinfojson names it (`section.key`): BUILD_INFO[]'s `.analytics` (daemon/buildinfo.c, the line of each name
+// below), in the order of the enum BUILD_INFO_SLOT (:9-132), which analytics_build_info() walks (:1703-1718): it
+// joins with `|` the names of the slots whose status holds. Two are set at runtime from stream.conf (:1548-1549):
+// StreamParent (an API key is enabled) and StreamChild (the agent sends).
+var infoBuildinfoNames = []struct{ name, slot string }{
+	{"Netdata Cloud", "features.cloud"},                        // :488
+	{"Stream Compression", "features.stream-compression"},      // :528
+	{"Machine Learning", "features.ml"},                        // :552
+	{"allocator", "features.allocator"},                        // :560
+	{"dbengine", "databases.dbengine"},                         // :576
+	{"Native HTTPS", "connectivity.native-https"},              // :632
+	{"TLS Host Verification", "connectivity.tls-host-verify"},  // :640
+	{"zlib", "libs.zlib"},                                      // :664
+	{"protobuf", "libs.protobuf"},                              // :680
+	{"JSON-C", "libs.jsonc"},                                   // :704
+	{"libcap", "libs.libcap"},                                  // :712
+	{"libcrypto", "libs.libcrypto"},                            // :720
+	{"libyaml", "libs.libyaml"},                                // :728
+	{"libmnl", "libs.libmnl"},                                  // :736
+	{"stacktraces", "libs.stacktraces"},                        // :744
+	{"apps", "plugins.apps"},                                   // :752
+	{"cgroup Network Tracking", "plugins.cgroup-network"},      // :768
+	{"MACOS-LOGS", "plugins.macos-logs"},                       // :816
+	{"debugfs", "plugins.debugfs"},                             // :864
+	{"CUPS", "plugins.cups"},                                   // :872
+	{"EBPF", "plugins.ebpf"},                                   // :880
+	{"IPMI", "plugins.freeipmi"},                               // :888
+	{"NETWORK-VIEWER", "plugins.network-viewer"},               // :896
+	{"SYSTEMD-JOURNAL", "plugins.systemd-journal"},             // :904
+	{"WINDOWS-EVENTS", "plugins.windows-events"},               // :912
+	{"NFACCT", "plugins.nfacct"},                               // :920
+	{"perf", "plugins.perf"},                                   // :928
+	{"slabinfo", "plugins.slabinfo"},                           // :936
+	{"Xen", "plugins.xen"},                                     // :944
+	{"Xen VBD Error Tracking", "plugins.xen-vbd-error"},        // :952
+	{"AWS Kinesis", "exporters.kinesis"},                       // :1048
+	{"GCP PubSub", "exporters.pubsub"},                         // :1056
+	{"MongoDB", "exporters.mongodb"},                           // :960
+	{"Prometheus Remote Write", "exporters.prom-remote-write"}, // :1040
+	{"DebugTraceAlloc", "debug-n-devel.trace-allocations"},     // :1064
+	{"ConfigProfile", "runtime.profile"},                       // :1080
+	{"StreamParent", "runtime.parent"},                         // :1088
+	{"StreamChild", "runtime.child"},                           // :1096
+	{"TotalMemory", "runtime.mem-total"},                       // :1104
+	{"AvailableMemory", "runtime.mem-available"},               // :1112
+}
 
-// TestInfoV1Tail (check `api.v1-info-tail`, milestone 10 commit 14, fork F7 A): `/api/v1/info` whole on a standalone
+// infoBuildinfoProblems judges `/api/v1/info`'s `buildinfo` by name: o and c are the oracle's and the candidate's
+// lists as printed (names joined by `|`, an empty text no name). Every name must be one of C's (infoBuildinfoNames).
+// The candidate's must be the oracle's without the names whose slot is in buildinfoDiffs (the slots where the Rust
+// agent says other than C's production build, D87.1), in the oracle's order; a listed name the candidate prints as
+// the oracle does fails as cli.buildinfo's listed slots do: remove it from buildinfoDiffs. When the oracle is its own
+// candidate (same) nothing is allowed: the lists are equal.
+func infoBuildinfoProblems(o, c string, same bool) []string {
+	slots := map[string]string{}
+	for _, n := range infoBuildinfoNames {
+		slots[n.name] = n.slot
+	}
+	var lists [2][]string
+	var problems []string
+	for i, text := range []string{o, c} {
+		if text != "" {
+			lists[i] = strings.Split(text, "|")
+		}
+		for _, name := range lists[i] {
+			if _, ok := slots[name]; !ok {
+				problems = append(problems, fmt.Sprintf("buildinfo: the %s prints %q, no analytics name of C's build "+
+					"info (infoBuildinfoNames)", [2]Role{Oracle, Candidate}[i], name))
+			}
+		}
+	}
+	if problems != nil {
+		return problems
+	}
+	var want []string
+	for _, name := range lists[0] {
+		d, listed := buildinfoDiffs[slots[name]]
+		switch {
+		case !listed || same:
+			want = append(want, name)
+		case slices.Contains(lists[1], name):
+			problems = append(problems, fmt.Sprintf("buildinfo: %s (%s): the candidate now prints it as C does: remove "+
+				"it from buildinfoDiffs (%s)", name, slots[name], d.closes))
+		}
+	}
+	if !slices.Equal(want, lists[1]) {
+		problems = append(problems, fmt.Sprintf("buildinfo: the candidate prints %q, want %q (the oracle's %q)", c,
+			strings.Join(want, "|"), o))
+	}
+	return problems
+}
+
+// infoBuildinfoJudge is infoBuildinfoProblems on two parsed answers, each of which must hold `buildinfo` as a string
+// (C prints it quoted, api_v1_info.c:153, once ready, :180).
+func infoBuildinfoJudge(o, c Value, same bool) []string {
+	var text [2]string
+	for i, v := range [2]Value{o, c} {
+		b, err := dashMember(v, "buildinfo")
+		if err != nil || b.Kind != KindString {
+			return []string{fmt.Sprintf("buildinfo: the %s's is %s, want a string (%v)", [2]Role{Oracle, Candidate}[i],
+				b, err)}
+		}
+		text[i] = b.Text
+	}
+	return infoBuildinfoProblems(text[0], text[1], same)
+}
+
+// infoBuildinfoCheck is infoTailFamily's check: the two answers' `buildinfo` by name (infoBuildinfoJudge), with no
+// allowance when the oracle is its own candidate (sameBinary).
+func infoBuildinfoCheck(t *testing.T, name string, o, c Value) {
+	t.Helper()
+	for _, problem := range infoBuildinfoJudge(o, c, sameBinary(t)) {
+		t.Errorf("%s: %s", name, problem)
+	}
+}
+
+// infoTailFixed are the oracle's members after `functions` (api_v1_info.c:134-172) that hold in every phase of a
+// standalone pair or a pair with a plugin, once past the ANALYTICS thread's 10th second, for localhost and for a
+// routed child of such a pair (whose own `stream-compression` and `ml-info` are false and `{"enabled":false}` as
+// localhost's: the parent gives a child no sender and ML is off):
+//   - the two literal cloud flags (:136-137); unclaimed, so no claim and no Cloud link (:138-139);
+//   - the web server on (:146); localhost sends nothing (:147, :149: the launcher's stream.conf says `[stream] enabled
+//     = no`, and there is no sender, stream-sender-api.c:14-16); the literal https flag (:151);
+//   - the release channel of a version with a `-` and no `.environment` in the run directory (:154;
+//     charts2json.c:7-48);
+//   - exporting off by exporting.conf's default (:157; analytics.c:559), its connectors "" once gathered at the 10th
+//     second, null before (:158; analytics.c:317-325, :1350);
+//   - the four hit counters 0 (:160-163): the launcher writes `.opt-out-from-anonymous-statistics`, which C reads
+//     before it is ready (main.c:1131, status-file.c:1553, :1287, analytics.c:1326-1340), and C then counts no hit
+//     (analytics.c:231-278);
+//   - ML off for localhost (:168-172; ml_public.cc:257-264).
+var infoTailFixed = dashMembers(nil,
+	"cloud-enabled", "true", "cloud-available", "true", "agent-claimed", "false", "aclk-available", "false",
+	"web-enabled", "true", "stream-enabled", "false", "stream-compression", "false", "https-enabled", "true",
+	"release-channel", `"nightly"`, "exporting-enabled", "false", "exporting-connectors", `""`,
+	"allmetrics-prometheus-used", "0", "allmetrics-shell-used", "0", "allmetrics-json-used", "0",
+	"dashboard-used", "0", "ml-info", `{"enabled":false}`)
+
+// infoTailGuard checks the oracle's members after `functions` in TestInfoV1Tail's 12-115 s phase: infoTailFixed, then
+// the phase's own: no collector (localhost's charts' plugin and module pairs, api_v1_info.c:5-35: no chart with the
+// pulse off and no plugin), and the mutable analytics not gathered yet (notification methods null, charts and
+// metrics 0 until the 120th second: :155, :165-166; analytics.c:603-611, :1345-1395).
+var infoTailGuard = dashGuard(infoTailFixed, dashMembers(nil, "collectors", "[]", "notification-methods", "null",
+	"charts-count", "0", "metrics-count", "0"))
+
+// infoTailReq is TestInfoV1Tail's request.
+var infoTailReq = v2Req{name: "info", target: "/api/v1/info", status: "200", guard: infoTailGuard}
+
+// infoHelloReq is the dashboard's hello (the registry's action=hello), which C counts as a dashboard hit unless the
+// agent opted out of anonymous statistics (api_v1_registry.c:125-127; analytics.c:271-278).
+var infoHelloReq = v2Req{name: "hello", target: "/api/v1/registry?action=hello", status: "200"}
+
+// infoHelloAnswered holds when a raw answer to infoHelloReq has its status.
+func infoHelloAnswered(raw []byte) error {
+	if !bytes.HasPrefix(raw, []byte("HTTP/1.1 "+infoHelloReq.status+" ")) {
+		return fmt.Errorf("answered %q, want %s", truncateBytes(raw), infoHelloReq.status)
+	}
+	return nil
+}
+
+// infoTailHello asks each side of p infoHelloReq once: the problems, each naming its side, of a side that did not
+// answer it (infoHelloAnswered).
+func infoTailHello(p *Pair) []string {
+	var problems []string
+	for _, side := range p.Each() {
+		b, err := v2Exchange(side.Daemon.Addr, infoHelloReq)
+		if err == nil {
+			err = infoHelloAnswered(b)
+		}
+		if err != nil {
+			problems = append(problems, fmt.Sprintf("hello: %s: %v", side.Role, err))
+		}
+	}
+	return problems
+}
+
+// TestInfoV1Tail (check `api.v1-info-tail`, milestone 10 commit 14, D224 F7 A): `/api/v1/info` whole on a standalone
 // pair (no pulse charts), asked once both agents have been ready for infoTailAge and the oracle is younger than its
-// first mutable gather.
+// first mutable gather, after a hello to each side (the dashboard hit the opt-out keeps uncounted).
 func TestInfoV1Tail(t *testing.T) {
 	p := StartPair(t, daemon.Options{PulseOff: true}, parentIdentity)
+	if problems := infoTailHello(p); problems != nil {
+		t.Fatal(strings.Join(problems, "\n"))
+	}
 	time.Sleep(infoTailAge)
-	req := v2Req{name: "info", target: "/api/v1/info", status: "200", guard: infoTailGuard}
-	compareV2(t, p, req, infoTailFamily)
+	compareV2(t, p, infoTailReq, infoTailFamily)
 	if age := time.Since(p.Oracle.LaunchStartedAt); age > 115*time.Second {
 		t.Errorf("harness: asked %s after the oracle's launch, past the 12-115 s phase", age)
 	}

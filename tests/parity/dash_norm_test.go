@@ -19,6 +19,8 @@ func TestDashNorm(t *testing.T) {
 	t.Run("weights-rows", testDashNormWeightsRows)
 	t.Run("web", testDashNormWeb)
 	t.Run("info", testDashNormInfo)
+	t.Run("info-tail", testDashNormInfoTail)
+	t.Run("info-long", testDashNormInfoLong)
 	t.Run("nodes", testDashNormNodes)
 	t.Run("contexts-rows", testDashNormContextsRows)
 	t.Run("search", testDashNormSearch)
