@@ -151,10 +151,11 @@ const (
 // `daemon/src/builtins/mod.rs` NOT_IMPLEMENTED).
 var fnBuiltins501Re = regexp.MustCompile(`^\{"status":501,"errorMessage":"This feature is not implemented yet on this agent\."\}$`)
 
-// fnBuiltinsPending is an admin's call of one of the two streaming built-ins, whose handlers read the host status of
-// every host (function-netdata-streaming.c:77, function-topology-streaming.c:810): M10. A DEVIATION guard, not a
-// comparison: C answers 200 with its table (the oracle must); until M10 the candidate answers D176.3's 501. Either renders
-// `answered`, anything else the response itself.
+// fnBuiltinsPending is an admin's call of topology:streaming, whose handler reads the host status of every host
+// (function-topology-streaming.c:810), and whose port moved to the Cloud milestone (D220 fork 4). A DEVIATION guard,
+// not a comparison: C answers 200 with its topology (the oracle must); until then the candidate answers D176.3's 501.
+// Either renders `answered`, anything else the response itself. (netdata-streaming's table is compared:
+// fnStreamingView.)
 func fnBuiltinsPending(t *testing.T, x *fnHTTPSide, label string, req []byte) string {
 	t.Helper()
 	b, err := rawExchange(x.d.Addr, req, fnWait)
@@ -206,18 +207,20 @@ func TestFnBuiltins(t *testing.T) {
 		"api-calls":     fnBuiltinsAPICalls(),
 		"vnode":         fnBuiltinsVnode(),
 		"topology-info": fnBuiltinsTopologyInfo(),
+		// milestone 10 commit 12
+		"streaming-info": fnBuiltinsStreamingInfo(),
 	})
 }
 
 // fnBuiltinsAccess: each of the five on v1 and v3, by each caller (nrpc-calls.c:540-580, http-access.h:81-85): the 0x13
 // three refuse anonymous with the SSO 412 and the member with the space 403; bearer_get_token is restricted, refused
 // before the access check (412 anonymous, 403 signed in); cardinality (0x8) answers all three. The admin's api-calls
-// table compares its status line only (`api-calls` owns the table); the admin's calls of the streaming two are
-// fnBuiltinsPending's.
+// table compares its status line only (`api-calls` owns the table); the admin's netdata-streaming table is compared
+// through fnStreamingView (fnStreamingStandalone; milestone 10 commit 12), topology:streaming's is fnBuiltinsPending's.
 func fnBuiltinsAccess() fnHTTPCase {
 	var calls []fnBuiltinsCall
 	masked := map[string]string{}
-	pending := map[string]bool{}
+	pending, viewed := map[string]bool{}, map[string]bool{}
 	n := 0
 	for _, v := range []string{"v1", "v3"} {
 		for _, f := range fnBuiltins {
@@ -230,7 +233,10 @@ func fnBuiltinsAccess() fnHTTPCase {
 				}
 				if u.label == "admin" {
 					switch f.name {
-					case "netdata-streaming", "topology:streaming":
+					case "netdata-streaming":
+						// the table's length follows its cells
+						masked[c.tx], viewed[c.tx] = "sizes", true
+					case "topology:streaming":
 						masked[c.tx], pending[c.tx] = "pending", true
 					case "netdata-api-calls":
 						// the table's length follows the probes' rows and the durations' digits
@@ -248,6 +254,8 @@ func fnBuiltinsAccess() fnHTTPCase {
 			var out []string
 			for _, c := range calls {
 				switch {
+				case viewed[c.tx]:
+					out = append(out, fnStreamingView(t, x, c.label, c.request(), fnStreamingStandalone))
 				case pending[c.tx]:
 					out = append(out, fnBuiltinsPending(t, x, c.label, c.request()))
 				case masked[c.tx] == "sizes":

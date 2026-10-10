@@ -27,6 +27,7 @@ func TestDashNorm(t *testing.T) {
 	t.Run("wiring", testDashNormWiring)
 	t.Run("ni", testDashNormNI)
 	t.Run("ni-stream", testDashNormNIStream)
+	t.Run("fn-streaming", testDashNormFnStreaming)
 }
 
 // dashNormDiffs are the paths where two recorded answers differ as a family compares them: each side's body
