@@ -884,6 +884,35 @@ mod tests {
         }
     }
 
+    /// A method a parent calls down the stream runs on this sender's stream thread, which holds neither the sender's
+    /// state nor its commit lock while it executes (`execute.rs`; the plan of commit 12's lock note): a built-in that
+    /// reads the host's status, as `netdata-streaming` does for every host, this one included, answers. A hold would
+    /// never let the call return.
+    #[test]
+    fn a_method_called_down_the_stream_reads_the_sender_s_status() {
+        let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000cb", false, info("127.0.0.1:1", "key")));
+        host.set_collector_online();
+        let weak = Arc::downgrade(&host);
+        let status = move |reply: &mut netdata_agent_nrpc::reply::Reply,
+                           _: &[u8],
+                           _: Option<&netdata_agent_nrpc::reply::Payload>,
+                           _: &[u8]| {
+            let s = weak.upgrade().expect("the host").status(0);
+            reply.content_type = netdata_agent_nrpc::reply::ContentType::ApplicationJson;
+            reply.body = s.stream.status.name().as_bytes().to_vec();
+            200
+        };
+        register(&host, b"status", 10, netdata_agent_nrpc::Handler::Builtin(std::sync::Arc::new(status)));
+        let mut l = linked(&host, caps::FUNCTIONS);
+        let _ = l.exchange("");
+        let tx = "5a1e00000000400080000000000000f6";
+        let got = l.exchange(&format!("FUNCTION {tx} 10 \"status\" \"0x13\" \"src\"\n"));
+        let head = format!("FUNCTION_RESULT_BEGIN \"{tx}\" 200 \"application/json\" 0\n");
+        assert!(got.starts_with(&head) && got.contains("FUNCTION_RESULT_END"), "{got:?}");
+        let body = got[head.len()..].lines().next().unwrap_or_default();
+        assert!(["online", "offline", "replicating"].contains(&body), "the host's stream status: {got:?}");
+    }
+
     /// `execute_commands_function()` (D147.1): a parent's FUNCTION and FUNCTION_PAYLOAD run on this host's methods and
     /// their answers go up as the parent's transactions; an unknown one gets C's 404.
     #[test]

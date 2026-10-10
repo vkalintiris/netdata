@@ -486,28 +486,54 @@ impl SystemInfo {
 mod tests {
 
     /// `rrdhost_system_info_to_streaming_function_array()` (`rrdhost-system-info.c:801-829`): the 27 texts in C's
-    /// order, `""` for an unset one, the container's, Kubernetes' and cloud's included.
+    /// order, each its own value so a swap shows, and `""` for an unset one (`is_k8s_node` here), which the members'
+    /// writer would leave out.
     #[test]
     fn the_streaming_array_is_cs() {
         let info = SystemInfo {
-            host_os_name: Some("Debian GNU/Linux".into()),
-            host_cores: Some("16".into()),
-            container_os_id: Some("alpine".into()),
-            is_k8s_node: Some("false".into()),
-            cloud_instance_region: Some("eu".into()),
+            host_os_name: Some("host_os_name".into()),
+            host_os_id: Some("host_os_id".into()),
+            host_os_id_like: Some("host_os_id_like".into()),
+            host_os_version: Some("host_os_version".into()),
+            host_os_version_id: Some("host_os_version_id".into()),
+            host_os_detection: Some("host_os_detection".into()),
+            host_cores: Some("host_cores".into()),
+            host_disk_space: Some("host_disk_space".into()),
+            host_cpu_freq: Some("host_cpu_freq".into()),
+            host_ram_total: Some("host_ram_total".into()),
+            container_os_name: Some("container_os_name".into()),
+            container_os_id: Some("container_os_id".into()),
+            container_os_id_like: Some("container_os_id_like".into()),
+            container_os_version: Some("container_os_version".into()),
+            container_os_version_id: Some("container_os_version_id".into()),
+            container_os_detection: Some("container_os_detection".into()),
+            kernel_name: Some("kernel_name".into()),
+            kernel_version: Some("kernel_version".into()),
+            architecture: Some("architecture".into()),
+            virtualization: Some("virtualization".into()),
+            virt_detection: Some("virt_detection".into()),
+            container: Some("container".into()),
+            container_detection: Some("container_detection".into()),
+            cloud_provider_type: Some("cloud_provider_type".into()),
+            cloud_instance_type: Some("cloud_instance_type".into()),
+            cloud_instance_region: Some("cloud_instance_region".into()),
             ..Default::default()
         };
         let mut w = JsonWriter::new(JsonOptions::MINIFY);
         w.member_add_array(Some(b"a"));
         info.to_streaming_function_array(&mut w);
         w.array_close();
-        let mut want = vec![""; 27];
-        want[0] = "Debian GNU/Linux";
-        want[6] = "16";
-        want[11] = "alpine";
-        want[16] = "false";
-        want[26] = "eu";
-        let want: Vec<_> = want.iter().map(|v| format!("\"{v}\"")).collect();
+        let order = [
+            "host_os_name", "host_os_id", "host_os_id_like", "host_os_version", "host_os_version_id",
+            "host_os_detection", "host_cores", "host_disk_space", "host_cpu_freq", "host_ram_total",
+            "container_os_name", "container_os_id", "container_os_id_like", "container_os_version",
+            "container_os_version_id", "container_os_detection", "is_k8s_node", "kernel_name", "kernel_version",
+            "architecture", "virtualization", "virt_detection", "container", "container_detection",
+            "cloud_provider_type", "cloud_instance_type", "cloud_instance_region",
+        ];
+        let want: Vec<_> =
+            order.iter().map(|f| if *f == "is_k8s_node" { "\"\"".to_string() } else { format!("\"{f}\"") }).collect();
+        assert_eq!(want.len(), 27);
         assert_eq!(String::from_utf8_lossy(w.as_bytes()), format!("{{\"a\":[{}]", want.join(",")));
     }
 

@@ -6,7 +6,7 @@ use netdata_agent_nrpc::reply::{Payload, Reply};
 use netdata_agent_pluginsd_proto::caps;
 use netdata_agent_rrd::clock::now_realtime_s;
 use netdata_agent_rrd::host::{Host, Hosts};
-use netdata_agent_rrd::status::{IngestStatus, IngestType, Status, StreamStatus};
+use netdata_agent_rrd::status::{IngestStatus, IngestType, MlStatus, Status, StreamStatus};
 use netdata_agent_rrd::upstream::Traffic;
 use netdata_agent_streaming::reason::Reason;
 use netdata_agent_text::json::{JsonOptions, JsonWriter};
@@ -210,7 +210,8 @@ fn row(w: &mut JsonWriter, host: &Host, s: &Status, max: &mut Maxima) {
     }
 
     // ML: C prints the five counts of a host whose models run; no host's run here (`Status::ml`), so the cells are
-    // C's other branch
+    // C's other branch. A status that says they run needs C's branch (`F.c:290-319`) and the five maxima apart
+    debug_assert_ne!(s.ml.status, MlStatus::Running, "the ML cells of a host whose models run are not ported");
     for _ in 0..5 {
         w.add_array_item_null();
     }
@@ -219,7 +220,7 @@ fn row(w: &mut JsonWriter, host: &Host, s: &Status, max: &mut Maxima) {
     w.array_close();
 }
 
-/// A since and its age (`F.c:182-195`, `:233-246`): the since in milliseconds and its age at the status's clock
+/// A since and its age (`F.c:185-197`, `:235-247`): the since in milliseconds and its age at the status's clock
 /// (signed), both null when the since is 0.
 fn since_and_age(w: &mut JsonWriter, now: i64, since_s: i64, max_since: &mut u64, max_age: &mut i64) {
     if since_s == 0 {
@@ -235,7 +236,7 @@ fn since_and_age(w: &mut JsonWriter, now: i64, since_s: i64, max_since: &mut u64
     raise(max_age, age);
 }
 
-/// The row's severity (`F.c:107-136`): an ephemeral host is always normal; any other is critical while its collection
+/// The row's severity (`F.c:107-138`): an ephemeral host is always normal; any other is critical while its collection
 /// is offline or archived, else warning while its stream is offline for a reason other than having no parent.
 fn severity(ephemeral: bool, s: &Status) -> &'static str {
     if ephemeral {
@@ -315,7 +316,7 @@ impl Default for Maxima {
 /// A maximum the rows raise, as a column prints it.
 #[derive(Debug, Clone, Copy)]
 enum Stat {
-    /// The two retention ends, in milliseconds.
+    /// The two retention ends (`DbFrom`, `DbTo`), in milliseconds.
     DbFrom,
     DbTo,
     DbDuration,
@@ -428,8 +429,8 @@ const fn col(
     Column { key, name, kind, visual, transform, decimals, units, max, sort, summary, filter, options }
 }
 
-/// The 85 columns, in C's order (`F.c:343-915`; `.local/scratch-m10c12/gencols.py` makes this table from C's calls
-/// and checks it). The three Collected columns print the database's maxima, as C's.
+/// The 85 columns, in C's order (`F.c:343-915`). `tests/oracle/gen-netdata-streaming-columns.py` makes this table
+/// from C's calls and checks it. The three Collected columns print the database's maxima, as C's.
 const COLUMNS: [Column; 85] = [
     text("Node", "Node's Hostname", opts::VISIBLE | opts::UNIQUE_KEY | opts::STICKY),
     col(
@@ -883,13 +884,13 @@ mod tests {
     }
 
     /// The maxima as C raises them: the hops from -1, so a table without a row prints -1; only a cell that is printed
-    /// raises one (a since of 0, a duration of a host without retention); the largest of two rows.
+    /// raises one (a since of 0, a duration of a host with an end but no first time); the largest of two rows.
     #[test]
     fn the_maxima_follow_c() {
         let none = Maxima::default();
         assert_eq!((Max::Of(Stat::InHops).value(&none), Max::Of(Stat::OutHops).value(&none)), (-1.0, -1.0));
         let empty = Status {
-            db: Db { first_time_s: 0, last_time_s: 0, ..fresh().db },
+            db: Db { first_time_s: 0, last_time_s: 1_791_312_192, ..fresh().db },
             ingest: Ingest { since_s: 0, ..fresh().ingest },
             ..fresh()
         };
@@ -900,7 +901,8 @@ mod tests {
         big.stream.hops = -3;
         big.stream.peers = SocketPeers { local_ip: "a".into(), local_port: 9, peer_ip: "b".into(), peer_port: 19999 };
         let (text, max) = rendered(&[(&host("a"), &empty), (&host("b"), &big)]);
-        assert!(text.contains(r#""a",{"severity":"normal"}"#) && text.contains(",0,0,null,0,0,0,"), "{text}");
+        assert!(text.contains(r#""a",{"severity":"normal"}"#), "{text}");
+        assert!(text.contains(",0,1791312192000,null,0,0,0,"), "{text}");
         assert_eq!(
             (max.db_from, max.db_to, max.db_duration, max.db_metrics, max.in_since, max.in_age),
             (1_791_312_100, 1_791_312_192, 92, 7, 1_791_312_184_000, 8)
@@ -912,7 +914,8 @@ mod tests {
     /// The cells that depend on the host's kind and its sender (`F.c:101-329`): a vnode's local reason and address; a
     /// connected child's socket, TLS and capabilities; an offline child's stored reason and empty ends; a sender's
     /// cells, its traffic as data, metadata, replication, functions, its parents' last handshakes and the newest
-    /// attempt; the severities, the stream's NO PARENT TO SEND TO exception and an ephemeral host's normal.
+    /// attempt; a connected sender's ends, TLS, compression and replication; the severities in C's order, the stream's
+    /// NO PARENT TO SEND TO exception and an ephemeral host's normal; a claimed host's node id.
     #[test]
     fn the_cells_follow_the_host_s_kind() {
         let vnode = Status { ingest: Ingest { kind: IngestType::Virtual, ..fresh().ingest }, ..fresh() };
@@ -1045,5 +1048,60 @@ mod tests {
             ..fresh()
         };
         assert_eq!(cells(&host("n"), &alone)("rowOptions"), serde_json::json!({"severity": "normal"}));
+
+        // a connected sender: each end, TLS and compression its own value, so a swap shows; replication counts apart
+        // from the ingestion's, and their maxima apart
+        let online = Status {
+            stream: Stream {
+                id: 2,
+                status: StreamStatus::Online,
+                reason: 5,
+                peers: SocketPeers {
+                    local_ip: "10.0.0.3".into(),
+                    local_port: 40001,
+                    peer_ip: "10.0.0.4".into(),
+                    peer_port: 19999,
+                },
+                tls: true,
+                compression: false,
+                replication: Replication { in_progress: true, completion: 37.5, instances: 5 },
+                ..fresh().stream
+            },
+            ..fresh()
+        };
+        let cell = cells(&host("u"), &online);
+        assert_eq!(
+            pick(
+                &cell,
+                &[
+                    "OutLocalIP", "OutLocalPort", "OutRemoteIP", "OutRemotePort", "OutSSL", "OutCompression",
+                    "OutReplCompletion", "OutReplInstances", "OutReason", "rowOptions",
+                ]
+            ),
+            serde_json::json!([
+                "10.0.0.3", 40001, "10.0.0.4", 19999, "SSL", "UNCOMPRESSED", 37.5, 5, "CONNECTED",
+                {"severity": "normal"}
+            ])
+        );
+        let (_, max) = rendered(&[(&host("c"), &child), (&host("u"), &online)]);
+        assert_eq!((max.in_repl_instances, max.out_repl_instances), (3, 5));
+
+        // the severity's order: an archived host is critical; critical wins over warning; an ephemeral host is
+        // normal whatever its stream
+        let archived = Status {
+            ingest: Ingest { kind: IngestType::Archived, status: IngestStatus::Archived, ..fresh().ingest },
+            ..fresh()
+        };
+        let both = Status { ingest: offline.ingest.clone(), ..sender.clone() };
+        assert_eq!(
+            [&archived, &both].map(|s| cells(&host("x"), s)("rowOptions")),
+            [serde_json::json!({"severity": "critical"}), serde_json::json!({"severity": "critical"})]
+        );
+        assert_eq!(cells(&ephemeral, &sender)("rowOptions"), serde_json::json!({"severity": "normal"}));
+
+        // a claimed host's node id, lowercase with its dashes
+        let claimed = host("k");
+        claimed.set_node_id([0xab; 16]);
+        assert_eq!(cells(&claimed, &fresh())("NodeID"), "abababab-abab-abab-abab-abababababab");
     }
 }
