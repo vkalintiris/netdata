@@ -326,6 +326,42 @@ impl SystemInfo {
         w.member_add_string_or_omit("cloud_instance_region", v(&self.cloud_instance_region));
     }
 
+    /// `rrdhost_system_info_to_streaming_function_array()`: the 27 texts of [`SystemInfo::to_json_v1`], in its order,
+    /// as array items; every one is printed, `""` when unset (where the members' writer leaves ten out).
+    pub fn to_streaming_function_array(&self, w: &mut JsonWriter) {
+        for field in [
+            &self.host_os_name,
+            &self.host_os_id,
+            &self.host_os_id_like,
+            &self.host_os_version,
+            &self.host_os_version_id,
+            &self.host_os_detection,
+            &self.host_cores,
+            &self.host_disk_space,
+            &self.host_cpu_freq,
+            &self.host_ram_total,
+            &self.container_os_name,
+            &self.container_os_id,
+            &self.container_os_id_like,
+            &self.container_os_version,
+            &self.container_os_version_id,
+            &self.container_os_detection,
+            &self.is_k8s_node,
+            &self.kernel_name,
+            &self.kernel_version,
+            &self.architecture,
+            &self.virtualization,
+            &self.virt_detection,
+            &self.container,
+            &self.container_detection,
+            &self.cloud_provider_type,
+            &self.cloud_instance_type,
+            &self.cloud_instance_region,
+        ] {
+            w.add_array_item_string(field.as_deref().unwrap_or(""));
+        }
+    }
+
     /// `rrdhost_system_info_to_json_v2()`: the `hw` and `os` objects of the v2 node answers, missing values empty.
     pub fn to_json_v2(&self, w: &mut JsonWriter) {
         w.member_add_object("hw");
@@ -449,6 +485,32 @@ impl SystemInfo {
 #[cfg(test)]
 mod tests {
 
+    /// `rrdhost_system_info_to_streaming_function_array()` (`rrdhost-system-info.c:801-829`): the 27 texts in C's
+    /// order, `""` for an unset one, the container's, Kubernetes' and cloud's included.
+    #[test]
+    fn the_streaming_array_is_cs() {
+        let info = SystemInfo {
+            host_os_name: Some("Debian GNU/Linux".into()),
+            host_cores: Some("16".into()),
+            container_os_id: Some("alpine".into()),
+            is_k8s_node: Some("false".into()),
+            cloud_instance_region: Some("eu".into()),
+            ..Default::default()
+        };
+        let mut w = JsonWriter::new(JsonOptions::MINIFY);
+        w.member_add_array(Some(b"a"));
+        info.to_streaming_function_array(&mut w);
+        w.array_close();
+        let mut want = vec![""; 27];
+        want[0] = "Debian GNU/Linux";
+        want[6] = "16";
+        want[11] = "alpine";
+        want[16] = "false";
+        want[26] = "eu";
+        let want: Vec<_> = want.iter().map(|v| format!("\"{v}\"")).collect();
+        assert_eq!(String::from_utf8_lossy(w.as_bytes()), format!("{{\"a\":[{}]", want.join(",")));
+    }
+
     /// C's order and encoding: the three numbers, then the 27 texts, `key=` for a missing one.
     #[test]
     fn url_encodes_as_c() {
@@ -468,6 +530,7 @@ mod tests {
     }
 
     use super::*;
+    use netdata_agent_text::json::JsonOptions;
 
     /// `rrdhost_system_info_from_host_labels()`: C's label for each field, hops 1, the rest unset; `_os` windows in any
     /// case names the OS.

@@ -33,7 +33,8 @@ const METRICS_CARDINALITY_HELP: &str = "Displays metrics cardinality statistics 
                                         function name: 'netdata-metrics-cardinality' (default, group by context) or \
                                         'netdata-metrics-cardinality group:by-node' (group by node).";
 
-/// What a built-in whose data lands with a later milestone answers (D176.3): nRPC's error shape.
+/// What a built-in whose data is not ported answers (D176.3), and one called after the hosts are gone: nRPC's error
+/// shape.
 pub(crate) const NOT_IMPLEMENTED: &str = "This feature is not implemented yet on this agent.";
 
 fn not_implemented(reply: &mut Reply) -> u16 {
@@ -66,6 +67,14 @@ fn bearer_get_token(hosts: Weak<Hosts>) -> Builtin {
     })
 }
 
+/// `function_netdata_streaming()`: every host's status.
+fn netdata_streaming(hosts: Weak<Hosts>) -> Builtin {
+    Arc::new(move |reply: &mut Reply, _: &[u8], _: Option<&_>, _: &[u8]| match hosts.upgrade() {
+        Some(hosts) => streaming::render(&hosts, reply),
+        None => not_implemented(reply),
+    })
+}
+
 /// `function_metrics_cardinality()`: every host's contexts.
 fn cardinality(hosts: Weak<Hosts>) -> Builtin {
     Arc::new(move |reply: &mut Reply, function: &[u8], _: Option<&_>, _: &[u8]| match hosts.upgrade() {
@@ -87,7 +96,7 @@ fn descriptors(hosts: &Weak<Hosts>) -> [BuiltinDesc<'static>; 5] {
         handler,
     };
     [
-        desc("netdata-streaming", STREAMING_HELP, "top", PRIORITY, SENSITIVE, Arc::new(streaming::netdata_streaming)),
+        desc("netdata-streaming", STREAMING_HELP, "top", PRIORITY, SENSITIVE, netdata_streaming(hosts.clone())),
         desc("topology:streaming", STREAMING_TOPOLOGY_HELP, "top", PRIORITY, SENSITIVE, Arc::new(streaming::topology)),
         desc("netdata-api-calls", PROGRESS_HELP, "top", PRIORITY, SENSITIVE, api_calls(hosts.clone())),
         desc(

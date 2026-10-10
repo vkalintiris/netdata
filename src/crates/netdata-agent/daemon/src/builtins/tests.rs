@@ -120,14 +120,14 @@ fn call_with(hosts: &Arc<Hosts>, cmd: &str, source: &[u8], payload: Option<&[u8]
     (called.code, called.reply.unwrap())
 }
 
-/// D176.3: until M10 the streaming two answer nRPC's 501 but for `topology:streaming info`, which is C's
+/// D176.3: `topology:streaming` answers nRPC's 501 but for `info`, which is C's
 /// (`function-topology-streaming.c:2949-2958`: `info` as any word after the name, pretty, not cacheable).
 #[test]
 fn the_streaming_placeholder_answers_as_decided() {
     let hosts = hosts();
     global_functions_add(&hosts);
     let placeholder = format!("{{\"status\":501,\"errorMessage\":\"{NOT_IMPLEMENTED}\"}}");
-    for cmd in ["netdata-streaming", "netdata-streaming info", "topology:streaming", "topology:streaming x"] {
+    for cmd in ["topology:streaming", "topology:streaming x"] {
         let (code, reply) = call(&hosts, cmd);
         assert_eq!((code, String::from_utf8_lossy(&reply.body).into_owned()), (501, placeholder.clone()), "{cmd}");
     }
@@ -150,6 +150,39 @@ fn the_streaming_placeholder_answers_as_decided() {
             ),
             "{cmd}"
         );
+    }
+}
+
+/// `function_netdata_streaming()` through a call: its words are not read (`netdata-streaming info` is the table, as
+/// any other word after the name); one row for the one host, its envelope in C's order, pretty, not cacheable,
+/// `expires` ten seconds past the clock.
+#[test]
+fn any_words_answer_the_streaming_table() {
+    let hosts = hosts();
+    global_functions_add(&hosts);
+    for cmd in ["netdata-streaming", "netdata-streaming info", "netdata-streaming x 'y'"] {
+        let before = netdata_agent_rrd::clock::now_realtime_s();
+        let (code, reply) = call(&hosts, cmd);
+        let after = netdata_agent_rrd::clock::now_realtime_s();
+        let answer = (code, reply.cacheable, reply.content_type);
+        assert_eq!(answer, (200, false, ContentType::ApplicationJson), "{cmd}");
+        assert!(reply.body.starts_with(b"{\n    \"hostname\":\"box\",\n    \"status\":200,"), "{cmd}");
+        let text = String::from_utf8_lossy(&reply.body);
+        let at: Vec<_> = [
+            "hostname", "status", "type", "update_every", "has_history", "help", "data", "columns",
+            "default_sort_column", "charts", "default_charts", "group_by", "expires",
+        ]
+        .map(|key| text.find(&format!("\n    \"{key}\":")).unwrap_or_else(|| panic!("{cmd}: no {key}")))
+        .to_vec();
+        assert!(at.is_sorted(), "{cmd}: the envelope's members are not in C's order");
+        let doc: serde_json::Value = serde_json::from_slice(&reply.body).unwrap();
+        assert_eq!((doc["type"].as_str(), doc["help"].as_str()), (Some("table"), Some(STREAMING_HELP)));
+        let rows = doc["data"].as_array().unwrap();
+        assert_eq!((rows.len(), rows[0].as_array().unwrap().len()), (1, 85));
+        assert_eq!(rows[0][0], "box");
+        assert_eq!(doc["columns"].as_object().unwrap().len(), 85);
+        let expires = doc["expires"].as_i64().unwrap();
+        assert!((before + 10..=after + 10).contains(&expires), "{cmd}: {expires}");
     }
 }
 
