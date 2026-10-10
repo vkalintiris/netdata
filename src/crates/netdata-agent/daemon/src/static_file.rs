@@ -145,9 +145,11 @@ fn read_regular(path: &str, meta: &Metadata) -> io::Result<(Vec<u8>, i64)> {
             netdata_agent_log::errno_of(&err)
         };
         nd_log!(Source::Daemon, Priority::Err, errno = errno; "Web server failed to read file '{path}'");
-        // C saves errno after that record, which its logger cleared: the 404's record carries none, and a read that
-        // failed with EBUSY or EAGAIN is not the busy file's 307 (web_client.c:578-583, D251 F9)
-        return Err(io::Error::from_raw_os_error(0));
+        // C saves errno after that record, which its logger clears when it writes the record: then the 404's record
+        // carries none, and a read that failed with EBUSY or EAGAIN is not the busy file's 307 (web_client.c:578-583,
+        // nd_log.c:410, D251 F9)
+        let errno = if netdata_agent_log::filtered(Source::Daemon, Priority::Err) { errno } else { 0 };
+        return Err(io::Error::from_raw_os_error(errno));
     }
     Ok((data, meta.mtime()))
 }

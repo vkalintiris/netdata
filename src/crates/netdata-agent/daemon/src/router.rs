@@ -1247,6 +1247,8 @@ mod tests {
     #[test]
     fn a_failed_read_s_second_record_has_no_errno() {
         use netdata_agent_web::request::Mode;
+        let sysfs = std::fs::metadata("/sys/kernel/uevent_seqnum");
+        assert!(sysfs.is_ok_and(|m| m.is_file() && m.len() > 64), "the unit needs sysfs: /sys/kernel/uevent_seqnum");
         let dir = tempfile::tempdir().unwrap();
         std::os::unix::fs::symlink("/sys/kernel/uevent_seqnum", dir.path().join("short.txt")).unwrap();
         let s = Shared {
