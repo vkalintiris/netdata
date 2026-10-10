@@ -81,8 +81,15 @@ pub struct Shared {
     pub page_cache_mb: u64,
     /// `default_rrd_history_entries`: the memory engine's window in `/api/v2/info`'s `db_size`.
     pub history_entries: i64,
-    /// `BUILD_INFO` as the startup's `system info` step filled it (`/api/v2/info`'s `application`).
+    /// `BUILD_INFO` as the startup's `system info` step filled it (`/api/v2/info`'s `application`, `/api/v1/info`'s
+    /// `buildinfo`).
     pub build_info: BuildInfo,
+    /// `analytics_data`: what `/api/v1/info`'s tail reports of the ANALYTICS thread and the counted requests.
+    pub analytics: Arc<crate::analytics::Analytics>,
+    /// `web_server_mode != WEB_SERVER_MODE_NONE`.
+    pub web_enabled: bool,
+    /// `stream_send.enabled`: stream.conf's `[stream] enabled`, off without a destination or an API key.
+    pub stream_enabled: bool,
     /// `cloud_config` (cloud.conf) and its lock, and the file `reload-claiming-state` reloads it from.
     pub cloud_conf: Mutex<Config>,
     pub cloud_conf_file: String,

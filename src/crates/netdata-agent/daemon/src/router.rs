@@ -789,6 +789,9 @@ mod tests {
                 child: false,
                 memory: Default::default(),
             }),
+            analytics: Default::default(),
+            web_enabled: true,
+            stream_enabled: false,
             cloud_conf: Default::default(),
             cloud_conf_file: "/nonexistent-cloud.conf".into(),
             registry: crate::registry::Settings::new(
@@ -992,11 +995,12 @@ mod tests {
         );
     }
 
-    /// `/api/v1/info` ends with the host's functions after its labels (`api_v1_info.c:132-134`), then the routed host's
-    /// memory mode and the dbengine's quota and page cache size, as `api_v1_info()` writes them after the flags (the
-    /// members between are not ported yet, D84.2).
+    /// `/api/v1/info` ends as `web_client_api_request_v1_info_fill_buffer()` writes it after the host's labels: the
+    /// functions, the collectors, the Cloud flags, the memory mode with the dbengine's quota and page cache size, the
+    /// web and streaming flags, the analytics members and ML's object (`api_v1_info.c:132-172`; C's bytes of a fresh
+    /// agent, recorded 12 s after readiness, differ only by `exporting-connectors`, which the ANALYTICS thread sets).
     #[test]
-    fn info_ends_with_the_functions_and_the_dbengine_members() {
+    fn info_ends_with_the_tail_of_members() {
         let s = Shared {
             multidb_disk_quota_mb: 25,
             page_cache_mb: 8,
@@ -1005,11 +1009,194 @@ mod tests {
         let body = String::from_utf8(route(&s, b"/api/v1/info").body).unwrap();
         let tail = &body[body.find("\"host_labels\"").unwrap()..];
         let tail = &tail[tail.find('}').unwrap() + 1..];
-        assert_eq!(
-            tail.trim_end(),
-            ",\n    \"functions\":{\n    },\n    \"memory-mode\":\"ram\",\n    \"multidb-disk-quota\":25,\n    \
-             \"page-cache-size\":8\n}"
+        let expected = format!(
+            concat!(
+                ",\n    \"functions\":{{\n    }},\n    \"collectors\":[],\n    \"cloud-enabled\":true,\n",
+                "    \"cloud-available\":true,\n    \"agent-claimed\":false,\n    \"aclk-available\":false,\n",
+                "    \"memory-mode\":\"ram\",\n    \"multidb-disk-quota\":25,\n    \"page-cache-size\":8,\n",
+                "    \"web-enabled\":true,\n    \"stream-enabled\":false,\n    \"stream-compression\":false,\n",
+                "    \"https-enabled\":true,\n    \"buildinfo\":\"{}\",\n    \"release-channel\":\"nightly\",\n",
+                "    \"notification-methods\":null,\n    \"exporting-enabled\":false,\n",
+                "    \"exporting-connectors\":null,\n    \"allmetrics-prometheus-used\":0,\n",
+                "    \"allmetrics-shell-used\":0,\n    \"allmetrics-json-used\":0,\n    \"dashboard-used\":0,\n",
+                "    \"charts-count\":0,\n    \"metrics-count\":0,\n",
+                "    \"ml-info\":{{\n        \"enabled\":false\n    }}\n}}"
+            ),
+            s.build_info.analytics()
         );
+        assert_eq!(tail.trim_end(), expected);
+    }
+
+    /// `/api/v1/info`'s member of the given key as JSON.
+    fn info_member(s: &Shared, path: &[u8], key: &str) -> serde_json::Value {
+        let r = route(s, path);
+        assert_eq!(r.code, status::OK);
+        let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+        body[key].clone()
+    }
+
+    /// `host_collectors()`: the first chart of each plugin and module pair among the charts available for viewers,
+    /// in creation order, keyed by the pair's first 499 bytes as `plugin:module`; that chart's last access is set.
+    #[test]
+    fn info_collectors_are_the_first_chart_of_each_pair() {
+        use netdata_agent_rrd::chart::{Algorithm, ChartSpec, ChartType, flags as chart_flags};
+        use netdata_agent_rrd::mode::DbMode;
+        let s = shared();
+        let host = s.hosts.localhost();
+        let chart = |id: &str, plugin: &str, module: Option<&str>, mode: DbMode, dims: bool| {
+            let (st, _) = host.charts().create(&ChartSpec {
+                type_: "t",
+                id,
+                name: None,
+                family: None,
+                context: Some("t.ctx"),
+                title: "T",
+                units: "u",
+                plugin,
+                module,
+                priority: 1000,
+                update_every: 1,
+                chart_type: ChartType::Line,
+                mode,
+                history_entries: 5,
+                page_size: 4096,
+            });
+            if dims {
+                st.dim_add("d", None, 1, 1, Algorithm::Absolute);
+            }
+            st
+        };
+        let item = |plugin: &str, module: &str| serde_json::json!({"plugin": plugin, "module": module});
+        let long = "p".repeat(498);
+        let first = chart("a", "p", Some("m"), DbMode::Ram, true);
+        let second = chart("b", "p", Some("m"), DbMode::Ram, true);
+        chart("c", "p", Some("other"), DbMode::Ram, true);
+        chart("d", "q", None, DbMode::Ram, true);
+        chart("e", "hidden", None, DbMode::Ram, true).flags_set_and_clear(chart_flags::HIDDEN, 0);
+        chart("f", "obsolete", None, DbMode::Ram, true).flags_set_and_clear(chart_flags::OBSOLETE, 0);
+        chart("g", "nodims", None, DbMode::Ram, false);
+        chart("h", "none", None, DbMode::None, true);
+        chart("i", "x:y", Some("z"), DbMode::Ram, true);
+        chart("j", "x", Some("y:z"), DbMode::Ram, true);
+        chart("k", &long, Some("m1"), DbMode::Ram, true);
+        chart("l", &long, Some("m2"), DbMode::Ram, true);
+        first.set_last_accessed_s(0);
+        second.set_last_accessed_s(0);
+        assert_eq!(
+            info_member(&s, b"/api/v1/info", "collectors"),
+            serde_json::json!([
+                item("p", "m"),
+                item("p", "other"),
+                item("q", ""),
+                item("x:y", "z"),
+                item(&long, "m1")
+            ])
+        );
+        assert!(first.last_accessed_s() > 0);
+        assert_eq!(second.last_accessed_s(), 0);
+    }
+
+    /// A routed child answers with its own collectors, memory mode, sender compression and ML, and with the agent's
+    /// flags, counts and texts.
+    #[test]
+    fn info_of_a_routed_child_mixes_its_members_with_the_agent_s() {
+        use netdata_agent_rrd::chart::{Algorithm, ChartSpec, ChartType};
+        use netdata_agent_rrd::mode::DbMode;
+        let s = shared();
+        let mut info = s.hosts.localhost().info();
+        info.hostname = "child".into();
+        info.db_mode = DbMode::Alloc;
+        let guid = "22222222-2222-4222-8222-222222222222";
+        let child = s.hosts.find_or_create(guid, DbMode::Alloc, || info, |_| {}).expect("created");
+        let (st, _) = child.charts().create(&ChartSpec {
+            type_: "t",
+            id: "c",
+            name: None,
+            family: None,
+            context: Some("t.ctx"),
+            title: "T",
+            units: "u",
+            plugin: "child-plugin",
+            module: Some("m"),
+            priority: 1000,
+            update_every: 1,
+            chart_type: ChartType::Line,
+            mode: DbMode::Alloc,
+            history_entries: 5,
+            page_size: 4096,
+        });
+        st.dim_add("d", None, 1, 1, Algorithm::Absolute);
+        s.analytics.dashboard_hits.store(7, std::sync::atomic::Ordering::Relaxed);
+        s.analytics.charts_count.store(3, std::sync::atomic::Ordering::Relaxed);
+        let member = |key: &str| info_member(&s, b"/host/child/api/v1/info", key);
+        assert_eq!(member("collectors"), serde_json::json!([{"plugin": "child-plugin", "module": "m"}]));
+        assert_eq!(member("memory-mode"), "alloc");
+        assert_eq!(member("dashboard-used"), 7);
+        assert_eq!(member("charts-count"), 3);
+        assert_eq!(member("web-enabled"), true);
+        assert_eq!(info_member(&s, b"/api/v1/info", "collectors"), serde_json::json!([]));
+    }
+
+    /// `stream_sender_has_compression()`: false without a sender; with one, the sender's own answer, whether or not
+    /// it is connected (the host's stream status, which needs CONNECTED, is not read).
+    #[test]
+    fn info_stream_compression_is_the_sender_s() {
+        use netdata_agent_rrd::upstream::Upstream;
+        let s = shared();
+        assert_eq!(info_member(&s, b"/api/v1/info", "stream-compression"), false);
+        let recorder = Arc::new(netdata_agent_rrd::testing::Recorder::default());
+        s.hosts.localhost().set_upstream(Arc::clone(&recorder) as Arc<dyn Upstream>);
+        assert_eq!(info_member(&s, b"/api/v1/info", "stream-compression"), false);
+        {
+            let mut status = recorder.status.lock().unwrap();
+            status.compression = true;
+            status.connected = false;
+        }
+        assert_eq!(info_member(&s, b"/api/v1/info", "stream-compression"), true);
+    }
+
+    /// `buffer_json_member_add_quoted_string()` over the texts as C stores them: the bare `null` is `null`; a stored
+    /// text loses its wrapping quotes, gets `\` before `"` and `\`, and keeps a tab raw; a script's `null` is a text.
+    #[test]
+    fn info_quoted_members_print_as_c_stores_them() {
+        let s = shared();
+        let tail = |key: &str| {
+            let body = String::from_utf8(route(&s, b"/api/v1/info").body).unwrap();
+            let at = body.find(&format!("\"{key}\":")).unwrap() + key.len() + 3;
+            body[at..at + body[at..].find(",\n").unwrap()].to_owned()
+        };
+        for (stored, printed) in [
+            (None, "null"),
+            (Some(&b"null"[..]), "null"),
+            (Some(&b"\"\""[..]), "\"\""),
+            (Some(&b"\"a|b\""[..]), "\"a|b\""),
+            (Some(&b"\"a\"b\\c\""[..]), "\"a\\\"b\\\\c\""),
+            (Some(&b"\"a\tb\""[..]), "\"a\tb\""),
+            (Some(&b"\"null\""[..]), "\"null\""),
+        ] {
+            *s.analytics.notification_methods.lock().unwrap() = stored.map(<[u8]>::to_vec);
+            *s.analytics.exporting_connectors.lock().unwrap() = stored.map(<[u8]>::to_vec);
+            assert_eq!(tail("notification-methods"), printed, "{stored:?}");
+            assert_eq!(tail("exporting-connectors"), printed, "{stored:?}");
+        }
+    }
+
+    /// `analytics_log_dashboard()` is called for every hello before the ACL check, so a refused hello counts too;
+    /// another action counts nothing.
+    #[test]
+    fn a_dashboard_hello_counts_before_the_acl() {
+        use std::sync::atomic::Ordering;
+        let s = shared();
+        assert!(crate::startup::anonymous_statistics(), "the test needs anonymous statistics on");
+        let hits = || s.analytics.dashboard_hits.load(Ordering::Relaxed);
+        assert_eq!(asked(&s, b"/api/v1/registry", b"action=hello", acl::bits::DASHBOARD).code, status::OK);
+        assert_eq!(hits(), 1);
+        let refused = asked(&s, b"/api/v1/registry", b"action=hello", 0);
+        assert_eq!(refused.code, server::permission_denied_acl().code);
+        assert_eq!(hits(), 2);
+        asked(&s, b"/api/v1/registry", b"action=access", acl::bits::REGISTRY);
+        assert_eq!(hits(), 2);
+        assert_eq!(info_member(&s, b"/api/v1/info", "dashboard-used"), 2);
     }
 
     /// `/api/v2/info` and `/api/v3/info` need no listener ACL (NOCHECK) and answer the agent in C's member order.

@@ -58,7 +58,6 @@ enum Kind {
 struct Def {
     category: Category,
     kind: Kind,
-    #[cfg_attr(not(test), expect(dead_code, reason = "read by analytics(), whose consumer is /api/v1/info's tail"))]
     analytics: Option<&'static str>,
     print: &'static str,
     json: &'static str,
@@ -433,7 +432,6 @@ impl BuildInfo {
     }
 
     /// `analytics_build_info()`: the analytics names of the slots that hold, joined by `|`.
-    #[cfg_attr(not(test), expect(dead_code, reason = "for /api/v1/info's buildinfo, with the info tail (D84.2)"))]
     pub fn analytics(&self) -> String {
         DEFS.iter()
             .zip(&self.slots)

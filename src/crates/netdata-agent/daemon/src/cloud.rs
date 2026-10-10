@@ -15,6 +15,16 @@ pub fn status() -> u8 {
     cloud_status::AVAILABLE
 }
 
+/// `is_agent_claimed()`: the agent never has a claim id here.
+pub fn agent_claimed() -> bool {
+    false
+}
+
+/// `aclk_online()`: there is no ACLK connection here.
+pub fn aclk_online() -> bool {
+    false
+}
+
 /// `cloud_config_url_get()`: cloud.conf's `[global] url`.
 pub fn url(cloud_conf: &mut Config) -> Vec<u8> {
     cloud_conf

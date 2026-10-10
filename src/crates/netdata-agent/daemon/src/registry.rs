@@ -111,8 +111,8 @@ pub fn api_v1_registry(route: &Route<'_>, host: &Host, query: &[u8]) -> Reply {
     let do_not_track = route.do_not_track;
 
     if p.action == Some(Action::Hello) {
-        // analytics_log_dashboard() counts the hit here, before the ACL check; its counter comes with the ANALYTICS
-        // thread (D223 F2)
+        // analytics_log_dashboard(): the hit counts before the ACL check, a refused hello too
+        route.shared.analytics.log_dashboard(startup::anonymous_statistics());
         if !acl::can(route.acl, acl::bits::DASHBOARD) {
             return permission_denied_acl();
         }

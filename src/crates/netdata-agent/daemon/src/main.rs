@@ -5,6 +5,7 @@
 
 mod access_log;
 mod acl;
+mod analytics;
 mod api;
 mod archived;
 mod auth;
@@ -969,14 +970,17 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         page_cache_mb: db.page_cache_mb as u64,
         history_entries: db.history_entries,
         build_info,
+        analytics: Default::default(),
+        web_enabled,
+        stream_enabled: stream_is_child,
         cloud_conf_file: conf.cloud_conf_filename(),
         cloud_conf: std::sync::Mutex::new(std::mem::take(&mut conf.cloud)),
         registry: registry.settings,
     });
     // what a parent's NODE_ID may change here: the agent is never claimed (D61.3), so the Cloud URL follows the parent
     connector.set_env(netdata_agent_streaming::connector::Env {
-        claimed: Box::new(|| false),
-        aclk_online: Box::new(|| false),
+        claimed: Box::new(cloud::agent_claimed),
+        aclk_online: Box::new(cloud::aclk_online),
         set_cloud_url: {
             let shared = Arc::clone(&shared);
             Box::new(move |url| {

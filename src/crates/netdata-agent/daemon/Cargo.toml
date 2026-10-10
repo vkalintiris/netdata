@@ -49,6 +49,8 @@ uuid = { workspace = true, features = ["v4"] }
 [dev-dependencies]
 # a handler no test calls
 netdata-agent-nrpc = { workspace = true, features = ["testing"] }
+# the recording sender, for `/api/v1/info`'s `stream-compression`
+netdata-agent-rrd = { workspace = true, features = ["testing"] }
 # counts allocations, for the tests that prove the signal handler's save allocates nothing
 netdata-agent-sys = { workspace = true, features = ["alloc-count"] }
 tempfile = { workspace = true }

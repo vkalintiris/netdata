@@ -43,7 +43,7 @@ pub fn release_channel(user_config_dir: &str, version: &str) -> &'static str {
 }
 
 /// `rrdset_is_available_for_viewers()`.
-fn available_for_viewers(st: &Chart) -> bool {
+pub(crate) fn available_for_viewers(st: &Chart) -> bool {
     let flags = st.meta().flags;
     flags & (chart_flags::HIDDEN | chart_flags::OBSOLETE) == 0
         && st.dim_count() > 0
