@@ -6,10 +6,12 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -262,12 +264,36 @@ func TestStaticAndRouting(t *testing.T) {
 		{name: "host-twice", target: "/host/parity-parent/host/parity-parent/x.js",
 			want: [2]string{"HTTP/1.1 404 Not Found\r\n", "\r\n\r\nFile does not exist, or is not accessible: x.js"}},
 	})
+	// POST, PUT and DELETE of a static file (D251 F8): C routes the four methods alike (web_client.c:1547-1550) and
+	// web_server_static_file() never reads the method: the file, as for a GET. Only its access record differs: GET
+	// (web_client.c:619, :247; log.parity). A POST or PUT completes with its Content-Length (url.c:267-373, here 0), a
+	// DELETE at its blank line (url.c:378-380).
+	file := [2]string{"HTTP/1.1 200 OK\r\n", string(index[len(index)-64:])}
+	fileHolds := []string{"\r\nContent-Type: text/html; charset=utf-8\r\n",
+		fmt.Sprintf("\r\nContent-Length: %d\r\n", len(index))}
+	compareExacts(t, p, []exactReq{
+		{name: "static-post", method: "POST", target: "/index.html", body: []byte{}, want: file, holds: fileHolds},
+		{name: "static-put", method: "PUT", target: "/index.html", body: []byte{}, want: file, holds: fileHolds},
+		{name: "static-delete", method: "DELETE", target: "/index.html", want: file, holds: fileHolds},
+	})
 	// a child (no data) now: the rows above ran without it. Its path may not switch hosts again (400,
 	// web_client.c:1190-1193).
 	dashConnect(t, p)
 	time.Sleep(time.Second)
 	compareExacts(t, p, []exactReq{{name: "nested-host", target: "/host/" + childHost.Hostname + "/host/x/x.js",
 		want: [2]string{"HTTP/1.1 400 Bad Request\r\n", "\r\n\r\nNesting of hosts is not allowed."}}})
+	// `[web] gzip compression level` (default 3, netdata-conf-web.c:139) reaches the compressor
+	// (deflateInit2(.., web_gzip_level, ..), http_header.c:44): at 9 C's bytes differ from the default level's (23882
+	// against 27074 bytes of chunked body for this file), and zlib writes the level into the gzip header's XFL byte (2
+	// at level 9, 0 at 3).
+	t.Run("gzip-level", func(t *testing.T) {
+		p := StartPair(t, daemon.Options{WebDir: webDir, WebExtra: "    gzip compression level = 9\n"}, parentIdentity)
+		compareExact(t, p, exactReq{name: "gzip-level", target: "/index.html",
+			headers: []string{"Accept-Encoding: gzip"},
+			want:    [2]string{"HTTP/1.1 200 OK\r\n", "\r\n0\r\n\r\n"},
+			holds: []string{"\r\nContent-Encoding: gzip\r\nTransfer-Encoding: chunked\r\n",
+				"\r\n\r\n4000\r\n\x1f\x8b\x08\x00\x00\x00\x00\x00\x02\x03"}})
+	})
 }
 
 func truncateBytes(b []byte) string {
@@ -399,9 +425,9 @@ func TestIgnoredSignals(t *testing.T) {
 }
 
 // TestStaticEdgeFiles serves a scratch web directory: an empty file requested with gzip (C sends the gzip and chunked
-// header lines and closes without a chunk), a file dated in the year 10000 (C's Date header is empty) and a FIFO
-// (C refuses what is not a regular file before it opens anything). Neither the Date nor the Expires value of these
-// responses is masked when it is empty.
+// header lines and closes without a chunk), a file dated in the year 10000 (C's Date header is empty), a FIFO
+// (C refuses what is not a regular file before it opens anything) and a file per content type (`types`). Neither the
+// Date nor the Expires value of these responses is masked when it is empty.
 func TestStaticEdgeFiles(t *testing.T) {
 	// tmpfs keeps 64-bit timestamps; ext4 wraps a year-10000 mtime.
 	web := t.TempDir()
@@ -424,6 +450,26 @@ func TestStaticEdgeFiles(t *testing.T) {
 	if syscall.UtimesNano(filepath.Join(web, "future.txt"), ts) == nil {
 		var st syscall.Stat_t
 		futureOK = syscall.Stat(filepath.Join(web, "future.txt"), &st) == nil && st.Mtim.Sec == future
+	}
+	// one file per extension of C's table (walkTypes), and four names its fallback type answers: an extension after
+	// another, a dot in a directory's name, a name that ends in a dot, an extension in capitals. Each is dated
+	// 2026-01-02 03:04:05 UTC, a second outside every request's flight: maskAnswer keeps the Date, which is compared.
+	types := []string{"a.tar.gz", "conf.d/README", "x.", "X.HTML"}
+	for _, ext := range slices.Sorted(maps.Keys(walkTypes)) {
+		types = append(types, "a."+ext)
+	}
+	if err := os.Mkdir(filepath.Join(web, "conf.d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	typesDate := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	for _, name := range types {
+		path := filepath.Join(web, name)
+		if err := os.WriteFile(path, []byte("file "+name+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, typesDate, typesDate); err != nil {
+			t.Fatal(err)
+		}
 	}
 	p := StartPair(t, daemon.Options{WebDir: web}, parentIdentity)
 	cases := map[string][]byte{
@@ -448,6 +494,17 @@ func TestStaticEdgeFiles(t *testing.T) {
 			}
 		}
 	}
+	// C's type is the one of the resolved path's last dot (web_client.c:616), compared case-sensitively, else
+	// application/octet-stream (contenttype_for_filename, http_defs.c:225-258; the header texts content_type.c:13-43);
+	// the Date is the file's modification time (web_client.c:623-627).
+	var rows []exactReq
+	for _, name := range types {
+		rows = append(rows, exactReq{name: strings.ReplaceAll(name, "/", "_"), target: "/" + name,
+			want: [2]string{"HTTP/1.1 200 OK\r\n", "\r\n\r\nfile " + name + "\n"},
+			holds: []string{"\r\nDate: Fri, 02 Jan 2026 03:04:05 GMT\r\n",
+				"\r\nContent-Type: " + walkType(name) + "\r\n"}})
+	}
+	t.Run("types", func(t *testing.T) { compareExacts(t, p, rows) })
 }
 
 // TestInfoBeforeReady polls /api/v1/info from the moment each daemon starts. Until startup completes C answers 503

@@ -258,13 +258,17 @@ next:
 }
 
 // logWorkload sends the same requests to a daemon, each with a response the candidate already serves byte for byte:
-// static files, a missing file, an unknown API command, two requests on one keep-alive connection, and a STREAM
-// request with an unknown key; then a child streams a chart for a few seconds and disconnects.
+// static files (one asked by a POST, whose access record C writes as a GET: web_client.c:619, :247), a name without
+// an extension (C answers the web directory's index.html, web_client.c:433-465), a missing file asked by a POST (its
+// 404 record keeps POST: the exits before :619), an unknown API command, two requests on one keep-alive connection,
+// and a STREAM request with an unknown key; then a child streams a chart for a few seconds and disconnects.
 func logWorkload(t *testing.T, d *daemon.Daemon) {
 	t.Helper()
 	requests := []string{
 		"GET /index.html HTTP/1.1\r\nConnection: close\r\n\r\n",
+		"POST /index.html HTTP/1.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
 		"GET /nonexistent HTTP/1.1\r\nConnection: close\r\n\r\n",
+		"POST /nonexistent.html HTTP/1.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
 		"GET /api/v1/nope HTTP/1.1\r\nConnection: close\r\n\r\n",
 		"GET /favicon.ico HTTP/1.1\r\n\r\nGET /nothing-here HTTP/1.1\r\nConnection: close\r\n\r\n",
 		"STREAM key=5a1e0000-0000-4000-8000-00000000dead&hostname=log-child&registry_hostname=log-child" +
