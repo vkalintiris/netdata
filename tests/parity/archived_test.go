@@ -158,10 +158,14 @@ func compareArchivedTimes(t *testing.T, p *Pair, times *regexp.Regexp, children 
 	})
 }
 
+// archivedNewGUID is `guid-change`'s new machine GUID.
+const archivedNewGUID = "5a1e0000-0000-4000-8000-0000000000ab"
+
 // TestArchivedHosts starts both daemons on copies of one C-written cache that knows a child (check
 // `sqlite.archived-hosts`): the child is an archived host, as C shows it in /api/v1/info, /api/v1/charts, the child's
 // own info, contexts and stream path, with C's records. Then with a new machine GUID (the old localhost becomes an
-// archived child too), and with the child connecting again in the archived host's memory mode and in another.
+// archived child too; both archived hosts' node instances are compared there, niArchivedRow), and with the child
+// connecting again in the archived host's memory mode and in another.
 func TestArchivedHosts(t *testing.T) {
 	seed := seedFromOracle(t, parentIdentity, "ram")
 	opts := daemon.Options{DBMode: "alloc", StorageTiers: 1, StreamMemoryMode: "alloc", SeedCache: seed,
@@ -181,9 +185,17 @@ func TestArchivedHosts(t *testing.T) {
 	// a new name too, so that the old localhost's name means only the archived host
 	changed := parentIdentity
 	changed.Hostname = "parity-newparent"
-	changed.MachineGUID = "5a1e0000-0000-4000-8000-0000000000ab"
+	changed.MachineGUID = archivedNewGUID
 	t.Run("guid-change", func(t *testing.T) {
-		compareArchived(t, StartPair(t, opts, changed), childHost.Hostname, parentIdentity.Hostname)
+		p := StartPair(t, opts, changed)
+		// the two archived hosts' node instances (D241 F3), before the records are compared: a web request writes
+		// none of the main thread's (compareArchived). Asked once both agents' start windows are over (niReady), so
+		// that a start of the request's own second does not read START.
+		t.Run(niArchivedRow.name, func(t *testing.T) {
+			niReady(p)
+			compareV2(t, p, niArchivedRow, nodeInstancesFamily(niSides(p, [2][2]int64{})))
+		})
+		compareArchived(t, p, childHost.Hostname, parentIdentity.Hostname)
 	})
 	// the same after a Rust-only run: its localhost's pulse charts keep the old localhost through C's startup
 	// cleanup, as C's do (D61.7)

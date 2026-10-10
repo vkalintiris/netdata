@@ -971,7 +971,3 @@ func dashGuard(facts ...[]dashFact) func(Value) error {
 		return nil
 	}
 }
-
-// dashNowRe is the answering agent's clock in a v2 answer, the first `now` of the body (api_v2_contexts_agents.c:25):
-// in these answers the agent's, printed after the nodes.
-var dashNowRe = regexp.MustCompile(`"now":(\d+)`)

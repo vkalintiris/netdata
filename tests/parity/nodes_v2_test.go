@@ -27,13 +27,42 @@ import (
 // query_scope.c:20), which is insertion order (rrdhost.c:121-125, no DICT_OPTION_ADD_IN_FRONT): localhost first,
 // then the child once it connected.
 func dashNode(i, ni int, guid, host string) []dashFact {
+	return dashNodeIn(niShort, i, ni, guid, host)
+}
+
+// dashNodeIn is dashNode of an answer written in form f: the three members by f's names.
+func dashNodeIn(f niForm, i, ni int, guid, host string) []dashFact {
 	at := "[" + strconv.Itoa(i) + "]"
 	return []dashFact{
-		dashIs(strconv.Quote(guid), "nodes", at, "mg"),
-		dashIs(strconv.Quote(host), "nodes", at, "nm"),
-		dashIs(strconv.Itoa(ni), "nodes", at, "ni"),
+		dashIs(strconv.Quote(guid), "nodes", at, f.mg),
+		dashIs(strconv.Quote(host), "nodes", at, f.nm),
+		dashIs(strconv.Itoa(ni), "nodes", at, f.ni),
 	}
 }
+
+// niForm is how a v2 answer writes what a guard reads: the names of a node's machine GUID, hostname and index and
+// of the agent's status and index (`JSKEY`, web/api/formatters/jsonwrap-v2.c:8-30: C's short names, or their long
+// ones with `options=long-json-keys`, libnetdata/json/json-keys.c:75-142, set for the walk at
+// database/contexts/api_v2_contexts.c:1334), and whether its times are dates (`options=rfc3339`), which the render's
+// words then say (niDateWord). The agent's own members are not written by `JSKEY` and keep their short names in
+// every form (database/contexts/api_v2_contexts_agents.c:22-28).
+type niForm struct {
+	mg, nm, ni, st, ai string
+	date               bool
+}
+
+var (
+	// niShort is C's default form.
+	niShort = niForm{mg: "mg", nm: "nm", ni: "ni", st: "st", ai: "ai"}
+	// niLong is the form of `options=long-json-keys`.
+	niLong = niForm{mg: "machine_guid", nm: "hostname", ni: "nodes_array_index", st: "status",
+		ai: "agents_array_index"}
+	// niDated is the form of `options=rfc3339`.
+	niDated = niForm{mg: "mg", nm: "nm", ni: "ni", st: "st", ai: "ai", date: true}
+)
+
+// word is a render's word (niIngestRender) as f writes the time it names.
+func (f niForm) word(w string) string { return niDateWord(w, f.date) }
 
 // dashParent and dashChildNode are dashNode's facts of the fixture's two hosts.
 func dashParent(i, ni int) []dashFact {
@@ -120,6 +149,90 @@ func dashGone(t *testing.T, p *Pair, host stream.HostInfo, conns [2]*stream.Conn
 		}
 		t.Errorf("candidate: %s: %s is not stale, after %v at most: %s", target, host.Hostname, dashGoneWait, got)
 	}
+}
+
+// niGoneWait bounds niGone's wait for one side's detach, as dashGoneWait bounds dashGone's.
+const niGoneWait = 30 * time.Second
+
+// niGoneSince judges one raw answer of niGone's poll for the child named name: the start of its ingestion (a number:
+// the poll asks no option), and whether the answer has one (a 200 whose node of that name has an instance with an
+// ingestion start). Anything else is asked again.
+func niGoneSince(answer []byte, name string) (int64, bool) {
+	if !bytes.HasPrefix(answer, []byte("HTTP/1.1 200 ")) {
+		return 0, false
+	}
+	v, err := ParseJSON(httpBody(answer))
+	if err != nil {
+		return 0, false
+	}
+	nodes, _ := dashMember(v, "nodes")
+	for _, node := range nodes.Items {
+		if nm, err := dashMember(node, "nm"); err != nil || nm.Kind != KindString || nm.Text != name {
+			continue
+		}
+		since, err := dashAt(node, "instances", "[0]", "ingest", "since")
+		if err != nil || since.Kind != KindNumber {
+			return 0, false
+		}
+		n, err := strconv.ParseInt(since.Text, 10, 64)
+		return n, err == nil
+	}
+	return 0, false
+}
+
+// niGone closes the child's two connections (0 the oracle's) and waits until each side lists the host stale
+// (dashGone), then for each side's stamp of the detach (niGoneWindows), and hands back each side's gone window
+// (niSide.gone). The close waits for a later second than after, the last second of the sides' earlier windows
+// (niSide), and niGone returns in a later second than both gone windows end in, so that no window holds a second of
+// another, nor of the row's own request.
+func niGone(t *testing.T, p *Pair, host stream.HostInfo, conns [2]*stream.Conn, after int64) [2][2]int64 {
+	t.Helper()
+	time.Sleep(time.Until(time.Unix(after+1, 0)))
+	from := time.Now().Unix()
+	dashGone(t, p, host, conns)
+	gone := niGoneWindows(t, p, host, from)
+	time.Sleep(time.Until(time.Unix(max(gone[0][1], gone[1][1])+1, 0)))
+	return gone
+}
+
+// niGoneWindows waits until each side's node-instance answer starts the child's ingestion at or after from, the
+// second of its close: C clears the host's online flag first and stamps the detach's second a step later, once the
+// host's workers and its sender stopped (streaming/stream-receiver.c:1467, :1501-1502), and between the two its
+// ingestion still starts at the connection (rrdhost-status.c:169). Each side's window runs from from to the end of the
+// answer that showed the stamp, which holds that second. The polls are tagged harness=wait. The oracle's failure ends
+// the case; a candidate's is reported, its window the whole wait, and the row shows how it differs.
+func niGoneWindows(t *testing.T, p *Pair, host stream.HostInfo, from int64) [2][2]int64 {
+	t.Helper()
+	target := "/api/v2/node_instances?scope_nodes=" + host.Hostname + "&harness=wait"
+	var gone [2][2]int64
+	for i, side := range p.Each() {
+		got := ""
+		stamped := pollUntil(niGoneWait, func() bool {
+			b, err := v2Exchange(side.Daemon.Addr, v2Req{target: target})
+			gone[i] = [2]int64{from, time.Now().Unix()}
+			if err != nil {
+				got = err.Error()
+				return false
+			}
+			since, ok := niGoneSince(b, host.Hostname)
+			if !ok {
+				got = "answered " + strconv.Quote(truncateBytes(b))
+				return false
+			}
+			got = "the ingestion starts at " + strconv.FormatInt(since, 10)
+			return since >= from
+		})
+		if stamped {
+			continue
+		}
+		if side.Role == Oracle {
+			t.Fatalf("oracle: %s: %s's detach is not stamped at or after %d, after %v at most: %s", target,
+				host.Hostname, from, niGoneWait, got)
+		}
+		t.Errorf("candidate: %s: %s's detach is not stamped at or after %d, after %v at most: %s", target,
+			host.Hostname, from, niGoneWait, got)
+	}
+	return gone
 }
 
 // The values of the capabilities that vary by node (aclk_capas.c:41-42, :49, :51, :53), as nodeCapsOf takes them:
@@ -214,11 +327,12 @@ var (
 )
 
 // niSide is what one side's node-instance answers take from its own run, for niIngestRender: the port the agent
-// listens on, the seconds it started in (from its launch on) and the seconds the fixture child's connection was
-// opened in (dashLinkAs).
+// listens on, the seconds it started in (from its launch on), the seconds the fixture child's connection was opened
+// in (dashLinkAs) and, once the child left, the seconds from its close to the side's answer that showed the
+// disconnection (niGone; zero before).
 type niSide struct {
-	listen          string
-	started, opened [2]int64
+	listen                string
+	started, opened, gone [2]int64
 }
 
 // niStartSlack is how many seconds after its launch an agent may read its start time: C takes it at the top of main()
@@ -270,8 +384,11 @@ var (
 	// (database/contexts/api_v2_contexts.c:366-371).
 	niPortRe = regexp.MustCompile(`"(local|remote)":(\s*"\[[^\]"]*\]:)([0-9]+)`)
 	// niAgeRe is a start and its age, in C's order: an ingestion's (database/contexts/api_v2_contexts.c:343-344) and
-	// the cloud status's (claim/cloud-status.c:74-75).
-	niAgeRe = regexp.MustCompile(`"since":(\s*)([0-9]+),(\s*)"age":(\s*)([0-9]+)`)
+	// the cloud status's (claim/cloud-status.c:74-75). The start is a number, or with `options=rfc3339` a date
+	// (niDate); the age is a number in both forms (:344).
+	niAgeRe = regexp.MustCompile(`"since":(\s*)([0-9]+|"[^"]*"),(\s*)"age":(\s*)([0-9]+)`)
+	// niLastRe is a database's last time written as a date (`options=rfc3339`, :536).
+	niLastRe = regexp.MustCompile(`"last_time":(\s*)"([^"]*)"`)
 	// niPeerRe is a port as a socket has one: a number above 0, written without a leading 0.
 	niPeerRe = regexp.MustCompile(`^[1-9][0-9]*$`)
 )
@@ -281,13 +398,21 @@ var (
 //   - an ingestion source's `local` port reads LISTEN when it is the port the agent listens on, and its `remote` port
 //     PEER when it is a port (1 to 65535) other than that one: the child's own end, which the kernel chose
 //     (socket-peers.c:22-50, database/contexts/api_v2_contexts.c:366-371); the address and any suffix are kept;
-//   - a `since` reads START when it is a second the agent started in: localhost's ingestion (rrdhost-status.c:176,
+//   - a `since` reads START when it is a second the agent started in: localhost's ingestion (rrdhost-status.c:177,
 //     :202: `netdata_start_time`) and the cloud status of an agent that never connected (claim/cloud-status.c:38-44);
 //     it reads CONNECTED when it is a second the child's connection was opened in: a child's ingestion
-//     (rrdhost-status.c:163-169, streaming/stream-receiver.c:1416). niReady keeps the two apart;
-//   - the `age` after a `since` reads "NOW-SINCE" where it is the body's `now` (dashNowRe) less that start, as C
+//     (rrdhost-status.c:163-169, streaming/stream-receiver.c:1416); and GONE when it is a second of the side's gone
+//     window: a child that left, whose receiver stamped its detach (stream-receiver.c:1501-1502). niReady and niGone
+//     keep the windows apart;
+//   - the `age` after a `since` reads "NOW-SINCE" where it is the body's `now` (niNow) less that start, as C
 //     computes it (database/contexts/api_v2_contexts.c:344, from the walk's one `now`, :495;
 //     claim/cloud-status.c:75).
+//
+// With `options=rfc3339` C writes a database's times and an ingestion's start as dates, and the agent's `now` too
+// (buffer_json_member_add_time_t_formatted, libnetdata/buffer/buffer.h:1119-1128; api_v2_contexts.c:343, :535-536;
+// api_v2_contexts_agents.c:25); the ages and the cloud status stay numbers. A start written as C's date of the
+// second (niDate) reads as the number does, its word marked by niDateWord, so a time written in the other form
+// still differs; and a `last_time` written as C's date of the body's `now` reads `rfc3339:NOW` (niLastDate).
 //
 // Any other port, start or age is left as the agent wrote it, for the comparison.
 func niIngestRender(sides [2]niSide) func(i int, _ [2]int64, body []byte) []byte {
@@ -305,24 +430,18 @@ func niIngestRender(sides [2]niSide) func(i int, _ [2]int64, body []byte) []byte
 			}
 			return m
 		})
-		n, clocked := int64(0), false
-		if now := dashNowRe.FindSubmatch(body); now != nil {
-			x, err := strconv.ParseInt(string(now[1]), 10, 64)
-			n, clocked = x, err == nil
-		}
+		n, clocked := niNow(body)
+		body = niLastDate(body, n, clocked)
 		return niAgeRe.ReplaceAllFunc(body, func(m []byte) []byte {
 			g := niAgeRe.FindSubmatch(m)
-			since, err1 := strconv.ParseInt(string(g[2]), 10, 64)
-			age, err2 := strconv.ParseInt(string(g[5]), 10, 64)
-			if err1 != nil || err2 != nil {
+			since, date, ok := niSecond(g[2])
+			age, err := strconv.ParseInt(string(g[5]), 10, 64)
+			if !ok || err != nil {
 				return m
 			}
 			start, span := string(g[2]), string(g[5])
-			switch {
-			case since >= side.started[0] && since <= side.started[1]:
-				start = `"START"`
-			case since >= side.opened[0] && since <= side.opened[1]:
-				start = `"CONNECTED"`
+			if word := side.word(since); word != "" {
+				start = niDateWord(word, date)
 			}
 			if clocked && since+age == n {
 				span = `"NOW-SINCE"`
@@ -330,6 +449,88 @@ func niIngestRender(sides [2]niSide) func(i int, _ [2]int64, body []byte) []byte
 			return []byte(`"since":` + string(g[1]) + start + "," + string(g[3]) + `"age":` + string(g[4]) + span)
 		})
 	}
+}
+
+// word is the render's word for a start of side's run: START, CONNECTED or GONE (niIngestRender); empty for a second
+// of none of its windows. The connection's and the gone window are read only once set (a pair without the fixture
+// child has neither).
+func (side niSide) word(since int64) string {
+	switch {
+	case since >= side.started[0] && since <= side.started[1]:
+		return "START"
+	case side.opened[1] > 0 && since >= side.opened[0] && since <= side.opened[1]:
+		return "CONNECTED"
+	case side.gone[1] > 0 && since >= side.gone[0] && since <= side.gone[1]:
+		return "GONE"
+	}
+	return ""
+}
+
+// niDateLayout is the form of C's date of a whole second in UTC: no fraction, `Z` (rfc3339_datetime_ut with two
+// fraction digits that it leaves out for a whole second, libnetdata/buffer/buffer.c:412-416).
+const niDateLayout = "2006-01-02T15:04:05Z"
+
+// niDate is the second a JSON string holds when it is C's date of it (niDateLayout), exactly: another layout, a
+// fraction, an offset or a space is not.
+func niDate(text string) (int64, bool) {
+	t, err := time.Parse(niDateLayout, text)
+	if err != nil || t.UTC().Format(niDateLayout) != text {
+		return 0, false
+	}
+	return t.Unix(), true
+}
+
+// niSecond is the second a clock member's raw text holds: a JSON number of seconds, or a quoted date (niDate), which
+// date says.
+func niSecond(raw []byte) (second int64, date, ok bool) {
+	if len(raw) > 1 && raw[0] == '"' && raw[len(raw)-1] == '"' {
+		second, ok = niDate(string(raw[1 : len(raw)-1]))
+		return second, true, ok
+	}
+	n, err := strconv.ParseInt(string(raw), 10, 64)
+	return n, false, err == nil
+}
+
+// niDateWord is a render's word as a JSON string: the word, or for a time C wrote as a date `rfc3339:` and the word.
+func niDateWord(word string, date bool) string {
+	if date {
+		return `"rfc3339:` + word + `"`
+	}
+	return `"` + word + `"`
+}
+
+// niNow is the answering agent's clock in a node-instance answer, its first `now` (agentNowRe): a number of seconds or
+// a date (v2Second); clocked is false where it has none. v2Round holds that same `now` to the side's clock
+// (v2NowInFlight), so a value the render reads against it is held there too.
+func niNow(body []byte) (n int64, clocked bool) {
+	g := agentNowRe.FindSubmatch(body)
+	if g == nil {
+		return 0, false
+	}
+	v, err := ParseJSON(g[2])
+	if err != nil {
+		return 0, false
+	}
+	if n, err = v2Second(v); err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// niLastDate writes `rfc3339:NOW` for each database `last_time` written as C's date (niDate) of the body's clock n,
+// the date form of the family's NOW (nodeInstancesFamily): C prints an online host's last time from the walk's one
+// clock, the agent's `now` (rrdhost.h:617-618, api_v2_contexts.c:495, :1542). Any other value is left as written.
+func niLastDate(body []byte, n int64, clocked bool) []byte {
+	if !clocked {
+		return body
+	}
+	return niLastRe.ReplaceAllFunc(body, func(m []byte) []byte {
+		g := niLastRe.FindSubmatch(m)
+		if second, ok := niDate(string(g[2])); ok && second == n {
+			return []byte(`"last_time":` + string(g[1]) + niDateWord("NOW", true))
+		}
+		return m
+	})
 }
 
 // versionsGuard judges a versions answer: its members alone (api_v2_versions.c:6, the VERSIONS mode;
@@ -556,79 +757,237 @@ func TestNodesAPI(t *testing.T) {
 // (aclk_capas.c:41-42; rrdhost-status.c:405). What the ingestion takes from the side's own run reads as
 // niIngestRender names it: connected in the seconds the fixture child's connection was opened in, from a port of the
 // child's own to the port the agent listens on, both on the loopback address.
-func niChildFacts(i, ni int) []dashFact {
-	node := []string{"nodes", "[" + strconv.Itoa(i) + "]"}
-	inst := append(slices.Clone(node), "instances", "[0]")
-	db, ingest := append(slices.Clone(inst), "db"), append(slices.Clone(inst), "ingest")
-	return slices.Concat(dashChildNode(i, ni),
-		[]dashFact{
-			dashKeys("mg nm ni instances", node...),
-			dashAbsent(append(slices.Clone(node), "instances", "[1]")...),
-			dashKeys("st db ingest ml health functions capabilities dyncfg", inst...),
-		},
-		dashMembers(inst, "st", `{"ai":0,"code":200,"msg":""}`, "ml", `{"status":"disabled","type":"disabled"}`,
-			"health", `{"status":"disabled"}`, "functions", "{}", "capabilities", nodeCaps(false),
-			"dyncfg", `{"status":"unavailable"}`),
-		dashMembers(db, "status", `"online"`, "liveness", `"live"`, "mode", `"ram"`, "last_time", `"NOW"`,
+func niChildFacts(i, ni int) []dashFact { return niChildFactsIn(niShort, i, ni) }
+
+// niChildFactsIn are niChildFacts of an answer written in form f: the names of f, and its times' words.
+func niChildFactsIn(f niForm, i, ni int) []dashFact {
+	_, db, ingest := niChildPaths(i)
+	return slices.Concat(niChildInstance(f, i, ni),
+		dashMembers(db, "status", `"online"`, "liveness", `"live"`, "mode", `"ram"`, "last_time", f.word("NOW"),
 			"metrics", "7", "instances", "2", "contexts", "1"),
-		dashMembers(ingest, "id", "1", "hops", "1", "type", `"child"`, "status", `"online"`, "since", `"CONNECTED"`,
-			"age", `"NOW-SINCE"`, "metrics", "7", "instances", "2", "contexts", "1"),
+		dashMembers(ingest, "id", "1", "hops", "1", "type", `"child"`, "status", `"online"`, "since",
+			f.word("CONNECTED"), "age", `"NOW-SINCE"`, "metrics", "7", "instances", "2", "contexts", "1"),
 		[]dashFact{dashIs(`{"local":"[127.0.0.1]:LISTEN","remote":"[127.0.0.1]:PEER",`+
 			`"capabilities":["VCAPS","HLABELS","CLABELS","INTERPOLATED"]}`, append(slices.Clone(ingest), "source")...)})
+}
+
+// niChildPaths are the paths of item i's instance, its database and its ingestion.
+func niChildPaths(i int) (inst, db, ingest []string) {
+	inst = []string{"nodes", "[" + strconv.Itoa(i) + "]", "instances", "[0]"}
+	return inst, append(slices.Clone(inst), "db"), append(slices.Clone(inst), "ingest")
+}
+
+// niChildInstance are the facts every state of the fixture child shares, connected or gone (niChildFactsIn,
+// niGoneFacts), as item i numbered ni of an answer written in form f (niHostInstance), with `functions`: the host
+// keeps its function registry, with none, until it is archived (nrpc/nrpc-catalog.c:205-227, database/rrdhost.c:1020).
+func niChildInstance(f niForm, i, ni int) []dashFact {
+	return niHostInstance(f, i, ni, childHost.MachineGUID, childHost.Hostname, true)
+}
+
+// niHostInstance are the facts of a host other than localhost that streams no function, as item i numbered ni of an
+// answer written in form f: its node's members (by f's names) and one instance, whose members are the walk's status,
+// `db`, `ingest`, `ml`, `health`, `functions` where functions says (an empty object) and not otherwise,
+// `capabilities` and `dyncfg`, and no `stream` (api_v2_contexts.c:524-571; such a host has no sender here); the
+// status (jsonwrap-v2.c:8-18), ML and health off, the capabilities of a host without functions (nodeCaps) and no
+// dyncfg (aclk_capas.c:41-42; rrdhost-status.c:405).
+func niHostInstance(f niForm, i, ni int, guid, host string, functions bool) []dashFact {
+	node := []string{"nodes", "[" + strconv.Itoa(i) + "]"}
+	inst := append(slices.Clone(node), "instances", "[0]")
+	keys := f.st + " db ingest ml health capabilities dyncfg"
+	members := []string{f.st, `{"` + f.ai + `":0,"code":200,"msg":""}`, "ml", `{"status":"disabled","type":"disabled"}`,
+		"health", `{"status":"disabled"}`, "capabilities", nodeCaps(false), "dyncfg", `{"status":"unavailable"}`}
+	if functions {
+		keys = f.st + " db ingest ml health functions capabilities dyncfg"
+		members = append(members, "functions", "{}")
+	}
+	return slices.Concat(dashNodeIn(f, i, ni, guid, host),
+		[]dashFact{
+			dashKeys(f.mg+" "+f.nm+" "+f.ni+" instances", node...),
+			dashAbsent(append(slices.Clone(node), "instances", "[1]")...),
+			dashKeys(keys, inst...),
+		},
+		dashMembers(inst, members...))
 }
 
 // niLocalIngest are the facts of localhost's ingestion, the instance at path inst: initializing with the pulse off
 // (rrdhost-status.c:171-173), begun when the agent started (:202: a host without a connection time gets
 // `netdata_start_time`), which niIngestRender names START, its age the walk's clock less that.
-func niLocalIngest(inst []string) []dashFact {
+func niLocalIngest(inst []string) []dashFact { return niLocalIngestIn(niShort, inst) }
+
+// niLocalIngestIn is niLocalIngest of an answer written in form f.
+func niLocalIngestIn(f niForm, inst []string) []dashFact {
 	return dashMembers(append(slices.Clone(inst), "ingest"), "type", `"localhost"`, "status", `"initializing"`,
-		"since", `"START"`, "age", `"NOW-SINCE"`)
+		"since", f.word("START"), "age", `"NOW-SINCE"`)
 }
 
 // niAgentFacts are the facts of the agent's info in `/api/v2|v3/node_instances` (api_v2_contexts_agents.c:11-121;
 // the AGENTS_INFO mode): its members, its hosts, localhost and the child it receives, and its cloud status, of an
 // agent that never connected: begun when the agent started (claim/cloud-status.c:38-44, :74-75), as niIngestRender
 // names it.
-var niAgentFacts = slices.Concat(
-	[]dashFact{dashKeys("mg nd nm now ai application cloud nodes metrics instances contexts capabilities api db_size "+
-		"timings", "agents", "[0]")},
-	dashMembers([]string{"agents", "[0]"}, "mg", strconv.Quote(parentIdentity.MachineGUID),
-		"nodes", `{"total":2,"receiving":1,"sending":0,"archived":0}`),
-	dashMembers([]string{"agents", "[0]", "cloud"}, "status", `"available"`, "since", `"START"`, "age", `"NOW-SINCE"`))
+var niAgentFacts = niAgentFactsOf(parentIdentity.MachineGUID, `{"total":2,"receiving":1,"sending":0,"archived":0}`)
 
-// nodeInstancesRows are check `api.v2-node-instances`'s requests.
-func nodeInstancesRows() []v2Req {
+// niAgentFactsOf are niAgentFacts of the agent whose machine GUID is guid, its hosts counted as nodes says
+// (database/rrd-metadata.c:25-45: every host; those whose sender is connected; a host other than localhost that is
+// online; one that is not). The agent's members keep their short names and its cloud status its numbers in every
+// form (api_v2_contexts_agents.c:22-28; claim/cloud-status.c:74-75).
+func niAgentFactsOf(guid, nodes string) []dashFact {
+	return slices.Concat(
+		[]dashFact{dashKeys("mg nd nm now ai application cloud nodes metrics instances contexts capabilities api "+
+			"db_size timings", "agents", "[0]")},
+		dashMembers([]string{"agents", "[0]"}, "mg", strconv.Quote(guid), "nodes", nodes),
+		dashMembers([]string{"agents", "[0]", "cloud"}, "status", `"available"`, "since", `"START"`, "age",
+			`"NOW-SINCE"`))
+}
+
+// niLocalFacts are the facts of localhost as item 0 of `/api/v2|v3/node_instances` written in form f: no data with
+// the pulse off, so its database and ingestion are initializing (rrdhost-status.c:124-130, :171-173), its first time
+// 0 (null as a date: buffer.h:1121-1122) and its last the walk's clock (rrdhost.h:617-618), in the parent's own
+// dbengine, with localhost's capabilities.
+func niLocalFacts(f niForm) []dashFact {
 	parent := []string{"nodes", "[0]", "instances", "[0]"}
-	return []v2Req{
-		{name: "v2-ni-child", target: "/api/v2/node_instances?scope_nodes=" + childHost.Hostname, status: "200",
-			guard: dashGuard([]dashFact{dashKeys("api nodes versions agents timings"), dashAbsent("nodes", "[1]")},
-				niChildFacts(0, 0), niAgentFacts)},
-		// every host: localhost has no data with the pulse off, so its database and ingestion are initializing
-		// (rrdhost-status.c:124-130, :171-173), in the parent's own dbengine
-		{name: "v3-ni", target: "/api/v3/node_instances", status: "200", guard: dashGuard(
-			[]dashFact{dashKeys("api nodes versions agents timings"), dashAbsent("nodes", "[2]")},
-			dashParent(0, 0),
-			dashMembers(append(slices.Clone(parent), "db"), "status", `"initializing"`, "mode", `"dbengine"`,
-				"last_time", `"NOW"`, "contexts", "0"),
-			niLocalIngest(parent),
-			dashMembers(parent, "capabilities", nodeCaps(true)),
-			niChildFacts(1, 1), niAgentFacts)},
+	first := "0"
+	if f.date {
+		first = "null"
+	}
+	return slices.Concat(dashNodeIn(f, 0, 0, parentIdentity.MachineGUID, parentIdentity.Hostname),
+		dashMembers(append(slices.Clone(parent), "db"), "status", `"initializing"`, "mode", `"dbengine"`,
+			"first_time", first, "last_time", f.word("NOW"), "contexts", "0"),
+		niLocalIngestIn(f, parent),
+		dashMembers(parent, "capabilities", nodeCaps(true)))
+}
+
+// niDateAt holds when the value at path is C's date of a second (niDate).
+func niDateAt(path ...string) dashFact {
+	return func(v Value) error {
+		got, err := dashAt(v, path...)
+		if err != nil {
+			return fmt.Errorf("%v, want a date", err)
+		}
+		if _, ok := niDate(got.Text); got.Kind != KindString || !ok {
+			return fmt.Errorf("%s is %s, want a date", dashPath(path), got)
+		}
+		return nil
 	}
 }
 
+// niMembers are the members of a node-instance answer (api_v2_contexts.c:1376-1546: the NODES, NODE_INSTANCES,
+// VERSIONS and AGENTS modes, no `request` without `options=debug`).
+var niMembers = dashKeys("api nodes versions agents timings")
+
+// nodeInstancesRows are check `api.v2-node-instances`'s requests while the fixture child is connected.
+func nodeInstancesRows() []v2Req {
+	// every host in form f: localhost first, then the child (dashNode)
+	both := func(f niForm) func(Value) error {
+		return dashGuard([]dashFact{niMembers, dashAbsent("nodes", "[2]")}, niLocalFacts(f), niChildFactsIn(f, 1, 1),
+			niAgentFacts)
+	}
+	return []v2Req{
+		{name: "v2-ni-child", target: "/api/v2/node_instances?scope_nodes=" + childHost.Hostname, status: "200",
+			guard: dashGuard([]dashFact{niMembers, dashAbsent("nodes", "[1]")}, niChildFacts(0, 0), niAgentFacts)},
+		{name: "v3-ni", target: "/api/v3/node_instances", status: "200", guard: both(niShort)},
+		// the times as dates (buffer_json_member_add_time_t_formatted, buffer.h:1119-1128): each database's first and
+		// last time, each ingestion's start and the agent's clock (api_v2_contexts.c:343, :535-536;
+		// api_v2_contexts_agents.c:25), not the ages nor the cloud status's numbers (cloud-status.c:74-75)
+		{name: "v3-ni-rfc3339", target: "/api/v3/node_instances?options=rfc3339", status: "200",
+			guard: dashGuard([]dashFact{niDateAt("agents", "[0]", "now"),
+				niDateAt("nodes", "[1]", "instances", "[0]", "db", "first_time")}, []dashFact{both(niDated)})},
+		// the long names of the node's members and of the instance's status (niLong); the agent's keep their short
+		// ones. Every host, minified (`minify` without `debug`, api_v2_contexts.c:1376-1377)
+		{name: "v2-ni-long", target: "/api/v2/node_instances?options=long-json-keys%7Cminify", status: "200",
+			guard: both(niLong)},
+		// a window: the walk's clock is the second before the wall's (api_v2_contexts.c:1368-1374), the status's
+		// `now` (:495) and the agent's (:1542), which v2Clock shifts; both hosts are kept: the last ten minutes meet
+		// the retention of each, which ends now while it is online (:636; rrdhost.h:617-618)
+		{name: "v3-ni-window", target: "/api/v3/node_instances?after=-600", status: "200", guard: both(niShort)},
+	}
+}
+
+// niGoneFacts are the facts of the fixture child as item i, numbered ni, written in form f, once it left
+// (niGone) and the contexts worker took its collected flags down: the instance's members as connected
+// (niChildInstance: its function registry stays); its database queryable (it keeps its retention and its tree's
+// items, rrdhost-status.c:124-132) but stale, its last time the stored end of its data, not the walk's clock
+// (rrdhost.h:617-618); its ingestion not a child's any more (no
+// receiver: rrdhost-status.c:212, :232) but offline (one connection, :188-191), begun at the detach (:169;
+// stream-receiver.c:1501-1502), which niIngestRender names GONE, its collected counts 0, and nothing after them: no
+// `reason`, `replication` or `source` (those are a child's, api_v2_contexts.c:349-376).
+func niGoneFacts(f niForm, i, ni int, last int64) []dashFact {
+	_, db, ingest := niChildPaths(i)
+	return slices.Concat(niChildInstance(f, i, ni),
+		dashMembers(db, "status", `"online"`, "liveness", `"stale"`, "mode", `"ram"`, "last_time",
+			strconv.FormatInt(last, 10), "metrics", "7", "instances", "2", "contexts", "1"),
+		[]dashFact{dashKeys("id hops type status since age metrics instances contexts", ingest...)},
+		dashMembers(ingest, "id", "1", "hops", "1", "type", `"archived"`, "status", `"offline"`, "since",
+			f.word("GONE"), "age", `"NOW-SINCE"`, "metrics", "0", "instances", "0", "contexts", "0"))
+}
+
+// niGoneRow is check `api.v2-node-instances`' request once the fixture child, whose data ends at base+60
+// (streamChartsFixture), left: the child alone (niGoneFacts), and the agent that counts it archived
+// (rrd-metadata.c:35-44: no host is online but localhost).
+func niGoneRow(base int64) v2Req {
+	return v2Req{name: "gone", target: "/api/v2/node_instances?scope_nodes=" + childHost.Hostname, status: "200",
+		guard: dashGuard([]dashFact{niMembers, dashAbsent("nodes", "[1]")}, niGoneFacts(niShort, 0, 0, base+60),
+			niAgentFactsOf(parentIdentity.MachineGUID, `{"total":2,"receiving":0,"sending":0,"archived":1}`))}
+}
+
+// niArchivedFacts are the facts of a host loaded from the metadata database and never connected in this run, as item
+// i (and number i) of `/api/v2|v3/node_instances`, in a pair whose own database is in memory (`DBMode: alloc`): its
+// node and instance as a host's without functions (niHostInstance): no `stream` (such a host gets no sender:
+// database/sqlite/sqlite_aclk.c:190-212) and no `functions` (an archived host gets no function registry:
+// database/rrdhost.c:635-639, nrpc/nrpc-catalog.c:205-227). Its database is initializing and stale, in the agent's
+// memory mode (sqlite_aclk.c:202), with no retention and no item (only a dbengine host loads its contexts' data:
+// database/contexts/rrdcontext-loading.c:171-176); its ingestion archived, with no connection
+// (rrdhost-status.c:188-189, :232, :234), one hop (the database's: a child's, and the old localhost's once its
+// machine GUID changed, database/sqlite/sqlite_metadata.c:211, :1057-1062), begun when the agent started: an archived
+// host begins at its database's last time, 0 here, so at the agent's start (rrdhost-status.c:197-198, :202), which
+// niIngestRender names START; its collected counts 0 and nothing after them.
+func niArchivedFacts(i int, guid, host string) []dashFact {
+	inst := []string{"nodes", "[" + strconv.Itoa(i) + "]", "instances", "[0]"}
+	db, ingest := append(slices.Clone(inst), "db"), append(slices.Clone(inst), "ingest")
+	return slices.Concat(niHostInstance(niShort, i, i, guid, host, false),
+		[]dashFact{dashKeys("id hops type status since age metrics instances contexts", ingest...)},
+		dashMembers(db, "status", `"initializing"`, "liveness", `"stale"`, "mode", `"alloc"`, "first_time", "0",
+			"last_time", "0", "metrics", "0", "instances", "0", "contexts", "0"),
+		dashMembers(ingest, "id", "0", "hops", "1", "type", `"archived"`, "status", `"archived"`, "since", `"START"`,
+			"age", `"NOW-SINCE"`, "metrics", "0", "instances", "0", "contexts", "0"))
+}
+
+// niArchivedRow is `sqlite.archived-hosts`' node-instance request on `guid-change`'s pair, whose new localhost is
+// `parity-newparent`: the two hosts loaded from the database alone (the old localhost, then the child, in the order
+// the load made them), each archived (niArchivedFacts); the new localhost, whose pulse is on, is out of the scope.
+// The agent's info: its new machine GUID, three hosts of which none is received and two are archived
+// (database/rrd-metadata.c:25-45). The versions are those of the two hosts in scope, which have no context.
+var niArchivedRow = v2Req{name: "archived",
+	target: "/api/v3/node_instances?scope_nodes=" + childHost.Hostname + "," + parentIdentity.Hostname,
+	status: "200",
+	guard: dashGuard([]dashFact{niMembers, dashAbsent("nodes", "[2]")},
+		niArchivedFacts(0, parentIdentity.MachineGUID, parentIdentity.Hostname),
+		niArchivedFacts(1, childHost.MachineGUID, childHost.Hostname),
+		dashMembers([]string{"versions"}, "nodes_hard_hash", "3", "contexts_hard_hash", "0"),
+		niAgentFactsOf(archivedNewGUID, `{"total":3,"receiving":0,"sending":0,"archived":2}`))}
+
 // TestNodeInstancesAPI compares `/api/v2|v3/node_instances` (check `api.v2-node-instances`, D224): a host scope
-// naming the child, then every host, on a parent with the fixture child; then `access`: the NODES ACL's refusal
-// (451) and bearer protection (412) of both routes (web_api_v2.c:91-96, web_api_v3.c:126-131). Red on Rust until
-// commit 11.
+// naming the child, then every host, as they are, with their times as dates, with the long key names and within a
+// window, on a parent with the fixture child; then, the child gone, the child alone (D241 F3); then `access`: the
+// NODES ACL's refusal (451) and bearer protection (412) of both routes (web_api_v2.c:91-96, web_api_v3.c:126-131).
+// Red on Rust until commit 11.
 func TestNodeInstancesAPI(t *testing.T) {
 	t.Run("data", func(t *testing.T) {
 		p := dashPair(t, daemon.Options{})
 		niReady(p)
-		_, opened := dashChildLinkAs(t, p, dashBase(), childHost, qCharts)
-		fam := nodeInstancesFamily(niSides(p, opened))
+		base := dashBase()
+		conns, opened := dashChildLinkAs(t, p, base, childHost, qCharts)
+		sides := niSides(p, opened)
+		fam := nodeInstancesFamily(sides)
 		for _, r := range nodeInstancesRows() {
 			t.Run(r.name, func(t *testing.T) { compareV2(t, p, r, fam) })
 		}
+		// last: the child leaves, and each side's gone window names its detach
+		gone := niGone(t, p, childHost, conns, max(opened[0][1], opened[1][1]))
+		for i := range sides {
+			sides[i].gone = gone[i]
+		}
+		r := niGoneRow(base)
+		t.Run(r.name, func(t *testing.T) { compareV2(t, p, r, nodeInstancesFamily(sides)) })
 	})
 	t.Run("access", func(t *testing.T) {
 		accessRows(t, []accessConf{accessACL, accessBearer},
