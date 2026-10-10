@@ -3,7 +3,6 @@
 package parity
 
 import (
-	"bytes"
 	"fmt"
 	"maps"
 	"slices"
@@ -68,74 +67,16 @@ func testDashNormWeightsRows(t *testing.T) {
 	dashNormWeightsInterruptedPins(t)
 }
 
-// dashNormWeightsJudge judges a recorded pair as v2Round judges a live one, the network aside: the oracle's status;
-// the heads, each with its clocks read against its own flight and its length against its own body; then, for a 200,
-// the bodies normalised by fam, the guard on the oracle's, each side's clocks in its flight, the clocks' shapes, the
-// comparison under fam's masks, the layouts and the escapes; for another status the guard on the oracle's body and the
-// bodies byte for byte. The problems, none when they agree.
+// dashNormWeightsJudge judges a recorded pair as v2Round judges a live one (v2Judge), the network aside. The problems,
+// none when they agree.
 func dashNormWeightsJudge(req v2Req, fam v2Family, rec dashNormWeightsRow) []string {
-	var raw [2][]byte
-	for i := range raw {
-		raw[i] = []byte(rec.heads[i] + "\r\n\r\n" + rec.bodies[i])
+	var a v2Answer
+	for i := range a.raw {
+		a.raw[i] = []byte(rec.heads[i] + "\r\n\r\n" + rec.bodies[i])
 	}
-	if !bytes.HasPrefix(raw[0], []byte("HTTP/1.1 "+req.status+" ")) {
-		return []string{fmt.Sprintf("oracle: answered %q, expected %s", truncateBytes(raw[0]), req.status)}
-	}
-	var problems []string
-	var head, body [2][]byte
-	var clock [2][2]int64
-	for i := range raw {
-		if err := rawLength(raw[i]); err != nil {
-			problems = append(problems, err.Error())
-		}
-		head[i] = contentLengthRe.ReplaceAll(maskHead([]byte(rec.heads[i]), rec.flight[i]),
-			[]byte("Content-Length: <masked>"))
-		clock[i] = fam.v2Clock(req.target, rec.flight[i])
-		body[i] = fam.normalise(i, clock[i], rec.flight[i], []byte(rec.bodies[i]))
-	}
-	if !bytes.Equal(head[0], head[1]) {
-		problems = append(problems, fmt.Sprintf("headers differ\noracle:    %q\ncandidate: %q", head[0], head[1]))
-	}
-	if req.status != "200" {
-		if err := req.guard(Value{Kind: KindString, Text: string(body[0])}); err != nil {
-			return append(problems, fmt.Sprintf("oracle: %v", err))
-		}
-		if !bytes.Equal(body[0], body[1]) {
-			problems = append(problems, fmt.Sprintf("bodies differ: %q, %q", body[0], body[1]))
-		}
-		return problems
-	}
-	var doc [2]Value
-	for i := range body {
-		v, err := ParseJSON(body[i])
-		if err != nil {
-			return append(problems, fmt.Sprintf("side %d: %v", i, err))
-		}
-		doc[i] = v
-	}
-	if err := req.guard(doc[0]); err != nil {
-		return append(problems, fmt.Sprintf("oracle: %v", err))
-	}
-	for i := range doc {
-		for _, err := range []error{v2NowInFlight(doc[i], clock[i]), v2TiersInFlight(doc[i], rec.flight[i])} {
-			if err != nil {
-				problems = append(problems, fmt.Sprintf("side %d: %v", i, err))
-			}
-		}
-	}
-	if o, c := clockShapes(doc[0]), clockShapes(doc[1]); strings.Join(o, " ") != strings.Join(c, " ") {
-		problems = append(problems, fmt.Sprintf("clocks: oracle %v, candidate %v", o, c))
-	}
-	for _, d := range Compare(ApplyMasks(doc[0], fam.masks), ApplyMasks(doc[1], fam.masks), fam.unordered...) {
-		problems = append(problems, d.String())
-	}
-	if l := v2Layouts(body, fam.layoutByCount()); l != "" {
-		problems = append(problems, l)
-	}
-	if e := v2Escapes(body, doc, fam); e != "" {
-		problems = append(problems, e)
-	}
-	return problems
+	a.flight = rec.flight
+	v2Judge(&a, req, fam, [2]string{string(Oracle), string(Candidate)}, [2]string{})
+	return a.problems
 }
 
 // dashNormWeightsWrong is a named wrong answer of a row: the oracle's answer with the value at path set to the JSON

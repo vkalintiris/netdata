@@ -209,17 +209,30 @@ func v2Round(p *Pair, req v2Req, fam v2Family) v2Answer {
 		}
 		a.raw[i], a.flight[i] = b, [2]int64{from, time.Now().Unix()}
 	}
+	var roles, runDirs [2]string
+	for i, side := range p.Each() {
+		roles[i], runDirs[i] = string(side.Role), side.Daemon.Opts.RunDir
+	}
+	v2Judge(&a, req, fam, roles, runDirs)
+	return a
+}
+
+// v2Judge lists what differs between the two answers of a round (a.raw, each asked in a.flight), as v2Round judges
+// them after its exchange; roles name the sides in the problems, and each side's run directory is written `<run>` in
+// its body (an empty one is left alone: a recorded answer has it written already). A problem of the oracle's answer
+// starts with "oracle:".
+func v2Judge(a *v2Answer, req v2Req, fam v2Family, roles, runDirs [2]string) {
 	if !bytes.HasPrefix(a.raw[0], []byte("HTTP/1.1 "+req.status+" ")) {
 		a.problems = append(a.problems, fmt.Sprintf("oracle: answered %q, expected %s", truncateBytes(a.raw[0]),
 			req.status))
-		return a
+		return
 	}
 	// the heads but for the length, which each side must have written for its own body
 	var head [2][]byte
-	for i, side := range p.Each() {
+	for i := range a.raw {
 		h, _, _ := bytes.Cut(a.raw[i], []byte("\r\n\r\n"))
 		if err := rawLength(a.raw[i]); err != nil {
-			a.problems = append(a.problems, fmt.Sprintf("%s: %v", side.Role, err))
+			a.problems = append(a.problems, fmt.Sprintf("%s: %v", roles[i], err))
 		}
 		head[i] = contentLengthRe.ReplaceAll(maskHead(h, a.flight[i]), []byte("Content-Length: <masked>"))
 	}
@@ -228,44 +241,47 @@ func v2Round(p *Pair, req v2Req, fam v2Family) v2Answer {
 	}
 	// each side's run directory, in the build info's directories and the rules' sources
 	var clock [2][2]int64
-	for i, side := range p.Each() {
+	for i := range a.raw {
 		clock[i] = fam.v2Clock(req.targetOf(i), a.flight[i])
-		a.body[i] = fam.normalise(i, clock[i], a.flight[i],
-			bytes.ReplaceAll(httpBody(a.raw[i]), []byte(side.Daemon.Opts.RunDir), []byte("<run>")))
+		b := httpBody(a.raw[i])
+		if runDirs[i] != "" {
+			b = bytes.ReplaceAll(b, []byte(runDirs[i]), []byte("<run>"))
+		}
+		a.body[i] = fam.normalise(i, clock[i], a.flight[i], b)
 	}
 	if req.status != "200" {
 		if req.guard != nil {
 			if err := req.guard(Value{Kind: KindString, Text: string(a.body[0])}); err != nil {
 				a.problems = append(a.problems, fmt.Sprintf("oracle: %v: %q", err, truncateBytes(a.body[0])))
-				return a
+				return
 			}
 		}
 		if !bytes.Equal(a.body[0], a.body[1]) {
 			a.problems = append(a.problems, fmt.Sprintf("bodies differ\noracle:    %q\ncandidate: %q",
 				truncateBytes(a.body[0]), truncateBytes(a.body[1])))
 		}
-		return a
+		return
 	}
 	var err error
 	if a.doc[0], err = ParseJSON(a.body[0]); err != nil {
 		a.problems = append(a.problems, fmt.Sprintf("oracle: %v: %s", err, truncateBytes(a.body[0])))
-		return a
+		return
 	}
 	if req.guard != nil {
 		if err := req.guard(a.doc[0]); err != nil {
 			a.problems = append(a.problems, fmt.Sprintf("oracle: %v: %s", err, truncateBytes(a.body[0])))
-			return a
+			return
 		}
 	}
 	if a.doc[1], err = ParseJSON(a.body[1]); err != nil {
 		a.problems = append(a.problems, fmt.Sprintf("candidate: %v: %s", err, truncateBytes(a.body[1])))
-		return a
+		return
 	}
 	// the clocks the masks hide: each side's own, read while it answered
-	for i, side := range p.Each() {
+	for i := range a.raw {
 		for _, err := range []error{v2NowInFlight(a.doc[i], clock[i]), v2TiersInFlight(a.doc[i], a.flight[i])} {
 			if err != nil {
-				a.problems = append(a.problems, fmt.Sprintf("%s: %v", side.Role, err))
+				a.problems = append(a.problems, fmt.Sprintf("%s: %v", roles[i], err))
 			}
 		}
 	}
@@ -281,7 +297,6 @@ func v2Round(p *Pair, req v2Req, fam v2Family) v2Answer {
 	if e := v2Escapes(a.body, a.doc, fam); e != "" {
 		a.problems = append(a.problems, e)
 	}
-	return a
 }
 
 // jsonStringRe finds every string literal of a JSON text, keys and values, in the text's order.
