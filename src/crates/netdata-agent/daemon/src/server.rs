@@ -72,7 +72,7 @@ pub struct Shared {
     /// `gap_when_lost_iterations_above` (`[db] gap when lost iterations above` plus 2): how many update-everys a
     /// chart's last point may be old for a badge to show its value.
     pub gap_when_lost_iterations_above: i64,
-    /// `get_release_channel()`, reported by `/api/v1/charts`.
+    /// `get_release_channel()`, reported by `/api/v1/charts` and `/api/v1/info`.
     pub release_channel: &'static str,
     /// netdata.conf after startup (`netdata_config` and its lock): `/netdata.conf` and the reads C makes lazily.
     pub netdata_conf: Mutex<Config>,
