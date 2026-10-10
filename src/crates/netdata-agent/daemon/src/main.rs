@@ -1222,6 +1222,10 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     let mut metasync = Some(metasync);
     let mut dbengine = dbengine;
     let mut shutdown_started_ut = 0;
+    // ANALYTICS starts once the agent is ready, after the exit's work is registered: its handle waits here
+    let analytics_thread: Arc<std::sync::Mutex<Option<heartbeat::Thread>>> = Default::default();
+    let analytics_stop = Arc::clone(&analytics_thread);
+    let analytics_hosts = Arc::clone(&hosts);
     shutdown::set_work(Box::new(move |step, normal| match step {
         // rrdeng_quiesce_all() and a first flush of the dirty pages as the watcher starts, unless the exit is abnormal
         0 => {
@@ -1285,11 +1289,15 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 worker.join_within(shutdown::CONTEXT_WAIT);
             }
         }
-        // service_wait_exit(~0, 20 s): the connector, whose last passes follow the exit's start, and PLUGINSD when a
-        // plugin thread was still stopping at the streaming step
+        // service_wait_exit(~0, 20 s): the connector, whose last passes follow the exit's start, ANALYTICS, which
+        // leaves at its next tick, and PLUGINSD when a plugin thread was still stopping at the streaming step
         shutdown::STOP_REMAINING_THREADS => {
             let deadline = std::time::Instant::now() + shutdown::REMAINING_WAIT;
             connector.join_within(shutdown::REMAINING_WAIT);
+            let analytics = analytics_stop.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+            if let Some(thread) = analytics {
+                thread.join_within(deadline.saturating_duration_since(std::time::Instant::now()));
+            }
             if let Some(pluginsd) = pluginsd.take() {
                 let _ = pluginsd.stop_by(deadline);
             }
@@ -1371,12 +1379,22 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         meta.cleanup_agent_event_log();
     }
     commands::set_ready();
-    // The ANALYTICS thread is not ported: nothing is sent either way.
+    // ANALYTICS gathers whether anonymous statistics are on or off (C: "needed in /api/v1/info"); nothing is sent
     startup.step(if startup::analytics_check_enabled(&conf.dirs.user_config) {
         "anonymous analytics"
     } else {
         "anonymous analytics (disabled)"
     });
+    match analytics::spawn(
+        Arc::clone(&shared.analytics),
+        analytics_hosts,
+        conf.primary_plugins_dir(),
+        conf.threads.thread_stack_size,
+    ) {
+        Ok(thread) => *analytics_thread.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(thread),
+        // C carries on without it
+        Err(err) => nd_log!(Source::Daemon, Priority::Err, "{err}"),
+    }
     startup.step("mrg cleanup");
     if let Some(engine) = engine_main {
         engine.mrg.prepopulate_cleanup();

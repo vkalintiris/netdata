@@ -53,7 +53,7 @@ var timedRecords = regexp.MustCompile(`msg="Flushing DBENGINE hot & dirty pages\
 // cOnlyThreads are threads of subsystems the candidate does not have: all their records are the oracle's alone.
 var cOnlyThreads = map[string]string{
 	"ACLKSYNC": "ACLK", "SDBUSWATCHER": "systemd bus watcher",
-	"SERVICE": "service thread", "ANALYTICS": "analytics",
+	"SERVICE":   "service thread",
 	"EXPORTING": "exporting engine", "STATSD_FLUSH": "statsd",
 	"ACLK_MAIN": "ACLK", "OPEN_PGC": "the open cache's evictor (no open cache, D84.4)",
 }
