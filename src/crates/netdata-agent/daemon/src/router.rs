@@ -997,8 +997,9 @@ mod tests {
 
     /// `/api/v1/info` ends as `web_client_api_request_v1_info_fill_buffer()` writes it after the host's labels: the
     /// functions, the collectors, the Cloud flags, the memory mode with the dbengine's quota and page cache size, the
-    /// web and streaming flags, the analytics members and ML's object (`api_v1_info.c:132-172`; C's bytes of a fresh
-    /// agent, recorded 12 s after readiness, differ only by `exporting-connectors`, which the ANALYTICS thread sets).
+    /// web and streaming flags, the analytics members and ML's object (`api_v1_info.c:132-172`). The layout and the
+    /// literals are those of C's bytes recorded 12 s after readiness; `exporting-connectors` is null until the
+    /// ANALYTICS thread's first gather, and the build info, memory mode and sizes are the fixture's.
     #[test]
     fn info_ends_with_the_tail_of_members() {
         let s = Shared {
@@ -1067,21 +1068,27 @@ mod tests {
             st
         };
         let item = |plugin: &str, module: &str| serde_json::json!({"plugin": plugin, "module": module});
+        // the ids run against the creation order, which the walk follows
         let long = "p".repeat(498);
-        let first = chart("a", "p", Some("m"), DbMode::Ram, true);
-        let second = chart("b", "p", Some("m"), DbMode::Ram, true);
-        chart("c", "p", Some("other"), DbMode::Ram, true);
-        chart("d", "q", None, DbMode::Ram, true);
-        chart("e", "hidden", None, DbMode::Ram, true).flags_set_and_clear(chart_flags::HIDDEN, 0);
-        chart("f", "obsolete", None, DbMode::Ram, true).flags_set_and_clear(chart_flags::OBSOLETE, 0);
-        chart("g", "nodims", None, DbMode::Ram, false);
-        chart("h", "none", None, DbMode::None, true);
-        chart("i", "x:y", Some("z"), DbMode::Ram, true);
-        chart("j", "x", Some("y:z"), DbMode::Ram, true);
-        chart("k", &long, Some("m1"), DbMode::Ram, true);
-        chart("l", &long, Some("m2"), DbMode::Ram, true);
+        let (long_a, long_b) = (format!("{long}a"), format!("{long}b"));
+        let first = chart("z", "p", Some("m"), DbMode::Ram, true);
+        let second = chart("y", "p", Some("m"), DbMode::Ram, true);
+        chart("x", "p", Some("other"), DbMode::Ram, true);
+        chart("w", "q", None, DbMode::Ram, true);
+        chart("v", "hidden", None, DbMode::Ram, true).flags_set_and_clear(chart_flags::HIDDEN, 0);
+        chart("u", "obsolete", None, DbMode::Ram, true).flags_set_and_clear(chart_flags::OBSOLETE, 0);
+        chart("t", "nodims", None, DbMode::Ram, false);
+        chart("s", "none", None, DbMode::None, true);
+        chart("r", "x:y", Some("z"), DbMode::Ram, true);
+        chart("q", "x", Some("y:z"), DbMode::Ram, true);
+        // the key's first 499 bytes: these two differ at the 500th and are one pair, the next two at the 499th
+        chart("p", &long, Some("m1"), DbMode::Ram, true);
+        chart("o", &long, Some("n1"), DbMode::Ram, true);
+        chart("n", &long_a, None, DbMode::Ram, true);
+        chart("m", &long_b, None, DbMode::Ram, true);
         first.set_last_accessed_s(0);
         second.set_last_accessed_s(0);
+        let before = netdata_agent_rrd::clock::now_realtime_s();
         assert_eq!(
             info_member(&s, b"/api/v1/info", "collectors"),
             serde_json::json!([
@@ -1089,10 +1096,14 @@ mod tests {
                 item("p", "other"),
                 item("q", ""),
                 item("x:y", "z"),
-                item(&long, "m1")
+                item(&long, "m1"),
+                item(&long_a, ""),
+                item(&long_b, "")
             ])
         );
-        assert!(first.last_accessed_s() > 0);
+        // the walk's wall-clock time, on the first chart of a pair only
+        let accessed = first.last_accessed_s();
+        assert!((before..=netdata_agent_rrd::clock::now_realtime_s()).contains(&accessed), "{accessed}");
         assert_eq!(second.last_accessed_s(), 0);
     }
 
@@ -1135,6 +1146,14 @@ mod tests {
         assert_eq!(member("charts-count"), 3);
         assert_eq!(member("web-enabled"), true);
         assert_eq!(info_member(&s, b"/api/v1/info", "collectors"), serde_json::json!([]));
+        // the routed host's sender: localhost compresses, the child has none
+        let recorder = Arc::new(netdata_agent_rrd::testing::Recorder::default());
+        recorder.status.lock().unwrap().compression = true;
+        let upstream: Arc<dyn netdata_agent_rrd::upstream::Upstream> = recorder;
+        s.hosts.localhost().set_upstream(upstream);
+        assert_eq!(info_member(&s, b"/api/v1/info", "stream-compression"), true);
+        assert_eq!(member("stream-compression"), false);
+        assert_eq!(member("ml-info"), serde_json::json!({"enabled": false}));
     }
 
     /// `stream_sender_has_compression()`: false without a sender; with one, the sender's own answer, whether or not

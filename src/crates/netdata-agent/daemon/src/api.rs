@@ -21,21 +21,27 @@ const COLLECTOR_KEY_MAX: usize = 499;
 fn host_collectors(w: &mut JsonWriter, host: &Host) {
     w.member_add_array(Some(b"collectors"));
     let mut seen = HashSet::new();
+    let mut key = Vec::new();
     let now = now_realtime_s();
     for st in host.charts().all() {
         if !v1_charts::available_for_viewers(&st) {
             continue;
         }
-        let meta = st.meta();
-        let mut key = format!("{}:{}", meta.plugin, meta.module).into_bytes();
-        key.truncate(COLLECTOR_KEY_MAX);
-        if seen.insert(key) {
-            st.set_last_accessed_s(now);
-            w.add_array_item_object();
-            w.member_add_string("plugin", &meta.plugin);
-            w.member_add_string("module", &meta.module);
-            w.object_close();
-        }
+        st.with_meta(|meta| {
+            key.clear();
+            key.extend_from_slice(meta.plugin.as_bytes());
+            key.push(b':');
+            key.extend_from_slice(meta.module.as_bytes());
+            key.truncate(COLLECTOR_KEY_MAX);
+            if !seen.contains(key.as_slice()) {
+                seen.insert(key.clone());
+                st.set_last_accessed_s(now);
+                w.add_array_item_object();
+                w.member_add_string("plugin", &meta.plugin);
+                w.member_add_string("module", &meta.module);
+                w.object_close();
+            }
+        });
     }
     w.array_close();
 }

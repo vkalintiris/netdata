@@ -7,7 +7,7 @@ use std::sync::Arc;
 use netdata_agent_health::Health;
 use netdata_agent_health::alerts::HostAlerts;
 use netdata_agent_health::api::{chart_alarms_json, linked_count, variables_json};
-use netdata_agent_rrd::chart::{Chart, Dim, ID_LENGTH_MAX, dim_flags, flags as chart_flags};
+use netdata_agent_rrd::chart::{Chart, DimMeta, ID_LENGTH_MAX, dim_flags, flags as chart_flags};
 use netdata_agent_rrd::host::{Host, Hosts};
 use netdata_agent_rrd::mode::DbMode;
 use netdata_agent_text::c::strsep_skip;
@@ -44,15 +44,14 @@ pub fn release_channel(user_config_dir: &str, version: &str) -> &'static str {
 
 /// `rrdset_is_available_for_viewers()`.
 pub(crate) fn available_for_viewers(st: &Chart) -> bool {
-    let flags = st.meta().flags;
-    flags & (chart_flags::HIDDEN | chart_flags::OBSOLETE) == 0
+    st.flags() & (chart_flags::HIDDEN | chart_flags::OBSOLETE) == 0
         && st.dim_count() > 0
         && st.mode() != DbMode::None
 }
 
 /// The dimensions `rrdset2json()` and `analytics_metrics()` show: neither hidden nor obsolete.
-pub(crate) fn dimension_visible(rd: &Dim) -> bool {
-    rd.meta().flags & (dim_flags::HIDDEN | dim_flags::OBSOLETE) == 0
+pub(crate) fn dimension_visible(dm: &DimMeta) -> bool {
+    dm.flags & (dim_flags::HIDDEN | dim_flags::OBSOLETE) == 0
 }
 
 /// `rrdset2json()`: adds the chart's members; returns its visible dimensions. `alerts` are its host's.
@@ -92,10 +91,10 @@ fn chart_json(w: &mut JsonWriter, st: &Chart, alerts: Option<&HostAlerts>) -> us
     let mut dimensions = 0;
     w.member_add_object(b"dimensions");
     for rd in st.dims() {
-        if !dimension_visible(&rd) {
+        let dm = rd.meta();
+        if !dimension_visible(&dm) {
             continue;
         }
-        let dm = rd.meta();
         w.member_add_object(rd.id());
         w.member_add_string("name", &dm.name);
         w.object_close();

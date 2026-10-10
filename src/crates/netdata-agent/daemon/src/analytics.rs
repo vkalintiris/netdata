@@ -93,7 +93,7 @@ fn counts(host: &Host) -> (u64, u64) {
     for st in host.charts().all() {
         if v1_charts::available_for_viewers(&st) {
             charts += 1;
-            metrics += st.dims().iter().filter(|rd| v1_charts::dimension_visible(rd)).count() as u64;
+            metrics += st.dims().iter().filter(|rd| v1_charts::dimension_visible(&rd.meta())).count() as u64;
         }
     }
     (charts, metrics)
@@ -232,6 +232,8 @@ mod tests {
         assert_eq!(gathers(122), [(10, Immutable), (121, Mutable)]);
         assert_eq!(gathers(121 + 21_600), [(10, Immutable), (121, Mutable)]);
         assert_eq!(gathers(121 + 21_600 + 1), [(10, Immutable), (121, Mutable), (21_721, Mutable)]);
+        // the count starts again after a gather: none the tick after
+        assert_eq!(gathers(121 + 21_600 + 2), [(10, Immutable), (121, Mutable), (21_721, Mutable)]);
     }
 
     /// The counts take the charts available for viewers and, of theirs, the dimensions neither hidden nor obsolete.
