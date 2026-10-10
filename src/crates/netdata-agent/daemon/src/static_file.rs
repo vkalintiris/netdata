@@ -145,7 +145,9 @@ fn read_regular(path: &str, meta: &Metadata) -> io::Result<(Vec<u8>, i64)> {
             netdata_agent_log::errno_of(&err)
         };
         nd_log!(Source::Daemon, Priority::Err, errno = errno; "Web server failed to read file '{path}'");
-        return Err(io::Error::from_raw_os_error(errno));
+        // C saves errno after that record, which its logger cleared: the 404's record carries none, and a read that
+        // failed with EBUSY or EAGAIN is not the busy file's 307 (web_client.c:578-583, D251 F9)
+        return Err(io::Error::from_raw_os_error(0));
     }
     Ok((data, meta.mtime()))
 }
@@ -197,6 +199,7 @@ pub fn serve(route: &mut Route<'_>, filename: &[u8]) -> Reply {
             date: mtime,
             expires: netdata_agent_rrd::clock::now_realtime_s() + 86400,
             no_cacheable: false,
+            served_file: true,
             ..Reply::default()
         },
         Err(err)

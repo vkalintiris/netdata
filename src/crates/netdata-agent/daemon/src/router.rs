@@ -1181,6 +1181,73 @@ mod tests {
         }
     }
 
+    /// A request for a static file under a web directory of the test's own, with its method.
+    fn static_request(s: &Shared, path: &[u8], mode: netdata_agent_web::request::Mode) -> Reply {
+        let mut req = Request::default();
+        req.path = path.to_vec();
+        req.url_as_received = path.to_vec();
+        req.mode = Some(mode);
+        process_request(
+            &req,
+            path,
+            acl::bits::TRANSPORTS | acl::bits::ALL_LISTENER_FEATURES,
+            s,
+            Instant::now(),
+            &crate::access_log::RequestContext::default(),
+            &|_| false,
+        )
+    }
+
+    /// `web_server_static_file()` sets the request's mode to GET once it serves a file, and the access record prints
+    /// that mode (`web_client.c:619`, `:247`): a served POST, PUT or DELETE is logged as a GET; a static path that
+    /// fails and an API request keep their method.
+    #[test]
+    fn a_served_static_file_is_logged_as_a_get() {
+        use netdata_agent_web::request::Mode;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<html></html>").unwrap();
+        let s = Shared {
+            web_dir: dir.path().to_str().unwrap().into(),
+            ..shared()
+        };
+        for mode in [Mode::Get, Mode::Post, Mode::Put, Mode::Delete] {
+            let served = static_request(&s, b"/index.html", mode);
+            assert_eq!((served.code, served.served_file), (status::OK, true), "{mode:?}");
+            assert_eq!(server::logged_mode(Some(mode), &served), Some(Mode::Get), "{mode:?}");
+            let missing = static_request(&s, b"/missing.html", mode);
+            assert_eq!((missing.code, missing.served_file), (status::NOT_FOUND, false), "{mode:?}");
+            assert_eq!(server::logged_mode(Some(mode), &missing), Some(mode), "{mode:?}");
+        }
+        let api = static_request(&s, b"/api/v1/info", Mode::Post);
+        assert!(!api.served_file);
+        assert_eq!(server::logged_mode(Some(Mode::Post), &api), Some(Mode::Post));
+    }
+
+    /// A read that fails (here a sysfs attribute, which reports 4096 bytes and reads 5) is C's 404: its first record
+    /// carries EIO, and the second none, since C saves errno after its logger cleared it (`web_client.c:578-583`).
+    #[test]
+    fn a_failed_read_s_second_record_has_no_errno() {
+        use netdata_agent_web::request::Mode;
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink("/sys/kernel/uevent_seqnum", dir.path().join("short.txt")).unwrap();
+        let s = Shared {
+            web_dir: dir.path().to_str().unwrap().into(),
+            ..shared()
+        };
+        let (reply, records) = netdata_agent_log::capture(|| static_request(&s, b"/short.txt", Mode::Get));
+        assert_eq!((reply.code, reply.served_file), (status::NOT_FOUND, false));
+        assert_eq!(String::from_utf8_lossy(&reply.body), "Cannot open file: short.txt");
+        let path = format!("{}/short.txt", dir.path().display());
+        let records: Vec<_> = records.iter().map(|r| (r.errno, r.message.clone().unwrap_or_default())).collect();
+        assert_eq!(
+            records,
+            [
+                (nix::errno::Errno::EIO as i32, format!("Web server failed to read file '{path}'")),
+                (0, format!("0: Cannot open file '{path}'.")),
+            ]
+        );
+    }
+
     /// `analytics_log_dashboard()` is called for every hello before the ACL check, so a refused hello counts too;
     /// another action counts nothing.
     #[test]

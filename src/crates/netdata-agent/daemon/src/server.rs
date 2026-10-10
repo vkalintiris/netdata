@@ -31,6 +31,12 @@ use crate::acl::{self, WebAcl};
 use crate::buildinfo::BuildInfo;
 use crate::router;
 
+/// The method the access record of `reply` prints: a served static file's request is a GET whatever its method, as
+/// C's record prints `w->mode` (`web_client.c:247`), which serving the file set; every other answer keeps `mode`.
+pub fn logged_mode(mode: Option<Mode>, reply: &Reply) -> Option<Mode> {
+    if reply.served_file { Some(Mode::Get) } else { mode }
+}
+
 /// What every worker needs to answer requests.
 pub struct Shared {
     pub settings: Settings,
@@ -139,6 +145,8 @@ pub struct Reply {
     pub headers: Vec<u8>,
     /// `WEB_CLIENT_FLAG_TRACKING_REQUIRED`: under the DNT policy the answer says `Tk: T;cookies`.
     pub tracking_required: bool,
+    /// `web_server_static_file()` served a file, which sets `w->mode = HTTP_REQUEST_MODE_GET` (`web_client.c:619`).
+    pub served_file: bool,
 }
 
 impl Default for Reply {
@@ -152,6 +160,7 @@ impl Default for Reply {
             expires: 0,
             headers: Vec::new(),
             tracking_required: false,
+            served_file: false,
         }
     }
 }
@@ -1164,6 +1173,7 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
         .last()
         .map_or(if gzip { 0 } else { reply.body.len() }, |b| b.1 as usize);
     let mut done = completed(client, built.code, sent, reply.body.len());
+    done.mode = logged_mode(done.mode, &reply);
     done.gzip_blocks = blocks
         .into_iter()
         .map(|(at, total)| (header_len + at, total))

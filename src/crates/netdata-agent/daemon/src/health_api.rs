@@ -170,5 +170,6 @@ pub fn badge(route: &Route<'_>, host: &Host, query: &[u8]) -> Reply {
         expires: badge.expires,
         headers: badge.headers,
         tracking_required: false,
+        served_file: false,
     }
 }
