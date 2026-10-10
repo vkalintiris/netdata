@@ -496,8 +496,8 @@ func testDashNormTight(t *testing.T) {
 		t.Errorf("the recorded tables differ: %v", d)
 	}
 
-	// D9: runR's tier 0 sample counts, beside D228's mask: whole numbers above 0, within 5% of each other (C's pair
-	// of H31's probe: 106565 apart, 2.1%)
+	// D9: runR's tier 0 sample counts, beside D228's mask: whole numbers of at least the fixture's count, with any
+	// double count above it on either side (C's pairs of H31's probe and of 2026-10-10; the port's of 2026-10-10; D249)
 	tiers := func(samples string) Value {
 		return parse(`{"agents":[{"db_size":[{"tier":0,"metrics":116,"samples":` + samples + `},{"tier":1,` +
 			`"samples":66860}]}]}`)
@@ -508,9 +508,10 @@ func testDashNormTight(t *testing.T) {
 	}{
 		"C's pair":             {"5294079", "5187514", false},
 		"the same count":       {"5187514", "5187514", false},
-		"five percent":         {"5187514", "5446889", false},
-		"above five percent":   {"5187514", "5446890", true},
-		"the lower one first":  {"5446890", "5187514", true},
+		"C's largest":          {"7310053", "5187514", false},
+		"the port's largest":   {"5187514", "5611966", false},
+		"one sample lost":      {"5187514", "5187513", true},
+		"the oracle's lost":    {"5187513", "5187514", true},
 		"a count of 0":         {"5187514", "0", true},
 		"both counts 0":        {"0", "0", true},
 		"the oracle's of 0":    {"0", "5187514", true},

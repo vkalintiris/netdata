@@ -95,12 +95,13 @@ var infoV2Fresh = append([]Mask{infoV2Since}, infoV2Retention...)
 var infoV2RunR = append(slices.Clone(infoV2Retention),
 	Mask{"agents.[].db_size.[0].samples", "tier 0's count at start: parallel journal population (D228)"})
 
-// infoV2RunRBound is how far apart, in hundredths of the smaller one, the two sides' counts of tier 0's samples may
-// be on the runR fixture: the double count was at most 106565 of 5187514 samples, 2.1%, in every run recorded (D228).
-const infoV2RunRBound = 5
+// infoV2RunRFloor is tier 0's sample count on the runR fixture without a double count: the lowest of every run, on
+// both sides (C and the port, k108 to k116). The double count only adds, by any amount and on either side: C was seen
+// 2122539 above it (+41%), the port 424452 (+8.2%), both on 2026-10-10 (D228, D249).
+const infoV2RunRFloor = 5187514
 
 // infoV2RunRJudge is what D228's mask leaves of tier 0's sample count on the runR fixture: on each side (0 the
-// oracle) a whole number above 0, and the two within infoV2RunRBound percent of each other. It returns both counts.
+// oracle) a whole number at least infoV2RunRFloor, so a side that loses samples is refused. It returns both counts.
 func infoV2RunRJudge(o, c Value) ([2]int64, error) {
 	var n [2]int64
 	for i, v := range []Value{o, c} {
@@ -109,14 +110,10 @@ func infoV2RunRJudge(o, c Value) ([2]int64, error) {
 		if err == nil && samples.Kind == KindNumber {
 			n[i], err = strconv.ParseInt(samples.Text, 10, 64)
 		}
-		if err != nil || samples.Kind != KindNumber || n[i] <= 0 {
-			return n, fmt.Errorf("%s: tier 0's samples are %s (%v), want a whole number above 0",
-				[]Role{Oracle, Candidate}[i], samples, err)
+		if err != nil || samples.Kind != KindNumber || n[i] < infoV2RunRFloor {
+			return n, fmt.Errorf("%s: tier 0's samples are %s (%v), want a whole number of at least %d",
+				[]Role{Oracle, Candidate}[i], samples, err, infoV2RunRFloor)
 		}
-	}
-	if low, high := min(n[0], n[1]), max(n[0], n[1]); (high-low)*100 > low*infoV2RunRBound {
-		return n, fmt.Errorf("tier 0's samples: oracle %d, candidate %d: more than %d%% apart", n[0], n[1],
-			infoV2RunRBound)
 	}
 	return n, nil
 }
