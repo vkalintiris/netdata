@@ -1,0 +1,28 @@
+# C's sql_get_alert_configuration() for several hashes at once, as `options=config` of
+# /api/v2/alert_transitions asks it: a temporary table of the hashes joined to alert_hash, with no order.
+# alert_hash holds 4 rules, stored in the order bb, cc, aa, dd (the table's rowid order; by hash they sort aa, bb, cc,
+# dd). The rules are asked in orders that are not the table's, with a hash twice and a hash no rule has, with
+# none at all; then the same again once `ANALYZE` has written the table's statistics (sqlite_stat1), which
+# the planner reads.
+# C answers in the order asked, without statistics and with statistics of 4 rules. The rule dd has a value in
+# every column the statement reads.
+database real
+sql INSERT INTO alert_hash (hash_id, date_updated, template, on_key, every, class) VALUES (x'b00000000000400080000000000000bb', 2000000000, 't_bb', 'ctx.bb', '1s', 'Class bb')
+sql INSERT INTO alert_hash (hash_id, date_updated, template, on_key, every, class) VALUES (x'c00000000000400080000000000000cc', 2000000000, 't_cc', 'ctx.cc', '2s', 'Class cc')
+sql INSERT INTO alert_hash (hash_id, date_updated, template, on_key, every, class) VALUES (x'a00000000000400080000000000000aa', 2000000000, 't_aa', 'ctx.aa', '3s', 'Class aa')
+sql INSERT INTO alert_hash (hash_id, date_updated, alarm, template, on_key, os, hosts, lookup, every, units, calc, families, plugin, module, charts, green, red, warn, crit, exec, to_key, info, delay, options, repeat, host_labels, p_db_lookup_dimensions, p_db_lookup_method, p_db_lookup_options, p_db_lookup_after, p_db_lookup_before, p_update_every, source, chart_labels, summary, time_group_condition, time_group_value, dims_group, data_source, class, component, type) VALUES (x'd00000000000400080000000000000dd', 2000000000, 'a_dd', NULL, 'ctx.dd', 'linux', '*', 'average -10m unaligned of used', '1m', '%', '$this * 2', '*', 'p', 'm', 'c', '1', '2', '$this > 80', '$this > 90', '/bin/exec', 'sysadmin', 'the info', 'up 1m down 15m multiplier 1.5 max 1h', 'no-clear-notification', 'warning 120s critical 10s', 'role = db', 'used', 'average', 4294967295, -600, -5, 60, 'line=1,file=/etc/netdata/health.d/dd.conf', 'mount_point = /', 'the summary', 2, 1.5, 1, 2, 'Utilization', 'Disk', 'System')
+configurations d0000000-0000-4000-8000-0000000000dd c0000000-0000-4000-8000-0000000000cc a0000000-0000-4000-8000-0000000000aa b0000000-0000-4000-8000-0000000000bb
+configurations a0000000-0000-4000-8000-0000000000aa b0000000-0000-4000-8000-0000000000bb c0000000-0000-4000-8000-0000000000cc d0000000-0000-4000-8000-0000000000dd
+configurations b0000000-0000-4000-8000-0000000000bb c0000000-0000-4000-8000-0000000000cc a0000000-0000-4000-8000-0000000000aa d0000000-0000-4000-8000-0000000000dd
+configurations c0000000-0000-4000-8000-0000000000cc a0000000-0000-4000-8000-0000000000aa b0000000-0000-4000-8000-0000000000bb
+configurations d0000000-0000-4000-8000-0000000000dd 5a1e0000-0000-4000-8000-00000000dead a0000000-0000-4000-8000-0000000000aa d0000000-0000-4000-8000-0000000000dd
+configurations d0000000-0000-4000-8000-0000000000dd b0000000-0000-4000-8000-0000000000bb
+configurations d0000000-0000-4000-8000-0000000000dd
+sql ANALYZE
+configurations d0000000-0000-4000-8000-0000000000dd c0000000-0000-4000-8000-0000000000cc a0000000-0000-4000-8000-0000000000aa b0000000-0000-4000-8000-0000000000bb
+configurations a0000000-0000-4000-8000-0000000000aa b0000000-0000-4000-8000-0000000000bb c0000000-0000-4000-8000-0000000000cc d0000000-0000-4000-8000-0000000000dd
+configurations b0000000-0000-4000-8000-0000000000bb c0000000-0000-4000-8000-0000000000cc a0000000-0000-4000-8000-0000000000aa d0000000-0000-4000-8000-0000000000dd
+configurations c0000000-0000-4000-8000-0000000000cc a0000000-0000-4000-8000-0000000000aa b0000000-0000-4000-8000-0000000000bb
+configurations d0000000-0000-4000-8000-0000000000dd 5a1e0000-0000-4000-8000-00000000dead a0000000-0000-4000-8000-0000000000aa d0000000-0000-4000-8000-0000000000dd
+configurations d0000000-0000-4000-8000-0000000000dd b0000000-0000-4000-8000-0000000000bb
+configurations d0000000-0000-4000-8000-0000000000dd

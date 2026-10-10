@@ -57,8 +57,8 @@
 //
 //   gen-loop-vectors scenario <loop.tsv to append to> <scenario file> <a file for the records>
 //       One process per scenario. Rows are <scenario> <step> <kind> ..., a step being one `pass`, `unlink`,
-//       `apply`, `store`, `restart`, `cleanup`, `alarm-log`, `configs`, `wait`, `load`, `manage`, `dyncfg`,
-//       `register`, `unregister`, `disconnect`, `reload` or `badge` directive:
+//       `apply`, `store`, `restart`, `cleanup`, `alarm-log`, `configs`, `transitions`, `configurations`, `wait`,
+//       `load`, `manage`, `dyncfg`, `register`, `unregister`, `disconnect`, `reload` or `badge` directive:
 //         do         the directive
 //         next_run   after a pass: the pass's next_run
 //         host       pending flags (i = initialization, r = label recheck), health_transitions,
@@ -101,6 +101,23 @@
 //                    store's order, separated by spaces (`-` for none)
 //         store      then per name that is new or differs from its last row: the name, whether it is enabled, how
 //                    many rules its chain has, and the chain as health_prototype_to_json() prints it for a GET
+//         transition     a `transitions` step: per entry C's sql_alert_transitions() handed its callback, in
+//                        C's order, the entry as the callback gets it, in the statement's column order: host_id,
+//                        alarm_id (C's 32 bits), config_hash_id, alert_name, chart, chart_name, family, recipient,
+//                        units, exec, chart_context, when_key, duration, non_clear_duration, flags (16 hex
+//                        digits), delay_up_to_timestamp, info, exec_code, new_status, old_status, delay, new_value,
+//                        old_value, last_repeat, transition_id, global_id (unsigned), classification, type,
+//                        component, exec_run_timestamp, summary. An id is 32 hex digits, a text C's string
+//                        (`\x00`: NULL), a value a double
+//         transitions    then how many entries the callback got (a row C skips is in its record alone)
+//         configuration  a `configurations` step: per rule C's sql_get_alert_configuration() handed its callback,
+//                        in C's order, the rule as the callback gets it, in the statement's column order: the hash
+//                        (32 hex digits), alarm, template, on_key, class, component, type, lookup, every, units,
+//                        calc, families, green, red, warn, crit, exec, to_key, info, delay, options, repeat,
+//                        host_labels, p_db_lookup_dimensions, p_db_lookup_method, p_db_lookup_options (unsigned),
+//                        p_db_lookup_after, p_db_lookup_before, p_update_every, source, chart_labels, summary,
+//                        time_group_condition, time_group_value (a double), dims_group, data_source
+//         configurations then what the function returned: how many rules it handed out, -1 when it failed
 // The silencers' file is a path beside the records; every row names it `{file}`.
 //
 // A scenario file holds a directive per line (`#` starts a comment). Seconds are offsets from T0 = 2000000000.
@@ -150,6 +167,17 @@
 //   configs                            /api/v2/alert_config's body for every rule of alert_hash, in the table's
 //                                      order, then for a hash no rule has: a `config` row each, with the hash,
 //                                      how many rules C's query found, and the body (none when it found none)
+//   transitions window <after> <before> <context|-> <alert|-> [host ...]
+//                                      C's sql_alert_transitions() as /api/v2/alert_transitions calls it without
+//                                      a `transition`: the hosts in scope (their GUIDs, set into the dictionary in
+//                                      this order), the window's two ends in seconds (offsets from T0, 0 stays 0;
+//                                      `=<n>` is the number itself), the request's `contexts` text and its `alert`
+//                                      text (`-`: none)
+//   transitions id <text>              the same with the request's `transition` text (the rest of the line): C's
+//                                      direct statement, over a dictionary without a host
+//   configurations [hash ...]          C's sql_get_alert_configuration() as `options=config` calls it: the rules'
+//                                      hashes (UUID texts, set into the dictionary in this order as their
+//                                      lower-case texts: the same hash twice is one item, as in C's caller)
 //   exec <alert|*> <status|*> exit <slices> <code> | fail | error <slices> | hang
 //                                      what the notification command of that alert's entries with that new status
 //                                      does: it exits with the code after that many slices of the wait, the spawn
@@ -205,8 +233,8 @@
 //   pass <now> [hibernate]             one call of the pass
 //   unlink <chart>                     rrdcalc_unlink_and_delete_all_rrdset_alerts()
 //   apply                              health_apply_prototypes_to_host()
-// `unlink`, `apply`, `store`, `restart`, `cleanup`, `alarm-log`, `configs`, `wait`, `load`, `manage`, `dyncfg`,
-// `register`, `unregister`, `disconnect` and `reload` are steps too.
+// `unlink`, `apply`, `store`, `restart`, `cleanup`, `alarm-log`, `configs`, `transitions`, `configurations`, `wait`,
+// `load`, `manage`, `dyncfg`, `register`, `unregister`, `disconnect` and `reload` are steps too.
 //
 // Field encoding: see health-oracle.h. A double is `nan` or its bits in hex.
 
@@ -766,6 +794,144 @@ static char *word(char **rest, const char *directive) {
     char *w = *rest ? strsep(rest, " ") : NULL;
     if(!w || !*w) die("a missing argument", directive);
     return w;
+}
+
+// ------------------------------------------------------------------------------------------------
+// the SQL half of /api/v2/alert_transitions: C's own sql_alert_transitions() and sql_get_alert_configuration()
+// (database/sqlite/sqlite_health.c), each with a callback that writes what C hands it. Of the daemon they take
+// only a dictionary whose item names are UUID texts; `debug` is read by neither.
+
+static void field_uuid(FILE *f, const nd_uuid_t *id) {
+    fputc('\t', f);
+    for(size_t i = 0; i < sizeof(nd_uuid_t); i++)
+        fprintf(f, "%02x", (unsigned)(*id)[i]);
+}
+
+static void transition_row(struct sql_alert_transition_data *t, void *data) {
+    (*(size_t *)data)++;
+    row("transition");
+    field_uuid(out, t->host_id);
+    fprintf(out, "\t%u", t->alarm_id);
+    field_uuid(out, t->config_hash_id);
+    field(out, t->alert_name);
+    field(out, t->chart);
+    field(out, t->chart_name);
+    field(out, t->family);
+    field(out, t->recipient);
+    field(out, t->units);
+    field(out, t->exec);
+    field(out, t->chart_context);
+    fprintf(out, "\t%lld\t%lld\t%lld\t%016llx\t%lld", (long long)t->when_key, (long long)t->duration,
+            (long long)t->non_clear_duration, (unsigned long long)t->flags, (long long)t->delay_up_to_timestamp);
+    field(out, t->info);
+    fprintf(out, "\t%d\t%d\t%d\t%d", t->exec_code, t->new_status, t->old_status, t->delay);
+    field_double(out, t->new_value);
+    field_double(out, t->old_value);
+    fprintf(out, "\t%lld", (long long)t->last_repeat);
+    field_uuid(out, t->transition_id);
+    fprintf(out, "\t%llu", (unsigned long long)t->global_id);
+    field(out, t->classification);
+    field(out, t->type);
+    field(out, t->component);
+    fprintf(out, "\t%lld", (long long)t->exec_run_timestamp);
+    field(out, t->summary);
+    fputc('\n', out);
+}
+
+// a window's end: an offset from T0 (0 stays 0), or `=<n>` for the number itself
+static time_t window_second(const char *text) {
+    return (*text == '=') ? (time_t)strtoll(text + 1, NULL, 10) : second(text);
+}
+
+// a UUID text of a scenario as C's callers hand one on: uuid_unparse_lower() of the id
+static void dictionary_set_uuid(DICTIONARY *dict, const char *text, const char *whole) {
+    nd_uuid_t id;
+    char lower[UUID_STR_LEN];
+    if(uuid_parse(text, id) != 0) die("a text that is no UUID", whole);
+    uuid_unparse_lower(id, lower);
+    dictionary_set(dict, lower, NULL, 0);
+}
+
+static void transitions(char *rest, const char *whole) {
+    if(!db_meta) die("no real database", whole);
+    // contexts_v2_alert_transitions_to_json() hands on the request's node dictionary: the function reads its
+    // item names alone
+    DICTIONARY *nodes = dictionary_create(DICT_OPTION_SINGLE_THREADED | DICT_OPTION_DONT_OVERWRITE_VALUE);
+    size_t handed = 0;
+    char *how = word(&rest, whole);
+    if(strcmp(how, "id") == 0) {
+        if(!rest || !*rest) die("a missing argument", whole);
+        sql_alert_transitions(nodes, 0, 0, NULL, NULL, rest, transition_row, &handed, false);
+    }
+    else if(strcmp(how, "window") == 0) {
+        time_t after = window_second(word(&rest, whole));
+        time_t before = window_second(word(&rest, whole));
+        char *context = word(&rest, whole);
+        char *alert = word(&rest, whole);
+        while(rest && *rest)
+            dictionary_set_uuid(nodes, word(&rest, whole), whole);
+        sql_alert_transitions(nodes, after, before, strcmp(context, "-") == 0 ? NULL : context,
+                              strcmp(alert, "-") == 0 ? NULL : alert, NULL, transition_row, &handed, false);
+    }
+    else
+        die("unknown transitions", whole);
+    dictionary_destroy(nodes);
+
+    row("transitions");
+    fprintf(out, "\t%zu\n", handed);
+}
+
+static void configuration_row(struct sql_alert_config_data *c, void *data) {
+    (*(size_t *)data)++;
+    row("configuration");
+    field_uuid(out, c->config_hash_id);
+    field(out, c->name);
+    field(out, c->selectors.on_template);
+    field(out, c->selectors.on_key);
+    field(out, c->classification);
+    field(out, c->component);
+    field(out, c->type);
+    field(out, c->value.db.lookup);
+    field(out, c->value.every);
+    field(out, c->value.units);
+    field(out, c->value.calc);
+    field(out, c->selectors.families);
+    field(out, c->status.green);
+    field(out, c->status.red);
+    field(out, c->status.warn);
+    field(out, c->status.crit);
+    field(out, c->notification.exec);
+    field(out, c->notification.to_key);
+    field(out, c->info);
+    field(out, c->notification.delay);
+    field(out, c->notification.options);
+    field(out, c->notification.repeat);
+    field(out, c->selectors.host_labels);
+    field(out, c->value.db.dimensions);
+    field(out, c->value.db.method);
+    fprintf(out, "\t%u\t%d\t%d\t%d", (unsigned)c->value.db.options, (int)c->value.db.after, (int)c->value.db.before,
+            (int)c->value.update_every);
+    field(out, c->source);
+    field(out, c->selectors.chart_labels);
+    field(out, c->summary);
+    fprintf(out, "\t%d", (int)c->value.db.time_group_condition);
+    field_double(out, c->value.db.time_group_value);
+    fprintf(out, "\t%d\t%d\n", (int)c->value.db.dims_group, (int)c->value.db.data_source);
+}
+
+static void configurations(char *rest, const char *whole) {
+    if(!db_meta) die("no real database", whole);
+    // the dictionary contexts_v2_alert_transitions_to_json() makes of the kept entries' hashes
+    DICTIONARY *hashes = dictionary_create(DICT_OPTION_SINGLE_THREADED | DICT_OPTION_DONT_OVERWRITE_VALUE);
+    while(rest && *rest)
+        dictionary_set_uuid(hashes, word(&rest, whole), whole);
+    size_t handed = 0;
+    int added = sql_get_alert_configuration(hashes, configuration_row, &handed, false);
+    dictionary_destroy(hashes);
+    if(added >= 0 && (size_t)added != handed) die("a count that is not the callbacks'", whole);
+
+    row("configurations");
+    fprintf(out, "\t%d\n", added);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -1364,6 +1530,14 @@ static void run_scenario(const char *out_path, const char *scenario_path, const 
         }
         else if(strcmp(directive, "configs") == 0) {
             configs(whole);
+            dump(whole);
+        }
+        else if(strcmp(directive, "transitions") == 0) {
+            transitions(rest, whole);
+            dump(whole);
+        }
+        else if(strcmp(directive, "configurations") == 0) {
+            configurations(rest, whole);
             dump(whole);
         }
         else if(strcmp(directive, "silencers-file") == 0) {

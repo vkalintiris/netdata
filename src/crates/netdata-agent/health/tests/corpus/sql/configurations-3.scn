@@ -1,0 +1,30 @@
+# C's sql_get_alert_configuration() for several hashes at once, as `options=config` of
+# /api/v2/alert_transitions asks it: a temporary table of the hashes joined to alert_hash, with no order.
+# alert_hash holds 3 rules, stored in the order bb, cc, aa (the table's rowid order; by hash they sort aa, bb, cc,
+# dd). The rules are asked in orders that are not the table's, with a hash twice and a hash no rule has, with
+# none at all; then the same again once `ANALYZE` has written the table's statistics (sqlite_stat1), which
+# the planner reads.
+# C answers in the order asked, without statistics and with statistics of 3 rules.
+database real
+sql INSERT INTO alert_hash (hash_id, date_updated, template, on_key, every, class) VALUES (x'b00000000000400080000000000000bb', 2000000000, 't_bb', 'ctx.bb', '1s', 'Class bb')
+sql INSERT INTO alert_hash (hash_id, date_updated, template, on_key, every, class) VALUES (x'c00000000000400080000000000000cc', 2000000000, 't_cc', 'ctx.cc', '2s', 'Class cc')
+sql INSERT INTO alert_hash (hash_id, date_updated, template, on_key, every, class) VALUES (x'a00000000000400080000000000000aa', 2000000000, 't_aa', 'ctx.aa', '3s', 'Class aa')
+configurations c0000000-0000-4000-8000-0000000000cc a0000000-0000-4000-8000-0000000000aa b0000000-0000-4000-8000-0000000000bb
+configurations a0000000-0000-4000-8000-0000000000aa b0000000-0000-4000-8000-0000000000bb c0000000-0000-4000-8000-0000000000cc
+configurations b0000000-0000-4000-8000-0000000000bb c0000000-0000-4000-8000-0000000000cc a0000000-0000-4000-8000-0000000000aa
+configurations a0000000-0000-4000-8000-0000000000aa c0000000-0000-4000-8000-0000000000cc b0000000-0000-4000-8000-0000000000bb
+configurations c0000000-0000-4000-8000-0000000000cc c0000000-0000-4000-8000-0000000000cc 5a1e0000-0000-4000-8000-00000000dead a0000000-0000-4000-8000-0000000000aa b0000000-0000-4000-8000-0000000000bb
+configurations a0000000-0000-4000-8000-0000000000aa c0000000-0000-4000-8000-0000000000cc
+configurations c0000000-0000-4000-8000-0000000000cc b0000000-0000-4000-8000-0000000000bb
+configurations a0000000-0000-4000-8000-0000000000aa
+configurations
+sql ANALYZE
+configurations c0000000-0000-4000-8000-0000000000cc a0000000-0000-4000-8000-0000000000aa b0000000-0000-4000-8000-0000000000bb
+configurations a0000000-0000-4000-8000-0000000000aa b0000000-0000-4000-8000-0000000000bb c0000000-0000-4000-8000-0000000000cc
+configurations b0000000-0000-4000-8000-0000000000bb c0000000-0000-4000-8000-0000000000cc a0000000-0000-4000-8000-0000000000aa
+configurations a0000000-0000-4000-8000-0000000000aa c0000000-0000-4000-8000-0000000000cc b0000000-0000-4000-8000-0000000000bb
+configurations c0000000-0000-4000-8000-0000000000cc c0000000-0000-4000-8000-0000000000cc 5a1e0000-0000-4000-8000-00000000dead a0000000-0000-4000-8000-0000000000aa b0000000-0000-4000-8000-0000000000bb
+configurations a0000000-0000-4000-8000-0000000000aa c0000000-0000-4000-8000-0000000000cc
+configurations c0000000-0000-4000-8000-0000000000cc b0000000-0000-4000-8000-0000000000bb
+configurations a0000000-0000-4000-8000-0000000000aa
+configurations

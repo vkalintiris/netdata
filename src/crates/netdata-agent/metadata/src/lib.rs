@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 pub mod cleanup;
+mod column;
 pub mod conn;
 pub mod functions;
 pub mod health;

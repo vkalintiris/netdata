@@ -41,7 +41,10 @@ define themselves):
   pass with the REMOVED rows it injects and the rows it refuses, a restart on the same file, the hourly cleanup,
   the alarm log's JSON; after every step the rows of `health_log`, `health_log_detail`, `alert_queue` and
   `aclk_queue` in rowid order. A `configs` step asks C's `/api/v2/alert_config` code
-  (`database/contexts/api_v2_contexts_alert_config.c`, linked in) for every rule of `alert_hash`. `notify.tsv` is
+  (`database/contexts/api_v2_contexts_alert_config.c`, linked in) for every rule of `alert_hash`. A `transitions`
+  step calls C's `sql_alert_transitions()` (the SQL half of `/api/v2/alert_transitions`: a window over a list of
+  hosts, or a transition id) and a `configurations` step C's `sql_get_alert_configuration()` for several hashes at
+  once; each writes what C hands its callback, column by column as C reads it, in C's order. `notify.tsv` is
   the same over `../corpus/notify/`: which entries are notified, each command line, the marks and times on the
   entry at each save, the slices of each wait, the kill at a deadline, a stop and a broken wait, a failed spawn,
   a command that does not fit, the summary of raised alerts, a restart after a notification. `silencers.tsv` is

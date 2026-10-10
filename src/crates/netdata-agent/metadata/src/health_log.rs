@@ -12,6 +12,7 @@ use netdata_agent_log::netdata_log_error;
 use rusqlite::types::{ToSqlOutput, Value, ValueRef};
 use rusqlite::{Connection, Row, ToSql};
 
+use crate::column::{c_string, double, int};
 use crate::conn;
 use crate::open::MetaDb;
 use crate::read::{End, prepare_failed};
@@ -592,32 +593,6 @@ fn text_or_null(value: Option<&[u8]>) -> ToSqlOutput<'_> {
     value.map_or(ToSqlOutput::Owned(Value::Null), text)
 }
 
-/// `sqlite3_column_int64()`: NULL as 0, a real truncated, a text's leading number.
-fn int(row: &Row<'_>, i: usize) -> i64 {
-    match row.get_ref(i) {
-        Ok(ValueRef::Integer(v)) => v,
-        Ok(ValueRef::Real(v)) => v as i64,
-        Ok(ValueRef::Text(t)) => {
-            let t = String::from_utf8_lossy(t);
-            let t = t.trim_start();
-            let digits = |(i, c): (usize, char)| c.is_ascii_digit() || (i == 0 && (c == '-' || c == '+'));
-            let end = t.char_indices().find(|&at| !digits(at)).map_or(t.len(), |(i, _)| i);
-            t[..end].parse().unwrap_or(0)
-        }
-        _ => 0,
-    }
-}
-
-/// `sqlite3_column_double()`: NULL as 0.0.
-fn double(row: &Row<'_>, i: usize) -> f64 {
-    match row.get_ref(i) {
-        Ok(ValueRef::Integer(v)) => v as f64,
-        Ok(ValueRef::Real(v)) => v,
-        Ok(ValueRef::Text(t)) => String::from_utf8_lossy(t).trim().parse().unwrap_or(0.0),
-        _ => 0.0,
-    }
-}
-
 /// A value column: `None` for a NULL (`sqlite3_column_type() == SQLITE_NULL`), else `sqlite3_column_double()`.
 fn double_or_null(row: &Row<'_>, i: usize) -> Option<f64> {
     match row.get_ref(i) {
@@ -626,20 +601,22 @@ fn double_or_null(row: &Row<'_>, i: usize) -> Option<f64> {
     }
 }
 
-/// `SQLITE3_COLUMN_STRINGDUP_OR_NULL()`: the column's bytes, `None` for a NULL.
+/// `SQLITE3_COLUMN_STRINGDUP_OR_NULL()`: the column's bytes up to their first NUL, `None` for a NULL.
 fn bytes_or_null(row: &Row<'_>, i: usize) -> Option<Vec<u8>> {
     match row.get_ref(i) {
         Ok(ValueRef::Null) | Err(_) => None,
-        Ok(ValueRef::Text(t) | ValueRef::Blob(t)) => Some(t.to_vec()),
+        // a strdup: up to the first NUL
+        Ok(ValueRef::Text(t) | ValueRef::Blob(t)) => Some(c_string(t).to_vec()),
         Ok(ValueRef::Integer(v)) => Some(v.to_string().into_bytes()),
         Ok(ValueRef::Real(v)) => Some(v.to_string().into_bytes()),
     }
 }
 
-/// `sqlite3_column_text()` without a copy: the column's bytes while the row stands, `None` for a NULL.
+/// `sqlite3_column_text()` without a copy, as C uses it, a string: the column's bytes up to their first NUL while the
+/// row stands, `None` for a NULL.
 fn text_ref<'r>(row: &'r Row<'_>, i: usize) -> Option<Cow<'r, [u8]>> {
     match row.get_ref(i) {
-        Ok(ValueRef::Text(t) | ValueRef::Blob(t)) => Some(Cow::Borrowed(t)),
+        Ok(ValueRef::Text(t) | ValueRef::Blob(t)) => Some(Cow::Borrowed(c_string(t))),
         _ => bytes_or_null(row, i).map(Cow::Owned),
     }
 }

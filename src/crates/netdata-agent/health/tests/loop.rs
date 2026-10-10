@@ -227,14 +227,14 @@ mod replay {
     use netdata_agent_health::store::alert_hash_row;
     use netdata_agent_health::{Health, StoreSink, sql};
     use netdata_agent_log::{Captured, Field, Priority, Source};
-    use netdata_agent_metadata::health_log::LoadedRow;
+    use netdata_agent_metadata::health_log::{AlertConfigRow, LoadedRow, TransitionRow, TransitionsOf};
     use netdata_agent_metadata::open::{MetaDb, SqliteSettings};
     use netdata_agent_query::value::{Priority as QueryPriority, ValueRequest, ValueResult};
     use netdata_agent_rrd::chart::{Algorithm, Chart, ChartSpec, ChartType, flags};
     use netdata_agent_rrd::host::{Host, HostInfo, pending_flags};
     use netdata_agent_rrd::labels::SRC_CONFIG;
     use netdata_agent_rrd::mode::DbMode;
-    use netdata_agent_text::parse::strtoul0;
+    use netdata_agent_text::parse::{strtoul0, uuid_parse_flexi};
     use rusqlite::types::ValueRef;
 
     use netdata_agent_dyncfg::model::Cmds;
@@ -350,6 +350,105 @@ mod replay {
             out.push(fields);
         }
         out
+    }
+
+    /// An id as the generator prints one: 32 hex digits.
+    fn hex16(id: &[u8; 16]) -> Vec<u8> {
+        id.iter().flat_map(|byte| format!("{byte:02x}").into_bytes()).collect()
+    }
+
+    /// A text column as C's callback gets it: a lone NUL byte for a NULL.
+    fn nul(value: Option<&[u8]>) -> Vec<u8> {
+        value.map_or_else(|| vec![0], <[u8]>::to_vec)
+    }
+
+    /// A window's end of a `transitions` step: an offset from T0 (0 stays 0), or `=<n>` for the number itself.
+    fn window_second(text: &str) -> i64 {
+        match text.strip_prefix('=') {
+            Some(raw) => raw.parse().expect("a second"),
+            None => second(text),
+        }
+    }
+
+    /// An entry as a `transition` row has it: what `sql_alert_transitions()` hands its callback, in the
+    /// statement's column order. C's struct holds the alarm id in 32 bits, the flags and the global id unsigned.
+    fn transition_fields(row: &TransitionRow<'_>) -> Fields {
+        vec![
+            hex16(&row.host_id),
+            text(row.alarm_id as u32),
+            hex16(&row.config_hash_id),
+            nul(row.alert_name.as_deref()),
+            nul(row.chart.as_deref()),
+            nul(row.chart_name.as_deref()),
+            nul(row.family.as_deref()),
+            nul(row.recipient.as_deref()),
+            nul(row.units.as_deref()),
+            nul(row.exec.as_deref()),
+            nul(row.chart_context.as_deref()),
+            text(row.when_key),
+            text(row.duration),
+            text(row.non_clear_duration),
+            format!("{:016x}", row.flags as u64).into_bytes(),
+            text(row.delay_up_to_timestamp),
+            nul(row.info.as_deref()),
+            text(row.exec_code),
+            text(row.new_status),
+            text(row.old_status),
+            text(row.delay),
+            double(row.new_value),
+            double(row.old_value),
+            text(row.last_repeat),
+            hex16(&row.transition_id),
+            text(row.global_id as u64),
+            nul(row.classification.as_deref()),
+            nul(row.r#type.as_deref()),
+            nul(row.component.as_deref()),
+            text(row.exec_run_timestamp),
+            nul(row.summary.as_deref()),
+        ]
+    }
+
+    /// A rule as a `configuration` row has it: what `sql_get_alert_configuration()` hands its callback, in the
+    /// statement's column order.
+    fn configuration_fields(row: &AlertConfigRow) -> Fields {
+        vec![
+            hex16(&row.hash_id),
+            nullable(&row.alarm),
+            nullable(&row.template),
+            nullable(&row.on_key),
+            nullable(&row.classification),
+            nullable(&row.component),
+            nullable(&row.r#type),
+            nullable(&row.lookup),
+            nullable(&row.every),
+            nullable(&row.units),
+            nullable(&row.calc),
+            nullable(&row.families),
+            nullable(&row.green),
+            nullable(&row.red),
+            nullable(&row.warn),
+            nullable(&row.crit),
+            nullable(&row.exec),
+            nullable(&row.to_key),
+            nullable(&row.info),
+            nullable(&row.delay),
+            nullable(&row.options),
+            nullable(&row.repeat),
+            nullable(&row.host_labels),
+            nullable(&row.db_dimensions),
+            nullable(&row.db_method),
+            text(row.db_options),
+            text(row.db_after),
+            text(row.db_before),
+            text(row.update_every),
+            nullable(&row.source),
+            nullable(&row.chart_labels),
+            nullable(&row.summary),
+            text(row.time_group_condition),
+            double(row.time_group_value),
+            text(row.dims_group),
+            text(row.data_source),
+        ]
     }
 
     /// What a scenario says of one chart, beside the chart's own state.
@@ -1528,6 +1627,85 @@ mod replay {
                     self.configs = configs;
                     self.dump(line, None, records);
                 }
+                // C's `sql_alert_transitions()`, the SQL half of `/api/v2/alert_transitions`: a window over the
+                // hosts listed, or the entries of a transition id. Every entry as the callback gets it, in the
+                // order handed out, then how many
+                "transitions" => {
+                    let (_health, world) = (self.health(), &self.world);
+                    // C reads the id's text inside the function and records one that is no UUID; the port reads
+                    // it in the endpoint (`daemon/src/contexts_v2/mod.rs`, `alert_transitions_to_json()`), which
+                    // this crate cannot call. Such a step asks nothing here, and C's record is checked apart
+                    let mut no_uuid = None;
+                    let (rows, records) = netdata_agent_log::capture(|| {
+                        let real = world.real.borrow();
+                        let meta = &real.as_ref().unwrap_or_else(|| panic!("{}: no real database", self.name)).meta;
+                        let mut rows: Vec<(&'static str, Fields)> = Vec::new();
+                        let mut hand = |row: &TransitionRow<'_>| rows.push(("transition", transition_fields(row)));
+                        match args[0] {
+                            "id" => {
+                                let given = rest.strip_prefix("id ").expect("a transition's text");
+                                match uuid_parse_flexi(given.as_bytes()) {
+                                    Some(id) => meta.alert_transitions(&TransitionsOf::Id(&id), &mut hand),
+                                    None => no_uuid = Some(given.to_owned()),
+                                }
+                            }
+                            "window" => {
+                                let (after_s, before_s) = (window_second(args[1]), window_second(args[2]));
+                                let context = (args[3] != "-").then(|| args[3].as_bytes());
+                                let alert_name = (args[4] != "-").then(|| args[4].as_bytes());
+                                // C's caller hands on a dictionary: a host named twice is one item
+                                let mut hosts: Vec<[u8; 16]> = Vec::new();
+                                for word in args[5..].iter().filter(|word| !word.is_empty()) {
+                                    let id = uuid_parse_flexi(word.as_bytes()).expect("a host's GUID");
+                                    if !hosts.contains(&id) {
+                                        hosts.push(id);
+                                    }
+                                }
+                                let hosts = &hosts[..];
+                                let of = TransitionsOf::Window { hosts, after_s, before_s, context, alert_name };
+                                meta.alert_transitions(&of, &mut hand);
+                            }
+                            other => panic!("{}: transitions {other}", self.name),
+                        }
+                        let handed = rows.len();
+                        rows.push(("transitions", vec![text(handed)]));
+                        rows
+                    });
+                    if let Some(given) = no_uuid {
+                        self.expect_record_of_the_caller(format!("Invalid transition given {given}").as_bytes());
+                    }
+                    self.rows.extend(rows);
+                    self.dump(line, None, records);
+                }
+                // C's `sql_get_alert_configuration()` for several hashes at once, as `options=config` asks it:
+                // every rule as the callback gets it, in the order handed out, then C's return value (the rules
+                // handed out, -1 for a statement that cannot be prepared)
+                "configurations" => {
+                    let (_health, world) = (self.health(), &self.world);
+                    // C's caller hands on a dictionary: a hash named twice is one item
+                    let mut hashes: Vec<[u8; 16]> = Vec::new();
+                    for word in args.iter().filter(|word| !word.is_empty()) {
+                        let hash = uuid_parse_flexi(word.as_bytes()).expect("a rule's hash");
+                        if !hashes.contains(&hash) {
+                            hashes.push(hash);
+                        }
+                    }
+                    let (rows, records) = netdata_agent_log::capture(|| {
+                        let real = world.real.borrow();
+                        let meta = &real.as_ref().unwrap_or_else(|| panic!("{}: no real database", self.name)).meta;
+                        let mut rows: Vec<(&'static str, Fields)> = Vec::new();
+                        let mut hand = |rule: AlertConfigRow| rows.push(("configuration", configuration_fields(&rule)));
+                        let read = meta.alert_configs(&hashes, &mut hand);
+                        let added = match read {
+                            Ok(()) => rows.len() as i64,
+                            Err(()) => -1,
+                        };
+                        rows.push(("configurations", vec![text(added)]));
+                        rows
+                    });
+                    self.rows.extend(rows);
+                    self.dump(line, None, records);
+                }
                 // the silencers' file as the scenario leaves it for the next `load`
                 "silencers-file" => {
                     let path = self.silencers_file();
@@ -1655,6 +1833,27 @@ mod replay {
                     self.dump(line, None, records);
                 }
                 other => panic!("{}: directive {other}", self.name),
+            }
+        }
+
+        /// A record C writes inside a function whose port leaves it to its caller in another crate: C's rows of
+        /// the step must hold it exactly once; it is taken out, so that the step's other records compare.
+        fn expect_record_of_the_caller(&mut self, message: &[u8]) {
+            let records = self.expected.get_mut(&self.step).and_then(|kinds| kinds.get_mut("record"));
+            let before = records.as_ref().map_or(0, |records| records.len());
+            let mut after = 0;
+            if let Some(records) = records {
+                records.retain(|row| c_record(&row[0]).3 != message);
+                after = records.len();
+            }
+            if before - after != 1 {
+                self.failures.push(format!(
+                    "{} step {}: C wrote the record {:?} {} times, not once",
+                    self.name,
+                    self.step,
+                    String::from_utf8_lossy(message),
+                    before - after,
+                ));
             }
         }
 
@@ -2047,9 +2246,12 @@ fn queue_matches_c() {
 /// tables are compared too. A scenario's `restart` is a new process on the same file: the load at the host's first
 /// pass, with the REMOVED rows it injects, rows it refuses, and a service that stops while it loads. In `fail` a
 /// trigger refuses each of the statements in turn: C's two records per failed step, and what is left behind.
+/// The scenarios `transitions-*` and `configurations-*` have no pass: their rows are another hand's, and their
+/// steps ask the two reads of `/api/v2/alert_transitions` (`MetaDb::alert_transitions()` and
+/// `MetaDb::alert_configs()`) what C's `sql_alert_transitions()` and `sql_get_alert_configuration()` were asked.
 #[test]
 fn sql_matches_c() {
-    assert_eq!(replayed("sql"), 133);
+    assert_eq!(replayed("sql"), 260);
 }
 
 /// Every scenario of `tests/corpus/notify/` against C's own `health_send_notification()` and its waits, over a

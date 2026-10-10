@@ -1,0 +1,17 @@
+# The two reads when a statement of theirs cannot be prepared, as with a table another version of the agent
+# left: each works; then health_log_detail loses a column both transition statements name (C's record of each,
+# and no entry), and alert_hash one the rules' statement names (C's record, and -1).
+database real
+sql INSERT INTO alert_hash (hash_id, date_updated, template, on_key, class) VALUES (x'c0000000000040008000000000000001', 2000000000, 't', 'ctx.a', 'Errors')
+sql INSERT INTO health_log (health_log_id, host_id, alarm_id, config_hash_id, name, chart, family, recipient, units, exec, chart_context, last_transition_id, chart_name) VALUES (1, x'11111111222243338444555555555555', 1, x'c0000000000040008000000000000001', 'a', 'c.a', 'fam', 'sysadmin', '%', '/bin/notify', 'ctx.a', NULL, 'c.a_name')
+sql INSERT INTO health_log_detail (health_log_id, unique_id, alarm_id, alarm_event_id, updated_by_id, updates_id, when_key, duration, non_clear_duration, flags, exec_run_timestamp, delay_up_to_timestamp, info, exec_code, new_status, old_status, delay, new_value, old_value, last_repeat, transition_id, global_id, summary) VALUES (1, 1, 1, 1, 0, 0, 2000000001, 10, 5, 4, 2000000002, 2000000003, 'info 1', 0, 4, 1, 0, 1.5, 1.25, 0, x'71000000000040008000000000000001', 2000000001000000, 'summary 1')
+transitions window 0 9 - - 11111111-2222-4333-8444-555555555555
+transitions id 71000000-0000-4000-8000-000000000001
+configurations c0000000-0000-4000-8000-000000000001
+sql ALTER TABLE health_log_detail DROP COLUMN summary
+transitions window 0 9 - - 11111111-2222-4333-8444-555555555555
+transitions id 71000000-0000-4000-8000-000000000001
+configurations c0000000-0000-4000-8000-000000000001
+sql ALTER TABLE alert_hash DROP COLUMN data_source
+configurations c0000000-0000-4000-8000-000000000001
+configurations

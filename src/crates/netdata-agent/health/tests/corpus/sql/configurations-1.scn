@@ -1,0 +1,20 @@
+# C's sql_get_alert_configuration() for several hashes at once, as `options=config` of
+# /api/v2/alert_transitions asks it: a temporary table of the hashes joined to alert_hash, with no order.
+# alert_hash holds 1 rule, stored in the order bb (the table's rowid order; by hash they sort aa, bb, cc,
+# dd). The rules are asked in orders that are not the table's, with a hash twice and a hash no rule has, with
+# none at all; then the same again once `ANALYZE` has written the table's statistics (sqlite_stat1), which
+# the planner reads.
+# With one rule no order can show: the scenario holds the rule's row and the counts.
+database real
+sql INSERT INTO alert_hash (hash_id, date_updated, template, on_key, every, class) VALUES (x'b00000000000400080000000000000bb', 2000000000, 't_bb', 'ctx.bb', '1s', 'Class bb')
+configurations b0000000-0000-4000-8000-0000000000bb
+configurations 5a1e0000-0000-4000-8000-00000000dead b0000000-0000-4000-8000-0000000000bb b0000000-0000-4000-8000-0000000000bb
+configurations a0000000-0000-4000-8000-0000000000aa b0000000-0000-4000-8000-0000000000bb c0000000-0000-4000-8000-0000000000cc
+configurations
+configurations 5a1e0000-0000-4000-8000-00000000dead
+sql ANALYZE
+configurations b0000000-0000-4000-8000-0000000000bb
+configurations 5a1e0000-0000-4000-8000-00000000dead b0000000-0000-4000-8000-0000000000bb b0000000-0000-4000-8000-0000000000bb
+configurations a0000000-0000-4000-8000-0000000000aa b0000000-0000-4000-8000-0000000000bb c0000000-0000-4000-8000-0000000000cc
+configurations
+configurations 5a1e0000-0000-4000-8000-00000000dead

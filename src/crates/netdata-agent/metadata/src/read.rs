@@ -9,6 +9,7 @@ use netdata_agent_text::duration::duration_to_string;
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OpenFlags, Row};
 
+use crate::column::int;
 use crate::conn::{self, Markers};
 use crate::open::MetaDb;
 
@@ -27,24 +28,6 @@ fn text(row: &Row<'_>, i: usize) -> Option<String> {
         ValueRef::Integer(v) => Some(v.to_string()),
         ValueRef::Real(v) => Some(v.to_string()),
         ValueRef::Text(t) | ValueRef::Blob(t) => Some(String::from_utf8_lossy(t).into_owned()),
-    }
-}
-
-/// `sqlite3_column_int64()`: text read as its leading number, a real truncated, NULL as 0.
-fn int(row: &Row<'_>, i: usize) -> i64 {
-    match row.get_ref(i) {
-        Ok(ValueRef::Integer(v)) => v,
-        Ok(ValueRef::Real(v)) => v as i64,
-        Ok(ValueRef::Text(t)) => {
-            let t = String::from_utf8_lossy(t);
-            let t = t.trim_start();
-            let end = t
-                .char_indices()
-                .find(|&(i, c)| !(c.is_ascii_digit() || (i == 0 && (c == '-' || c == '+'))))
-                .map_or(t.len(), |(i, _)| i);
-            t[..end].parse().unwrap_or(0)
-        }
-        _ => 0,
     }
 }
 

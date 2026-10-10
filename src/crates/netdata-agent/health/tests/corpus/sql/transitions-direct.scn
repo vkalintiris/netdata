@@ -1,0 +1,36 @@
+# C's sql_alert_transitions() with a transition id (`transition=<text>`): C's direct statement, which has no host
+# list, no window, no status test and no order. An entry whose statuses are below the window's boundary; two and
+# three entries with one transition id, in each order of their global ids (the order C hands them out in is the
+# table's); the id's text without hyphens and in capitals; an id no entry has; an entry whose alarm's rule has
+# no row of alert_hash; a text that is no UUID (C's record, and no query).
+database real
+sql INSERT INTO alert_hash (hash_id, date_updated, template, on_key, class, component, type) VALUES (x'c0000000000040008000000000000001', 2000000000, 'disk_full', 'disk.space', 'Errors', 'Disk', 'System')
+sql INSERT INTO health_log (health_log_id, host_id, alarm_id, config_hash_id, name, chart, family, recipient, units, exec, chart_context, last_transition_id, chart_name) VALUES (1, x'11111111222243338444555555555555', 1, x'c0000000000040008000000000000001', 'disk_full', 'disk.sda', 'fam', 'sysadmin', '%', '/bin/notify', 'disk.space', NULL, 'disk.sda_name')
+sql INSERT INTO health_log (health_log_id, host_id, alarm_id, config_hash_id, name, chart, family, recipient, units, exec, chart_context, last_transition_id, chart_name) VALUES (2, x'aaaaaaaabbbb4ccc8dddeeeeeeeeeeee', 1, x'c0000000000040008000000000000001', 'disk_full', 'disk.sdb', 'fam', 'sysadmin', '%', '/bin/notify', 'disk.space', NULL, 'disk.sdb_name')
+sql INSERT INTO health_log (health_log_id, host_id, alarm_id, config_hash_id, name, chart, family, recipient, units, exec, chart_context, last_transition_id, chart_name) VALUES (3, x'11111111222243338444555555555555', 2, x'c00000000000400080000000000000ff', 'orphan', 'disk.sdo', 'fam', 'sysadmin', '%', '/bin/notify', 'disk.space', NULL, 'disk.sdo_name')
+# one entry, CLEAR from UNINITIALIZED, with a hex letter in its id
+sql INSERT INTO health_log_detail (health_log_id, unique_id, alarm_id, alarm_event_id, updated_by_id, updates_id, when_key, duration, non_clear_duration, flags, exec_run_timestamp, delay_up_to_timestamp, info, exec_code, new_status, old_status, delay, new_value, old_value, last_repeat, transition_id, global_id, summary) VALUES (1, 161, 1, 161, 0, 0, 2000000161, 1610, 805, 4, 2000000162, 2000000163, 'info 161', 0, 1, 0, 0, 161.5, 161.25, 0, x'710000000000400080000000000000a1', 2000000001000000, 'summary 161')
+# one id on two entries: the older one first in the table
+sql INSERT INTO health_log_detail (health_log_id, unique_id, alarm_id, alarm_event_id, updated_by_id, updates_id, when_key, duration, non_clear_duration, flags, exec_run_timestamp, delay_up_to_timestamp, info, exec_code, new_status, old_status, delay, new_value, old_value, last_repeat, transition_id, global_id, summary) VALUES (1, 2, 1, 2, 0, 0, 2000000002, 20, 10, 4, 2000000003, 2000000004, 'info 2', 0, 3, 1, 0, 2.5, 2.25, 0, x'71000000000040008000000000000002', 5, 'summary 2')
+sql INSERT INTO health_log_detail (health_log_id, unique_id, alarm_id, alarm_event_id, updated_by_id, updates_id, when_key, duration, non_clear_duration, flags, exec_run_timestamp, delay_up_to_timestamp, info, exec_code, new_status, old_status, delay, new_value, old_value, last_repeat, transition_id, global_id, summary) VALUES (2, 3, 1, 3, 0, 0, 2000000003, 30, 15, 4, 2000000004, 2000000005, 'info 3', 0, 4, 3, 0, 3.5, 3.25, 0, x'71000000000040008000000000000002', 9, 'summary 3')
+# the newer one first in the table
+sql INSERT INTO health_log_detail (health_log_id, unique_id, alarm_id, alarm_event_id, updated_by_id, updates_id, when_key, duration, non_clear_duration, flags, exec_run_timestamp, delay_up_to_timestamp, info, exec_code, new_status, old_status, delay, new_value, old_value, last_repeat, transition_id, global_id, summary) VALUES (2, 4, 1, 4, 0, 0, 2000000004, 40, 20, 4, 2000000005, 2000000006, 'info 4', 0, 4, 3, 0, 4.5, 4.25, 0, x'71000000000040008000000000000004', 9, 'summary 4')
+sql INSERT INTO health_log_detail (health_log_id, unique_id, alarm_id, alarm_event_id, updated_by_id, updates_id, when_key, duration, non_clear_duration, flags, exec_run_timestamp, delay_up_to_timestamp, info, exec_code, new_status, old_status, delay, new_value, old_value, last_repeat, transition_id, global_id, summary) VALUES (1, 5, 1, 5, 0, 0, 2000000005, 50, 25, 4, 2000000006, 2000000007, 'info 5', 0, 3, 1, 0, 5.5, 5.25, 0, x'71000000000040008000000000000004', 5, 'summary 5')
+# one id on three entries with the global ids 5, 9 and 7
+sql INSERT INTO health_log_detail (health_log_id, unique_id, alarm_id, alarm_event_id, updated_by_id, updates_id, when_key, duration, non_clear_duration, flags, exec_run_timestamp, delay_up_to_timestamp, info, exec_code, new_status, old_status, delay, new_value, old_value, last_repeat, transition_id, global_id, summary) VALUES (1, 6, 1, 6, 0, 0, 2000000006, 60, 30, 4, 2000000007, 2000000008, 'info 6', 0, 3, 1, 0, 6.5, 6.25, 0, x'71000000000040008000000000000006', 5, 'summary 6')
+sql INSERT INTO health_log_detail (health_log_id, unique_id, alarm_id, alarm_event_id, updated_by_id, updates_id, when_key, duration, non_clear_duration, flags, exec_run_timestamp, delay_up_to_timestamp, info, exec_code, new_status, old_status, delay, new_value, old_value, last_repeat, transition_id, global_id, summary) VALUES (2, 7, 1, 7, 0, 0, 2000000007, 70, 35, 4, 2000000008, 2000000009, 'info 7', 0, 4, 3, 0, 7.5, 7.25, 0, x'71000000000040008000000000000006', 9, 'summary 7')
+sql INSERT INTO health_log_detail (health_log_id, unique_id, alarm_id, alarm_event_id, updated_by_id, updates_id, when_key, duration, non_clear_duration, flags, exec_run_timestamp, delay_up_to_timestamp, info, exec_code, new_status, old_status, delay, new_value, old_value, last_repeat, transition_id, global_id, summary) VALUES (1, 8, 1, 8, 0, 0, 2000000008, 80, 40, 4, 2000000009, 2000000010, 'info 8', 0, 1, 4, 0, 8.5, 8.25, 0, x'71000000000040008000000000000006', 7, 'summary 8')
+# an entry of the alarm whose rule has no row
+sql INSERT INTO health_log_detail (health_log_id, unique_id, alarm_id, alarm_event_id, updated_by_id, updates_id, when_key, duration, non_clear_duration, flags, exec_run_timestamp, delay_up_to_timestamp, info, exec_code, new_status, old_status, delay, new_value, old_value, last_repeat, transition_id, global_id, summary) VALUES (3, 9, 1, 9, 0, 0, 2000000009, 90, 45, 4, 2000000010, 2000000011, 'info 9', 0, 4, 1, 0, 9.5, 9.25, 0, x'71000000000040008000000000000009', 2000000002000000, 'summary 9')
+transitions id 71000000-0000-4000-8000-0000000000a1
+transitions id 710000000000400080000000000000a1
+transitions id 71000000-0000-4000-8000-0000000000A1
+transitions id 71000000-0000-4000-8000-000000000002
+transitions id 71000000-0000-4000-8000-000000000004
+transitions id 71000000-0000-4000-8000-000000000006
+transitions id 71000000-0000-4000-8000-000000000009
+transitions id 71000000-0000-4000-8000-00000000dead
+transitions id not-a-uuid
+transitions id 71000000-0000-4000-8000-0000000000a
+transitions id 71000000-0000-4000-8000-0000000000a1ff
+transitions id  71000000-0000-4000-8000-0000000000a1

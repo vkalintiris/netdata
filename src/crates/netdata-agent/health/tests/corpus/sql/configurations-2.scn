@@ -1,0 +1,22 @@
+# C's sql_get_alert_configuration() for several hashes at once, as `options=config` of
+# /api/v2/alert_transitions asks it: a temporary table of the hashes joined to alert_hash, with no order.
+# alert_hash holds 2 rules, stored in the order bb, aa (the table's rowid order; by hash they sort aa, bb, cc,
+# dd). The rules are asked in orders that are not the table's, with a hash twice and a hash no rule has, with
+# none at all; then the same again once `ANALYZE` has written the table's statistics (sqlite_stat1), which
+# the planner reads.
+# C answers in the order asked while there are no statistics (it scans the temporary table and seeks each
+# rule), and in the table's order once they say alert_hash holds 2 rules (it then scans alert_hash first).
+database real
+sql INSERT INTO alert_hash (hash_id, date_updated, template, on_key, every, class) VALUES (x'b00000000000400080000000000000bb', 2000000000, 't_bb', 'ctx.bb', '1s', 'Class bb')
+sql INSERT INTO alert_hash (hash_id, date_updated, template, on_key, every, class) VALUES (x'a00000000000400080000000000000aa', 2000000000, 't_aa', 'ctx.aa', '2s', 'Class aa')
+configurations b0000000-0000-4000-8000-0000000000bb a0000000-0000-4000-8000-0000000000aa
+configurations a0000000-0000-4000-8000-0000000000aa b0000000-0000-4000-8000-0000000000bb
+configurations a0000000-0000-4000-8000-0000000000aa 5a1e0000-0000-4000-8000-00000000dead b0000000-0000-4000-8000-0000000000bb a0000000-0000-4000-8000-0000000000aa
+configurations c0000000-0000-4000-8000-0000000000cc a0000000-0000-4000-8000-0000000000aa
+configurations a0000000-0000-4000-8000-0000000000aa
+sql ANALYZE
+configurations b0000000-0000-4000-8000-0000000000bb a0000000-0000-4000-8000-0000000000aa
+configurations a0000000-0000-4000-8000-0000000000aa b0000000-0000-4000-8000-0000000000bb
+configurations a0000000-0000-4000-8000-0000000000aa 5a1e0000-0000-4000-8000-00000000dead b0000000-0000-4000-8000-0000000000bb a0000000-0000-4000-8000-0000000000aa
+configurations c0000000-0000-4000-8000-0000000000cc a0000000-0000-4000-8000-0000000000aa
+configurations a0000000-0000-4000-8000-0000000000aa
