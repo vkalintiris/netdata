@@ -8,8 +8,8 @@
 //! Loading from SQL (`load`, wired for dbengine hosts) builds the tree of an archived or restarting host; charts and
 //! dimensions created later reuse the UUIDs found in it.
 //!
-//! Not here yet, each with the subsystem that brings it (decisions D19): the hub queue and the versions sent to
-//! Netdata Cloud (claiming, ACLK) and the extreme cardinality protection (dbengine rotations).
+//! Not here yet, with the subsystem that brings them (decisions D19): the hub queue and the versions sent to Netdata
+//! Cloud (claiming, ACLK). The extreme cardinality protection is in `contexts/cardinality.rs`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};

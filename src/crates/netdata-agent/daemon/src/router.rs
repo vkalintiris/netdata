@@ -2,11 +2,8 @@
 //! `web_client_switch_host()` and `web_client_api_request()` in `src/web/server/web_client.c`, and
 //! `web_client_api_request_vX()` in `src/web/api/web_api.c`.
 //!
-//! Not ported yet: `/mcp` and `/sse`, and the API commands other than `info`, `chart`, `charts`, `context`,
-//! `contexts`, `registry`, `data`, `dbengine_stats`, `function`, `functions`, `manage`, `me`, `nodes`,
-//! `node_instances`, `progress`, `stream_info`, `stream_path`, `versions`, `alerts`, `alert_transitions`, `q`,
-//! `settings`, `weights`, `metric_correlations`, and health's (`alarms`, `alarm_log` and the others of its block of
-//! the table, and `badge.svg`).
+//! Not ported yet: `/mcp` and `/sse` (with WebSocket, D220 fork 13), and of C's command tables `allmetrics`, `aclk`,
+//! `ml_info` and `claim`.
 //! `/netdata.conf` shows only the keys of the subsystems ported so far.
 
 use std::sync::Arc;
@@ -1976,8 +1973,8 @@ mod tests {
 
     /// `/api/v1/weights` (`api_v1_weights()`: anomaly rates by context) and `/api/v1/metric_correlations`
     /// (`api_v1_metric_correlations()`: ks2 by chart), over [`weights_fixture`]: the answers' shape, C's refusals
-    /// with their statuses and bodies, the 404 of an answer without a dimension, the reply's cache mark by the
-    /// window, the access and the readiness gate.
+    /// with their statuses and bodies, the 404 of an answer without a dimension, the reply never cacheable whatever
+    /// its window, the access and the readiness gate.
     #[test]
     fn weights_are_routed_in_v1() {
         let s = shared();
@@ -2065,7 +2062,7 @@ mod tests {
     /// [`weights_fixture`], as a row per metric with the rollups of its chart, context and node and the
     /// dictionaries the rows index; grouped when the request groups; limited; with a baseline for the methods
     /// that have one. An answer without a result is an answer here (a 404 in version 1). C's refusals, the
-    /// reply's cache mark by the window, the access and the readiness gate are version 1's.
+    /// reply never cacheable, the access and the readiness gate are version 1's.
     #[test]
     fn weights_are_routed_in_v2_and_v3() {
         let s = shared();

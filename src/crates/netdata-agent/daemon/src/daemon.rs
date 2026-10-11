@@ -1,7 +1,7 @@
 //! Becoming a daemon, ported from `src/daemon/daemon.c`: the double fork, the pidfile, the umask, the OOM score, the
 //! scheduling policy, the switch to the `run as user` account, and the ownership of the directories it writes.
 //!
-//! Not yet: the analytics report of the OOM score.
+//! Not ported (D251 F5): the analytics report of the OOM score, which nothing reads.
 
 use netdata_agent_log::{Priority, Source, chown_open_file, fatal, nd_log};
 use std::fs::{File, OpenOptions};

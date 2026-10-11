@@ -1,4 +1,4 @@
-//! `BUILD_INFO` (`src/daemon/buildinfo.c`): the 119 slots of `-W buildinfo`, `-W buildinfojson` and (later)
+//! `BUILD_INFO` (`src/daemon/buildinfo.c`): the 119 slots of `-W buildinfo`, `-W buildinfojson` and
 //! `/api/v2/info`'s `application`, each saying what the Rust agent provides in C's vocabulary (D87.1: YES only for what
 //! it provides; check `cli.buildinfo` lists where that still differs from C's production build), with C's text, JSON
 //! and analytics renderings, and C's cmake cache for `-W cmakecache` (D87.2).
