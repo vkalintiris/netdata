@@ -226,11 +226,11 @@ fn apply_tier(req: &mut DataRequest, value: &[u8], storage_tiers: u64) {
     }
 }
 
-/// `cardinality_limit=` (even 0), else a non-zero `limit=` plus one.
+/// `cardinality_limit=` (even 0), else a non-zero `limit=` plus one; C keeps a `limit=` of `SIZE_MAX` as it is.
 fn cardinality(cardinality_limit: Option<&[u8]>, limit: Option<&[u8]>) -> u64 {
-    match (cardinality_limit, limit) {
+    match (cardinality_limit, limit.map(str2ul)) {
         (Some(c), _) => str2ul(c),
-        (None, Some(l)) if str2ul(l) != 0 => str2ul(l) + 1,
+        (None, Some(l)) if l != 0 => l.saturating_add(1),
         _ => 0,
     }
 }
@@ -490,6 +490,10 @@ mod tests {
         assert_eq!(r.options & options::MINIFY, 0, "debug clears minify");
         assert_ne!(r.options & options::DEBUG, 0);
         assert_eq!(r.cardinality_limit, 0);
+        let max = parse_v2(b"limit=18446744073709551615", 2, &Profile::default());
+        assert_eq!(max.cardinality_limit, u64::MAX, "C's `limit < SIZE_MAX` guard, api_v2_data.c:212");
+        let max = parse_v1(b"limit=18446744073709551615", &Profile::default());
+        assert_eq!(max.request.cardinality_limit, u64::MAX, "api_v1_data.c:164");
         let d = parse_v2(b"", 2, &Profile::default());
         assert_eq!(d.group_by[0].group_by, group_by::DIMENSION);
         assert_eq!(d.format, Format::Json2);
