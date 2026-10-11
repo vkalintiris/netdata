@@ -66,7 +66,7 @@ var mcpTextRe = regexp.MustCompile(`"(info|help)":(\s*)"((?:[^"\\]|\\.)*)"`)
 // mcpTextRender writes each MCP text (mcpTextRe) as the JSON string of its own literal, every backslash and quote of
 // the literal escaped once more. The string the comparison decodes is then the text as the agent wrote it, so two
 // answers agree there only byte for byte: `\u2022` for C's raw bullet, or `\u0022` for its `\"`, is a difference
-// (decoded, as compareV2 compares any other string, they are the same text).
+// (decoded they are the same text; compareV2 compares every other string's escapes as written too, v2Escapes).
 func mcpTextRender(_ int, _ [2]int64, body []byte) []byte {
 	escape := strings.NewReplacer(`\`, `\\`, `"`, `\"`)
 	return mcpTextRe.ReplaceAllFunc(body, func(m []byte) []byte {

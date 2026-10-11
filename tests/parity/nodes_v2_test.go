@@ -995,7 +995,7 @@ var niArchivedRow = v2Req{name: "archived",
 // naming the child, then every host, as they are, with their times as dates, with the long key names and within a
 // window, on a parent with the fixture child; then, the child gone, the child alone (D241 F3); then `access`: the
 // NODES ACL's refusal (451) and bearer protection (412) of both routes (web_api_v2.c:91-96, web_api_v3.c:126-131).
-// Red on Rust until commit 11.
+// Green on Rust since M10 commit 11.
 func TestNodeInstancesAPI(t *testing.T) {
 	t.Run("data", func(t *testing.T) {
 		p := dashPair(t, daemon.Options{})

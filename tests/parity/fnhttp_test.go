@@ -1043,8 +1043,8 @@ func fnGuardV2(t *testing.T, p *Pair) {
 
 // fnCompareInfoFunctions compares the `functions` member of `/api/v1/info` (localhost's and the vnode's) by value
 // and its place among the members both sides write (api_v1_info.c:132-134: after host_labels, before collectors).
-// Members the candidate does not write yet (D84.2) are left out of the place, not masked, so the check tightens by
-// itself as they are ported.
+// A member one side does not write is left out of the place, not masked (D84.2; since M10 commit 14 the candidate
+// writes every member C writes).
 func fnCompareInfoFunctions(t *testing.T, p *Pair) {
 	t.Helper()
 	fnCompareInfoFunctionsAt(t, p, []string{"/api/v1/info", "/host/" + vnodeName + "/api/v1/info"})

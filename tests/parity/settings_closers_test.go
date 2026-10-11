@@ -34,8 +34,8 @@ const setAnonymousParts = " … role=none permissions=0x8 … !account= … !use
 //   - `control-get`: an anonymous GET of `default` laid as `not json`: json-c touches no errno reading it (R109's
 //     probe of json-c 0.18), the request set none before it: no errno (settingsFirstRows' `anonymous-get`).
 //   - `bearer-get`, `bearer-put`: the same with a bearer token no one has (setUnknownBearer): the token's file is
-//     looked for and not found, which leaves ENOENT, and nothing clears it before the record (D242's known limit:
-//     the port writes no errno there, daemon/src/settings.rs:66; DEFECTS, the settings block's last entry). The PUT
+//     looked for and not found, which leaves ENOENT, and nothing clears it before the record; the port keeps it
+//     for this record since M10 commit 16 (D260: daemon/src/bearer.rs, daemon/src/settings.rs stored()). The PUT
 //     reads the stored version through the GET's path (api_v3_settings.c:201) and replaces the file.
 //   - `string-get`, `string-put`: an admin's file laid as `{"version":"x"}`: json-c reads the string's digits with
 //     strtoll, which leaves EINVAL (json_object_get_int, the C-made vectors' errno column,

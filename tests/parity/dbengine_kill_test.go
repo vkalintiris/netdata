@@ -110,7 +110,7 @@ func TestDbengineKill9(t *testing.T) {
 				strings.Contains(hosts, killChild.MachineGUID))
 		}
 		replay(t, killed, func(t *testing.T, r *Pair) {
-			// the hosts the agent knows: /api/v1/info's host lists (the rest of it is not ported, D84.2)
+			// the hosts the agent knows: /api/v1/info's host lists (its other members are other checks')
 			var hosts [2]string
 			for i, side := range r.Each() {
 				b, err := rawExchange(side.Daemon.Addr, []byte("GET /api/v1/info HTTP/1.1\r\n\r\n"), 10*time.Second)

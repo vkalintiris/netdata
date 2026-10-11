@@ -822,7 +822,7 @@ func realCompareFunctions(t *testing.T, p *Pair) {
 		}
 	}
 	// the `functions` member, keyed by its place among the members both sides write (fnCompareInfoFunctionsAt's rule:
-	// a member the candidate does not write yet is left out of the place, D84.2)
+	// a member one side does not write is left out of the place, D84.2)
 	var placed [2]Value
 	for i, side := range p.Each() {
 		fns, before, after, ok := fnMember(fnCommonMembers(infos[i], infos[1-i]), "functions")
