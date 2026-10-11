@@ -29,8 +29,8 @@ fn c_long(value: f64) -> i64 {
     value as i64
 }
 
-/// `calculate_pairs_diff()`: each value's change from the one before it, from the last pair back, times 100000, as
-/// an integer: one fewer than the values.
+/// `calculate_pairs_diff()`: each value's difference from the one after it (the earlier minus the later), from the
+/// last pair back, times 100000, as an integer: one fewer than the values.
 pub fn pairs_diff(values: &[f64]) -> Vec<i64> {
     let diff = |pair: &[f64]| c_long((pair[0] - pair[1]) * DOUBLE_TO_INT_MULTIPLIER);
     values.windows(2).rev().map(diff).collect()
@@ -49,7 +49,8 @@ fn cursor_bigger_than(sorted: &[i64], mut cursor: usize, key: i64) -> usize {
 /// windows are whole; whatever their lengths, the statistic is the largest distance between the two step functions
 /// "how much of the set is at most this value", found at the baseline's values first, then the highlight's.
 ///
-/// NaN for a shift that an `i64` cannot hold and for an empty set (C's caller refuses the second before it calls).
+/// NaN for a shift that an `i64` cannot hold, for an empty set (C's caller refuses the second before it calls) and
+/// for more highlight values than the scaled comparison can hold.
 pub fn ks_2samp(baseline_diffs: &mut [i64], highlight_diffs: &mut [i64], base_shifts: u32) -> f64 {
     // the highlight's index is scaled by the ratio; keep the scaled comparison representable
     if base_shifts >= i64::BITS - 1 {

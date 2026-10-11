@@ -1142,6 +1142,21 @@ mod tests {
         assert_eq!(walk(b"", b"", true), (true, v0, vec![("parent".to_string(), true)]));
     }
 
+    /// `query_scope_foreach_host()`'s last test: once a host has a node id, its lowercase text matches when the
+    /// hostname and the machine GUID did not; a host without one never tries it.
+    #[test]
+    fn a_host_matches_by_its_node_id_after_its_hostname_and_guid() {
+        let host = Host::new("guid-2", false, crate::testing::info("named", 1, DbMode::Ram));
+        let matches = |pattern: &str| host_matches(&SimplePattern::from_web(pattern.as_bytes()).unwrap(), &host);
+        let id = "abababab-abab-abab-abab-abababababab";
+        assert!(!matches(id), "no node id yet");
+        host.set_node_id([0xab; 16]);
+        assert!(matches(id));
+        assert!(matches("abab*"));
+        assert!(!matches(&id.to_uppercase()), "the pattern is case-sensitive, the id lowercase");
+        assert!(matches("named") && matches("guid-2"));
+    }
+
     fn host() -> Arc<Host> {
         let h = Arc::new(Host::new("guid-1", false, crate::testing::info("child", 1, DbMode::Ram)));
         let (chart, _) = h.charts().create(&ChartSpec {
