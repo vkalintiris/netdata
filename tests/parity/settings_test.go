@@ -483,9 +483,14 @@ func setVersionRecord(method, file string) string {
 // setRangeRecord is setVersionRecord for a stored file whose last number is beyond the doubles (`1e999`): reading it,
 // the system's json-c leaves ERANGE in errno, and C's record carries whatever errno its thread has (nd_log.c:429).
 func setRangeRecord(method, file string) string {
-	return `source=daemon level=error errno="34, Numerical result out of range" tid=N thread=WEB[n] … req_method=` +
-		method + ` … request="` + setFile(file) + `" msg="file '<RUN>/lib/settings/` + file +
-		`' cannot be parsed to extract version"`
+	return setErrnoRecord("34, Numerical result out of range", method, file)
+}
+
+// setErrnoRecord is setVersionRecord with the errno the record carries: its thread's, as the last call that set it
+// left it (json-c's reading of the file, or what the request did before it: settings_closers_test.go).
+func setErrnoRecord(errno, method, file string) string {
+	return `source=daemon level=error errno="` + errno + `" tid=N thread=WEB[n] … req_method=` + method + ` … request="` +
+		setFile(file) + `" msg="file '<RUN>/lib/settings/` + file + `' cannot be parsed to extract version"`
 }
 
 // setFailRecord are the parts of C's record of a failed open or rename of `<file>.new` (api_v3_settings.c:247,
@@ -1113,9 +1118,9 @@ func settingsRowsOf(pair string) []settingsRow {
 // settingsRecordedJudge. Answers are compared raw after maskAnswer (each side's clock and expiry read against its
 // own flight: an nRPC answer to a PUT expires a second after its Date, json-c-parser-inline.c:49-50). Health is off.
 func TestSettingsAPI(t *testing.T) {
-	for _, pair := range settingsPairs {
+	for _, pair := range slices.Concat(settingsPairs, settingsCloserPairs) {
 		t.Run(pair, func(t *testing.T) {
-			rows := settingsRowsOf(pair)
+			rows := settingsCheckRows(pair)
 			if problem := settingsRowsProblem(rows); problem != "" {
 				t.Fatalf("harness: %s", problem)
 			}

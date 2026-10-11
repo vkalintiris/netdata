@@ -233,23 +233,45 @@ func fnStreamingViewOf(x *fnHTTPSide, label string, req []byte, guard func(Value
 	return label + ": " + strconv.Quote(view), problems
 }
 
-// fnBuiltinsStreamingInfo: netdata-streaming's words (D241 F3). C's handler reads none of its inputs
-// (function-netdata-streaming.c:21) and the registry finds a method by stripping the words after its name
+// fnBuiltinsStreamingInfo: netdata-streaming's words (D241 F3) and payload (H41). C's handler reads none of its
+// inputs (function-netdata-streaming.c:21) and the registry finds a method by stripping the words after its name
 // (nrpc-registry.c:883-891), so the admin's `netdata-streaming info` answers the table (fnStreamingView), where
-// topology:streaming answers its `info` header (function-topology-streaming.c:239-240, :2949).
+// topology:streaming answers its `info` header (function-topology-streaming.c:239-240, :2949); so does a POST with a
+// JSON body (`post`: the payload reaches the handler as `payload`, which it does not read; SA-F's probe p1 on C: the
+// same table, byte for byte but its times, for a JSON body on v1 and a text body on v3).
 func fnBuiltinsStreamingInfo() fnHTTPCase {
 	call := fnBuiltinsCall{"admin info", "/api/v1/function?function=netdata-streaming%20info", fnBuiltinsTx(0x311),
 		[]string{fnBuiltinsUsers[2].header}}
+	post := fnBuiltinsStreamingPost()
+	postReq := post.post()
 	return fnHTTPCase{
 		prepare: fnWriteTokens,
 		sc:      fnScenario(plugin.Step{Emit: fnOpenRegister}),
 		play: func(t *testing.T, x *fnHTTPSide) []string {
-			return []string{fnStreamingView(t, x, call.label, call.request(), fnStreamingStandalone)}
+			return []string{fnStreamingView(t, x, call.label, call.request(), fnStreamingStandalone),
+				fnStreamingView(t, x, post.label, postReq, fnStreamingStandalone)}
 		},
 		// the table's length follows its cells
-		records: func(l string) string { return fnBuiltinsMaskRecord(l, map[string]string{call.tx: "sizes"}) },
+		records: func(l string) string {
+			return fnBuiltinsMaskRecord(l, map[string]string{call.tx: "sizes", post.tx: "sizes"})
+		},
 		wantNot: []string{fnQ(`"accepted_params"`)},
 	}
+}
+
+// fnBuiltinsStreamingPost is the admin's POST of netdata-streaming with a JSON body (fnBuiltinsStreamingInfo).
+func fnBuiltinsStreamingPost() fnBuiltinsCall {
+	return fnBuiltinsCall{"admin post", "/api/v1/function?function=netdata-streaming", fnBuiltinsTx(0x312),
+		[]string{fnBuiltinsUsers[2].header, "Content-Type: application/json"}}
+}
+
+// fnBuiltinsStreamingBody is the POST's payload: words C's handler ignores (function-netdata-streaming.c:21).
+const fnBuiltinsStreamingBody = `{"info":true,"after":-600,"x":[1,2]}`
+
+// post is the call as a POST of fnBuiltinsStreamingBody.
+func (c fnBuiltinsCall) post() []byte {
+	return rawRequest("POST", c.target, append([]string{"X-Transaction-Id: " + c.tx}, c.headers...),
+		[]byte(fnBuiltinsStreamingBody))
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -338,6 +360,45 @@ func fnStreamingGone(t *testing.T) {
 	time.Sleep(time.Until(time.Unix(after+1, 0)))
 	fnStreamingCompareWith(t, p, fnStreamingAsk{target: "/api/v1/function?function=netdata-streaming",
 		guard: fnStreamingGoneGuard(base), left: left, settle: dashSettle})
+	// then each child marked ephemeral by netdatacli (the plan's section 4.3, BACKLOG commit 12's block)
+	t.Run("ephemeral", func(t *testing.T) {
+		for _, side := range p.Each() {
+			for _, host := range []stream.HostInfo{childHost, child2Host, fnStreamingChild3} {
+				fnStreamingMarkEphemeral(t, side.Role, side.Daemon, host.MachineGUID)
+			}
+		}
+		fnStreamingCompareWith(t, p, fnStreamingAsk{target: "/api/v1/function?function=netdata-streaming",
+			guard: fnStreamingEphemeralGuard(base), left: left, settle: dashSettle})
+	})
+}
+
+// fnStreamingMarkEphemeral marks the stale node of machine GUID guid ephemeral on d (`netdatacli
+// mark-stale-nodes-ephemeral`, daemon/commands.c:586-589). By its GUID C finds the host in memory (:509-514); by its
+// hostname it would ask the metadata database's host rows (:519-549, SQL_HOSTNAME_TO_REMOVE), which the metadata
+// thread writes a while after the host connected (SA-F's probe p1: `No match` on one side of each run). It is asked
+// again each second, up to 30 s, until it says the node is marked (a host whose metadata lock is held answers that it
+// is busy, :415-423).
+// The oracle's failure ends the test.
+func fnStreamingMarkEphemeral(t *testing.T, role Role, d *daemon.Daemon, guid string) {
+	t.Helper()
+	var last cliResult
+	if pollUntil(30*time.Second, func() bool {
+		last = runCLI(t, d, "mark-stale-nodes-ephemeral", guid)
+		return last.Exit == 0 && strings.Contains(last.Stdout, "has been marked ephemeral")
+	}) {
+		return
+	}
+	if role == Oracle {
+		t.Fatalf("oracle: %s not marked ephemeral within 30 s: %+v", guid, last)
+	}
+	t.Errorf("candidate: %s not marked ephemeral within 30 s: %+v", guid, last)
+}
+
+// fnStreamingEphemeralGuard is fnStreamingGoneGuard once each child is marked ephemeral: the children's rows say so
+// (Ephemerality, function-netdata-streaming.c:141) and an ephemeral host has no severity (`normal`, :107-108), the rest
+// as before (rrdhost_option_set(), commands.c:439-441, changes no status).
+func fnStreamingEphemeralGuard(base int64) func(Value) error {
+	return fnStreamingRows(fnStreamingGoneRows(base, true)...)
 }
 
 // fnStreamingGoneGuard is the guard of the oracle's `gone` table, for the fixture's base: localhost initializing,
@@ -349,17 +410,32 @@ func fnStreamingGone(t *testing.T) {
 // (rrdcontext-worker.c:1125-1127) and stored its retention, the fixture's minute (base to base+60:
 // rrdcontext-worker.c:1126, :82-101; streamChartsFixture), which the table prints, not the clock (rrdhost.h:617-618).
 func fnStreamingGoneGuard(base int64) func(Value) error {
+	return fnStreamingRows(fnStreamingGoneRows(base, false)...)
+}
+
+// fnStreamingGoneRows are fnStreamingGoneGuard's rows, the children's marked ephemeral where ephemeral says
+// (fnStreamingEphemeralGuard).
+func fnStreamingGoneRows(base int64, ephemeral bool) []fnStreamingRow {
 	child := func(host stream.HostInfo, reason string) fnStreamingRow {
-		return fnStreamingRow{"Node": strconv.Quote(host.Hostname), "rowOptions": `{"severity":"critical"}`,
+		row := fnStreamingRow{"Node": strconv.Quote(host.Hostname), "rowOptions": `{"severity":"critical"}`,
 			"InStatus": `"offline"`, "InReason": strconv.Quote(reason), "InLocalIP": `""`, "InLocalPort": "0",
 			"InRemoteIP": `""`, "InRemotePort": "0", "InCapabilities": "[]", "CollectedMetrics": "0",
 			"dbFrom": strconv.FormatInt(base*1000, 10), "dbTo": strconv.FormatInt((base+60)*1000, 10)}
+		if ephemeral {
+			row["rowOptions"], row["Ephemerality"] = `{"severity":"normal"}`, `"ephemeral"`
+		}
+		return row
 	}
-	return fnStreamingRows(
-		fnStreamingRow{"Node": strconv.Quote(parentIdentity.Hostname), "InReason": `"LOCALHOST"`,
-			"InStatus": `"initializing"`},
+	local := fnStreamingRow{"Node": strconv.Quote(parentIdentity.Hostname), "InReason": `"LOCALHOST"`,
+		"InStatus": `"initializing"`}
+	if ephemeral {
+		// the command marks the stale nodes alone (commands.c:426-436: an online host is left as it is)
+		local["Ephemerality"] = `"permanent"`
+	}
+	return []fnStreamingRow{
+		local,
 		child(childHost, "DISCONNECTED SOCKET CLOSED BY REMOTE END"),
 		child(child2Host, "DISCONNECTED PARSE ERROR"),
 		child(fnStreamingChild3, "DISCONNECTED SOCKET CLOSED BY REMOTE END"),
-	)
+	}
 }

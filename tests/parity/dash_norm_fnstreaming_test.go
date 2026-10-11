@@ -633,8 +633,9 @@ func testFnsOut(t *testing.T) {
 			t.Errorf("%s: C's tables differ: %q", stage, d)
 		}
 	}
-	if err := fnStreamingOutGuard("banned", "1")(fnsDoc(t, fnsOutNever[0].resp)); err == nil {
-		t.Errorf("a stage the guard does not know: no error")
+	if err := fnStreamingOutGuard("no-such-stage", "1")(fnsDoc(t, fnsOutNever[0].resp)); err == nil ||
+		!strings.Contains(err.Error(), "harness: no stage") {
+		t.Errorf("a stage the guard does not know: %v, want the harness's refusal", err)
 	}
 	cell := func(resp string, col string) int64 { return fnsInt(t, fnsCellOf(t, resp, 0, col)) }
 	c, cs := fnsOutConnected[1], fnsOutConnectedSides[1]

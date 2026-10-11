@@ -199,6 +199,9 @@ func (c *Conn) Close() error {
 // Err returns the first write error, if any.
 func (c *Conn) Err() error { return c.err }
 
+// LocalAddr is the child's own end of the connection: the address and port its parent sees as the peer's.
+func (c *Conn) LocalAddr() net.Addr { return c.conn.LocalAddr() }
+
 // Flush writes all buffered protocol lines to the socket.
 func (c *Conn) Flush() error {
 	if c.err != nil {

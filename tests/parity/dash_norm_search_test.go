@@ -143,6 +143,11 @@ func testDashNormSearch(t *testing.T) {
 		return dashNormDiffs(t, r.fam, r.fam.masks, rec.flight[0], o, c)
 	}
 
+	// inOrder tells a body that answers no label, or one key of one value in each context (searchOnePairLabels)
+	inOrder := func(body string) bool {
+		labelled, onePair := searchOnePairLabels(t, body)
+		return !labelled || onePair
+	}
 	// each row: it asks what was recorded, the two C sides show no difference, and its guard takes both
 	for _, key := range keys {
 		r, rec := rows[key], dashNormSearchRows[key]
@@ -161,11 +166,11 @@ func testDashNormSearch(t *testing.T) {
 				t.Errorf("the %s guard on C's answer (side %d): %v", key, side, err)
 			}
 		}
-		// a row that answers no label is compared in order, whole
-		if !strings.Contains(rec.bodies[0], `"labels":{`) && len(r.fam.unordered) > 0 {
-			t.Errorf("%s answers no label and its family leaves %v unordered", key, r.fam.unordered)
+		// a row that answers no label, or one key of one value in each context, is compared in order, whole
+		if inOrder(rec.bodies[0]) && len(r.fam.unordered) > 0 {
+			t.Errorf("%s answers no label set to order and its family leaves %v unordered", key, r.fam.unordered)
 		}
-		if strings.Contains(rec.bodies[0], `"labels":{`) && !slices.Equal(r.fam.unordered, searchLabelsFamily.unordered) {
+		if !inOrder(rec.bodies[0]) && !slices.Equal(r.fam.unordered, searchLabelsFamily.unordered) {
 			t.Errorf("%s answers labels and its family leaves %v unordered", key, r.fam.unordered)
 		}
 	}

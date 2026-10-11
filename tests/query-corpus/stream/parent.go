@@ -228,6 +228,11 @@ func (s *Session) Close() error {
 	return s.conn.Close()
 }
 
+// RemoteAddr is the child's end of the session's connection: the address and port of the child's own socket.
+func (s *Session) RemoteAddr() net.Addr {
+	return s.conn.RemoteAddr()
+}
+
 // CloseNotify sends a TLS close_notify and keeps the TCP connection, which CloseRaw ends.
 func (s *Session) CloseNotify() error {
 	if tc, ok := s.conn.(*tls.Conn); ok {
@@ -321,6 +326,11 @@ func StartParentOn(addr string, script func(Request) Answer) (*Parent, error) {
 // StartParentTLS is StartParent over TLS with `config` (its certificates), plain text when nil.
 func StartParentTLS(script func(Request) Answer, config *tls.Config) (*Parent, error) {
 	return startParent("127.0.0.1:0", script, config)
+}
+
+// StartParentTLSOn is StartParentTLS listening on `addr` (host:port), e.g. `[::1]:0` for a parent on IPv6.
+func StartParentTLSOn(addr string, script func(Request) Answer, config *tls.Config) (*Parent, error) {
+	return startParent(addr, script, config)
 }
 
 func startParent(addr string, script func(Request) Answer, config *tls.Config) (*Parent, error) {

@@ -164,14 +164,21 @@ const regReloadURL = "https://parity.invalid"
 func regCloudConf(t *testing.T, p *Pair, url string) {
 	t.Helper()
 	for _, side := range p.Each() {
-		dir := filepath.Join(side.Daemon.Opts.RunDir, "lib", "cloud.d")
-		if err := os.MkdirAll(dir, 0o770); err != nil {
-			t.Fatal(err)
-		}
-		conf := []byte("[global]\n    url = " + url + "\n")
-		if err := os.WriteFile(filepath.Join(dir, "cloud.conf"), conf, 0o640); err != nil {
-			t.Fatal(err)
-		}
+		cloudConfAt(t, side.Daemon.Opts.RunDir, url)
+	}
+}
+
+// cloudConfAt writes a cloud.conf whose `[global] url` is url into runDir's `lib/cloud.d` (made 0770 when it is not
+// there), before an agent starts on runDir or while it runs.
+func cloudConfAt(t *testing.T, runDir, url string) {
+	t.Helper()
+	dir := filepath.Join(runDir, "lib", "cloud.d")
+	if err := os.MkdirAll(dir, 0o770); err != nil {
+		t.Fatal(err)
+	}
+	conf := []byte("[global]\n    url = " + url + "\n")
+	if err := os.WriteFile(filepath.Join(dir, "cloud.conf"), conf, 0o640); err != nil {
+		t.Fatal(err)
 	}
 }
 

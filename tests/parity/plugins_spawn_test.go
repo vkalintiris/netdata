@@ -622,6 +622,8 @@ func TestPluginsSpawn(t *testing.T) {
 	t.Run("env", func(t *testing.T) { runSpawnEnv(t, spawnEnvMain()) })
 	t.Run("env-edge", func(t *testing.T) { runSpawnEnv(t, spawnEnvEdge(t)) })
 	t.Run("env-path", func(t *testing.T) { runSpawnEnv(t, spawnEnvPath()) })
+	// the one runtime change of the exported environment: the claim reload's cloud URL (spawn_claim_test.go)
+	t.Run("env-claim", func(t *testing.T) { runSpawnEnv(t, spawnEnvClaim()) })
 }
 
 // spawnEnvVariant is an environment variant of plugins.spawn: inputs away from the defaults both agents share
@@ -648,6 +650,11 @@ type spawnEnvVariant struct {
 	// charts are the oracle's /api/v1/charts `timezone` and `update_every` (the daemon's own use of TZ and [db]
 	// update every, charts2json.c:71-76), compared on both; the timezone masked while PULSE runs
 	charts string
+	// reload, when set, runs on each side after its start and before the labels reload: an input changed at runtime,
+	// which only the children started after it may show; runs are, per script, the lines the oracle's run j holds
+	// (spawnRunsProblems: the oracle must have run the script as many times)
+	reload func(t *testing.T, s spawnSide)
+	runs   map[string][][]string
 }
 
 // spawnExported are the names the agent exports to its children (environment.c, nd_log-config.c, netdata-conf-*.c,
@@ -696,6 +703,9 @@ func runSpawnEnv(t *testing.T, v spawnEnvVariant) {
 	probes := spawnProbeDirWith(t, spawnProbeParent, v.tail)
 	sides := startSpawnAgentsWith(t, func(t *testing.T, o *daemon.Options) { v.adjust(t, o, probes) })
 	for _, s := range sides {
+		if v.reload != nil {
+			v.reload(t, s)
+		}
 		if r := runCLI(t, s.d, "reload-labels"); r.Exit != 0 {
 			t.Fatalf("%s: reload-labels: exit %d: %s", s.role, r.Exit, r.Stderr)
 		}
@@ -714,6 +724,13 @@ func runSpawnEnv(t *testing.T, v spawnEnvVariant) {
 		if len(runs[0]) != len(runs[1]) || len(runs[0]) == 0 {
 			t.Errorf("%s runs: oracle %d, candidate %d", script, len(runs[0]), len(runs[1]))
 			continue
+		}
+		var oracleEnvs [][]string
+		for _, r := range runs[0] {
+			oracleEnvs = append(oracleEnvs, spawnEnvView(r["env"], probes))
+		}
+		for _, p := range spawnRunsProblems(script, v.runs[script], oracleEnvs) {
+			t.Errorf("oracle: %s", p)
 		}
 		for j := range runs[0] {
 			var env, order [2][]string
@@ -890,13 +907,7 @@ func spawnEnvMain() spawnEnvVariant {
 			o.Identity = &id
 			o.Env = append(o.Env, "NETDATA_INVOCATION_ID=5A1E0000-0000-4000-8000-0000000000BB", "LC_ALL=C.UTF-8", "TZ=",
 				"PYTHONPATH=/parity/inherited")
-			cloud := filepath.Join(o.RunDir, "lib", "cloud.d")
-			if err := os.MkdirAll(cloud, 0o770); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(cloud, "cloud.conf"), []byte("[global]\n    url = https://cloud.parity.invalid\n"), 0o640); err != nil {
-				t.Fatal(err)
-			}
+			cloudConfAt(t, o.RunDir, "https://cloud.parity.invalid")
 		},
 		want: []string{
 			"NETDATA_UPDATE_EVERY=2", "NETDATA_HOSTNAME=parity-parent", "NETDATA_HOST_PREFIX=/",

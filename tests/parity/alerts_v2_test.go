@@ -201,10 +201,11 @@ func (log alertsV2Log) join(host string, n *healthNorm, body []byte) error {
 // answer has no keys and no global id: its instance rows are rendered by position (alertsV2RenderMCP). The MCP form
 // of a transition has no id: its entry is the one of the side's log for its alert's change at its second, when the
 // log holds exactly one (alertsV2ChangeRe, alertsV2Log.changed); a transition whose second is not its entry's finds
-// none, and nothing of it is named. In either form a byte that is no part of a UTF-8 sequence is first written out
-// (alertsV2Bytes).
+// none, and nothing of it is named. A body without a global id (`values` without `instances`) has its instances'
+// last evaluations read alone (alertsV2RenderValues). In either form a byte that is no part of a UTF-8 sequence is
+// first written out (alertsV2Bytes).
 func alertsV2Render(n *healthNorm, log alertsV2Log, flight [2]int64, body []byte) ([]byte, []int64) {
-	body = alertsV2Bytes(body)
+	body = alertsV2EchoAlias(n, log, alertsV2Bytes(body))
 	if bytes.Contains(body, []byte(`"alert_instances_header"`)) {
 		return alertsV2RenderMCP(n, log, flight, body)
 	}
@@ -304,7 +305,7 @@ func alertsV2Render(n *healthNorm, log alertsV2Log, flight [2]int64, body []byte
 		last = loc[0]
 	}
 	if len(ids) == 0 {
-		return body, nil
+		return alertsV2RenderValues(flight, body)
 	}
 	out.WriteString(item(string(body[last:])))
 	return []byte(out.String()), clocks
@@ -577,19 +578,19 @@ func alertsV2AccessCase(routes ...string) func(t *testing.T, h *healthPair) {
 	}
 }
 
-// TestAlertsV2 (checks `api.v2-alerts` = `TestAlertsV2/alerts`, `/sets` and `/off`, and `api.v2-alert-transitions` =
-// `TestAlertsV2/transitions`, `/rules` and `/rules-order`, milestone 10 commit 0, D224; the rows of D234 F2 and F3
-// since commit 4, those of D234 F7 since commit 5): the alert
-// endpoints of the contexts v2 engine, on the health runner. Each case compares a v1 answer of the same state first
-// (the green anchor), reads each side's alert log for its ids' aliases, then asks the v2 endpoints (compareV2: the
-// oracle's status and guard, then the candidate's answer within healthCandidateWait), and, for `alerts` and
+// TestAlertsV2 (checks `api.v2-alerts` = `TestAlertsV2/alerts`, `/sets`, `/off`, `/two-charts` and `/stock-rules`, and
+// `api.v2-alert-transitions` = `TestAlertsV2/transitions`, `/rules`, `/rules-order` and `/states`, milestone 10 commit
+// 0, D224; the rows of D234 F2 and F3 since commit 4, those of D234 F7 since commit 5, the closer rows since H41): the
+// alert endpoints of the contexts v2 engine, on the health runner. Each case compares a v1 answer of the same state
+// first (the green anchor), reads each side's alert log for its ids' aliases, then asks the v2 endpoints (compareV2:
+// the oracle's status and guard, then the candidate's answer within healthCandidateWait), and, for `alerts` and
 // `transitions`, once both agents stopped, its routes' access rows (`access`). Cases:
 //   - `alerts`: `health.api` `endpoints`' three alerts, one WARNING, and a fourth on a chart never collected
 //     (alertsV2Conf): `/api/v3/alerts` with `status=raised`, with the summary alone, with `alert=` of two names, and
 //     `/api/v2/alerts` pretty; then the status words, the long keys with the request's echo, the MCP form, dates, the
 //     host prefilter under a window, the selectors that filter nothing or everything (alertsV2AlertRows),
 //     `transition=` with each side's own ids (alertsV2TransitionRows) and its 404 as the agents write it
-//     (alertsV2NotFoundRows);
+//     (alertsV2NotFoundRows), then the closer rows (alertsV2CloserAlerts);
 //   - `sets`: one alert name on two charts of two contexts by two rules, a template on two charts, texts with
 //     variables, a module cut inside a character, and at its end a child with a chart on the template's context
 //     (alertsV2SetsConf, alertsV2PlaySets): what a summary entry holds of several alerts, and of two hosts;
@@ -605,7 +606,16 @@ func alertsV2AccessCase(routes ...string) func(t *testing.T, h *healthPair) {
 //     (alertsV2TransitionsRows and its kin);
 //   - `rules-order` (D234 F5): two alarms and a restart: `configurations[]` before any stop (the rules' first
 //     appearance in `transitions[]`), after the stop wrote statistics (C: alert_hash's rowid order), and over a
-//     window where the two orders are one (alertsV2RulesOrderCase).
+//     window where the two orders are one (alertsV2RulesOrderCase), then the second run's live alert log;
+//   - `states` (the closer rows, alerts_closers_l_test.go): a delayed notification, one that cannot run, two
+//     UNDEFINED alerts, a chart whose name is not its id, an obsolete chart's REMOVED, units null and the transitions'
+//     long texts (alertsV2PlayStates). `transitions` also asks the alerts rows of its CRITICAL phase and the echo of a
+//     transition id in both modes there;
+//   - `two-charts` (closer rows): a chart with a name of its own, two collected charts under two templates, one to
+//     `silent sysadmin`, and a rule `enabled alarms` leaves out (alertsV2TwoChartsCase): counters above 1,
+//     `running_silent`, a left-out rule counted available, `ch` against `ch_n`;
+//   - `stock-rules` (closer rows): the installed rules and no chart: the groupings of the rules alone, in the order
+//     C read them (alertsV2StockRulesCase).
 //
 // The alerts rows of two hosts with an alert each are `health.child` `two-hosts`' (alertsV2TwoHosts). Neither endpoint
 // runs a data query: asking them does not pause HEALTH (stream-control.c:99-103).
@@ -641,6 +651,13 @@ func TestAlertsV2(t *testing.T) {
 			after: alertsV2AccessCase("/api/v2/alert_transitions", "/api/v3/alert_transitions"),
 		},
 		"rules-order": alertsV2RulesOrderCase(),
+		"two-charts":  alertsV2TwoChartsCase(),
+		"stock-rules": alertsV2StockRulesCase(),
+		"states": {
+			conf: alertsV2StatesConf,
+			sc:   alertsV2StatesScenario(),
+			play: alertsV2PlayStates,
+		},
 	})
 }
 
@@ -723,6 +740,7 @@ func alertsV2PlayAlerts(t *testing.T, h *healthPair) {
 			}
 		})
 	}
+	alertsV2CloserAlerts(t, h)
 }
 
 // alertsV2NewestChange is the transition id of the newest of entries (an alert log in the order of its ids) that took
@@ -1615,6 +1633,9 @@ func alertsV2PlayTransitions(t *testing.T, h *healthPair) {
 		}
 		h.compareNow(t, fmt.Sprintf("phase %d: /api/v1/alarms?all", k), func(i int) string { return h.get(i, "/api/v1/alarms?all") },
 			healthAll(healthSigStatus[k], names...))
+		if k == 2 {
+			alertsV2TransitionsCritical(t, h)
+		}
 	}
 	// the green anchor, as health.transitions compares it; it also names each side's transition ids
 	h.compareNow(t, "the alert log's transitions", func(i int) string { return h.transitions(i, "") },
@@ -1681,7 +1702,8 @@ func alertsV2PlayTransitions(t *testing.T, h *healthPair) {
 		compareV2(t, h.p, req, fam)
 	}
 	// D234 F7's rows: the facets, the rules, the filters, the windows, the echo, the forms of the answer
-	for _, req := range slices.Concat(alertsV2TransitionsRows(sw), alertsV2TransitionsOneRows(raised, first)) {
+	for _, req := range slices.Concat(alertsV2TransitionsRows(sw), alertsV2TransitionsOneRows(raised, first),
+		alertsV2TransitionsEchoRows(raised)) {
 		compareV2(t, h.p, req, fam)
 	}
 	// a window that ends some seconds ago, counted from now: asked once, since each further ask would move its end
@@ -2583,8 +2605,8 @@ var alertsV2RulesOrderCut = []string{
 //     database/sqlite/sqlite_functions.c:672);
 //   - `cut` wants [hs_calc, hs_max] where that is the order of first appearance too.
 //
-// The Rust build lists the rules in the order of first appearance always, so on it `rowid` differs from C at
-// `configurations[]`, and there only, until `alert_configs` follows C's join.
+// The Rust build follows C's join since `555ef13b2c` (D242), so `rowid` holds it to C's alert_hash order too; before
+// that it listed the rules in the order of first appearance always and differed from C at `configurations[]` alone.
 //
 // What `rowid` cannot tell: that C's order is alert_hash's rowid order rests on C's plan (`SCAN ah`, `SCAN t`) and on
 // the health oracle's C-made vectors, not on this row. Here the rowid order, the order of the rules' hash ids
@@ -2684,7 +2706,8 @@ func alertsV2RulesOrderRows(ends [2]int64) []v2Req {
 // close's `PRAGMA optimize` goes with it. By reading, the next open's `PRAGMA optimize=0x10002` (:277) then writes
 // the statistics (not probed); if it did not, `rowid` would fail at the oracle's guard, loudly.
 //
-// Not compared: the live `/api/v1/alarm_log` after the restart (C serves `[]`).
+// Last, the second run's live `/api/v1/alarm_log`, compared whole: C serves `[]` all along, its HEALTH making no pass
+// without a chart (the log's limit unset: health/health_event_loop.c:266, sqlite_health.c:1074).
 func alertsV2RulesOrderCase() healthCase {
 	var logs [2][]byte
 	recorded := func(i int) ([]byte, error) {
@@ -2726,6 +2749,9 @@ func alertsV2RulesOrderCase() healthCase {
 			for _, req := range alertsV2RulesOrderRows(ends)[1:] {
 				compareV2(t, h.p, req, fam)
 			}
+			// the live alert log of the second run, which HEALTH never passes
+			h.compareNow(t, "the second run: /api/v1/alarm_log", func(i int) string { return h.get(i, "/api/v1/alarm_log") },
+				healthIs(healthLogEmpty))
 		},
 	}
 }

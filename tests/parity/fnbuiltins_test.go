@@ -147,8 +147,8 @@ const (
 	fnBuiltinsRestricted = "This feature is not available via this API."
 )
 
-// fnBuiltins501Re is the answer of a streaming built-in until M10 (D176.3: nRPC's error shape with 501 and the text
-// `daemon/src/builtins/mod.rs` NOT_IMPLEMENTED).
+// fnBuiltins501Re is the answer of topology:streaming until the Cloud milestone (M11; D176.3: nRPC's error shape with
+// 501 and the text `daemon/src/builtins/mod.rs` NOT_IMPLEMENTED; D220 fork 4).
 var fnBuiltins501Re = regexp.MustCompile(`^\{"status":501,"errorMessage":"This feature is not implemented yet on this agent\."\}$`)
 
 // fnBuiltinsPending is an admin's call of topology:streaming, whose handler reads the host status of every host
@@ -169,7 +169,7 @@ func fnBuiltinsPending(t *testing.T, x *fnHTTPSide, label string, req []byte) st
 		t.Errorf("oracle: %s: %s", label, truncateBytes(b))
 	}
 	if c200 || x.role != Oracle && strings.HasPrefix(status, "HTTP/1.1 501 ") && fnBuiltins501Re.Match(body) {
-		return label + ": answered (C's 200, or D176.3's 501 until M10)"
+		return label + ": answered (C's 200, or D176.3's 501 until M11)"
 	}
 	return label + ": " + strconv.Quote(fnHTTPMask(b))
 }

@@ -19,10 +19,12 @@ import (
 // (rrdhost_status, :77). `fn.builtins` compares the admin's table of a standalone agent (fnStreamingView).
 
 // TestFnNetdataStreaming (check `fn.netdata-streaming`, milestone 10 commit 12): the admin's
-// `/api/v1/function?function=netdata-streaming` on each agent of four topologies: `calls`, `fn.stream`'s (two parents,
-// a real C child each, the child's vnode released after it) once its cases played; `gone`, three fixture children
-// that left (fnStreamingGone); `never` and `out`, TestNodeInstancesStream's agents streaming to a scripted parent, at
-// each of their stages (fnStreamingOut).
+// `/api/v1/function?function=netdata-streaming` on each agent of these topologies: `calls`, `fn.stream`'s (two
+// parents, a real C child each, the child's vnode released after it) once its cases played; `gone`, three fixture
+// children that left (fnStreamingGone); `never`, `out` and (H41's closers) `ban`, `tls`, `zip`, `reset`, `never2`,
+// TestNodeInstancesStream's agents streaming to scripted parents, at each of their stages (fnStreamingOut); `down`,
+// the table of a C child and of the candidate called down the stream through C parents (fnStreamingDown);
+// `tls-child`, a parent pair receiving the fixture child over TLS (fnStreamingTLSChild).
 func TestFnNetdataStreaming(t *testing.T) {
 	t.Run("calls", func(t *testing.T) {
 		topo := fnStreamCalls()
@@ -31,8 +33,11 @@ func TestFnNetdataStreaming(t *testing.T) {
 	})
 	t.Run("gone", fnStreamingGone)
 	// the Out cells, on TestNodeInstancesStream's pairs (fnstreaming_out_test.go)
-	t.Run("never", func(t *testing.T) { runNIStream(t, "never", fnStreamingOut) })
-	t.Run("out", func(t *testing.T) { runNIStream(t, "out", fnStreamingOut) })
+	for _, pair := range []string{"never", "out", "ban", "tls", "zip", "reset", "never2"} {
+		t.Run(pair, func(t *testing.T) { runNIStream(t, pair, fnStreamingOut) })
+	}
+	t.Run("down", fnStreamingDown)
+	t.Run("tls-child", fnStreamingTLSChild)
 }
 
 // fnStreamingTx is the admin's call's transaction (fnStreamTx's scheme, beyond the `calls` cases' numbers).
@@ -292,7 +297,10 @@ func fnStreamingRows(rows ...fnStreamingRow) func(Value) error {
 // fnStreamingAsk is one comparison of the admin's table (fnStreamingCompareWith): the request's target, the
 // oracle's guard, by side the hosts that left and the seconds each left in (fnStreamingSince), how long the sides may
 // be asked again while the comparison fails (0: once), and, where the topology needs them, more columns masked as
-// fnStreamingVolatile's (volatile) and the facts that hold side i's table besides (facts).
+// fnStreamingVolatile's (volatile), the facts that hold side i's table besides (facts), the address each side is asked
+// through when it is not its own agent's (via: a parent that calls its child down the stream, the pair being the
+// children), the time each answer must come within (limit; 0: none) and more masks of each side's table, made from
+// that table (masks: cells whose text C does not fix, which facts hold instead; nil: none).
 type fnStreamingAsk struct {
 	target   string
 	guard    func(Value) error
@@ -300,6 +308,9 @@ type fnStreamingAsk struct {
 	settle   time.Duration
 	volatile []string
 	facts    func(i int, v Value, flight [2]int64) error
+	via      [2]string
+	limit    time.Duration
+	masks    func(Value) []Mask
 }
 
 // fnStreamingCompare is the `calls` topology's comparison (fnStreamingCompareWith): the table of v1, fnStreamingGuard,
@@ -313,10 +324,10 @@ func fnStreamingCompare(t *testing.T, p *Pair, _ [2]*fnStreamSide) {
 // oracle's status and guard first, the heads (fnHTTPMask; each side's length against its own body), each side's
 // table against what C fixes between its cells (fnStreamingFacts) and the seconds its times come from
 // (fnStreamingSince: the agent's start window, niStartSlack, and ask.left), then the bodies as ordered JSON with the
-// volatile columns' numbers other than 0 masked by name (fnStreamingMasks), their layouts and their strings'
-// escapes. While that fails both are asked again, up to ask.settle; the last round's failures are reported, the
-// oracle's ending the test. The request is the Functions checks' own (fnHTTPGet, a transaction of this check's), so
-// the sequence is written here and not compareV2's.
+// volatile columns' numbers other than 0 masked by name (fnStreamingMasks) and ask.masks' cells masked, their layouts
+// and their strings' escapes. While that fails both are asked again, up to ask.settle; the last round's failures are
+// reported, the oracle's ending the test. The request is the Functions checks' own (fnHTTPGet, a transaction of this
+// check's), so the sequence is written here and not compareV2's.
 func fnStreamingCompareWith(t *testing.T, p *Pair, ask fnStreamingAsk) {
 	t.Run("netdata-streaming", func(t *testing.T) {
 		deadline := time.Now().Add(ask.settle)
@@ -351,13 +362,25 @@ func fnStreamingRound(p *Pair, ask fnStreamingAsk) (r fnStreamingRounds) {
 	var raw [2][]byte
 	var flight [2][2]int64
 	for i, side := range p.Each() {
-		from := time.Now().Unix()
-		b, err := rawExchange(side.Daemon.Addr, req, fnWait)
+		addr := side.Daemon.Addr
+		if ask.via[i] != "" {
+			addr = ask.via[i]
+		}
+		start := time.Now()
+		from := start.Unix()
+		b, err := rawExchange(addr, req, fnWait)
 		if err != nil {
 			r.fatal = fmt.Sprintf("%s: %v", side.Role, err)
 			return r
 		}
 		raw[i], flight[i] = b, [2]int64{from, time.Now().Unix()}
+		if took := time.Since(start); ask.limit > 0 && took > ask.limit {
+			if side.Role == Oracle {
+				r.fatal = fmt.Sprintf("oracle: answered in %v, more than %v", took, ask.limit)
+				return r
+			}
+			r.problems = append(r.problems, fmt.Sprintf("%s: answered in %v, more than %v", side.Role, took, ask.limit))
+		}
 	}
 	r.body[0] = raw[0]
 	if s := fnStatusLine(raw[0]); s != "HTTP/1.1 200 OK" {
@@ -409,8 +432,14 @@ func fnStreamingRound(p *Pair, ask fnStreamingAsk) (r fnStreamingRounds) {
 		r.problems = append(r.problems, fmt.Sprintf("%s: %v", side.Role, err))
 	}
 	volatile := slices.Concat(fnStreamingVolatile, ask.volatile)
-	o := ApplyMasks(doc[0], fnStreamingMasks(doc[0], volatile))
-	c := ApplyMasks(doc[1], fnStreamingMasks(doc[1], volatile))
+	var masks [2][]Mask
+	for i := range doc {
+		masks[i] = fnStreamingMasks(doc[i], volatile)
+		if ask.masks != nil {
+			masks[i] = append(masks[i], ask.masks(doc[i])...)
+		}
+	}
+	o, c := ApplyMasks(doc[0], masks[0]), ApplyMasks(doc[1], masks[1])
 	for _, d := range Compare(o, c) {
 		r.problems = append(r.problems, d.String())
 	}

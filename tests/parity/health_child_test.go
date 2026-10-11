@@ -348,7 +348,10 @@ const healthChildPostpone = 15
 //   - `postpone`: `postpone alerts on connect`: the alert is linked at the child's first pass and not evaluated before
 //     the delay ended (stream-receiver.c:1419-1428, health_event_loop.c:416-425), with the two debug records;
 //   - `two-hosts`: an alert on localhost's own chart and one on the child's, raised in one second: a call for each,
-//     naming its host; then the silencers' `hosts=` selector takes the child's alert alone;
+//     naming its host; then the silencers' `hosts=` selector takes the child's alert alone; the alerts rows of two
+//     hosts and of a node selector at the first 70, the transitions of the two hosts at the end (D234 F3);
+//   - `half-off`: localhost's alarm beside a child whose health is off: the alerts rows of a host whose health never
+//     ran beside one with alerts;
 //   - `dyncfg`: with the child connected, a rule on the child's context is added through localhost's DynCfg template,
 //     then its job disabled: C applies a DynCfg change to every host whose health ran (health_prototypes.c:681-702,
 //     health_dyncfg.c:608-628);
@@ -361,6 +364,7 @@ func TestHealthChild(t *testing.T) {
 		"off":       healthChildOffCase(),
 		"postpone":  healthChildPostponeCase(),
 		"two-hosts": healthChildTwoHostsCase(),
+		"half-off":  healthChildHalfOffCase(),
 		"dyncfg":    healthChildDynCfgCase(),
 		"restart":   healthChildRestartCase(),
 	})
@@ -612,6 +616,7 @@ func healthChildTwoHostsCase() healthCase {
 			h.compareNow(t, "at 70: the notifier's calls for the child", v.calls, healthChildCalls(name, "WARNING"))
 			// each host's alert is WARNING and notified: the alerts endpoint over two hosts (D234 F3, alerts_v2_test.go)
 			alertsV2TwoHosts(t, h, v.cn)
+			alertsV2TwoHostsNodes(t, h, v.cn)
 
 			// the child's alerts are silenced, by its hostname
 			h.manageStep(t, healthSaved("cmd=SILENCE&hosts="+healthChild.Hostname, healthMsgSilence+healthMsgAdded, silencers).
@@ -638,6 +643,8 @@ func healthChildTwoHostsCase() healthCase {
 			// its link and its four statuses
 			h.compareNow(t, "at the end: /api/v1/alarm_log", h.log, healthBoth(healthLogEntries(4+3+3), healthHas(`"status":"REMOVED",`)))
 			h.compareNow(t, "at the end: the child's /api/v1/alarm_log", v.log, healthLogEntries(1+4))
+			// the transitions of the two hosts (D234 F3, alerts_closers_l_test.go)
+			alertsV2TwoHostsTransitions(t, h, v.cn)
 			time.Sleep(healthUnlinkHold)
 			child.disconnect(t)
 			h.compareNow(t, "the child's alert log after it disconnected", v.changes, healthLastChange(name, "WARNING->REMOVED"))
@@ -645,6 +652,37 @@ func healthChildTwoHostsCase() healthCase {
 		after: func(t *testing.T, h *healthPair) {
 			h.compareRecords(t, healthRecNoFile, healthRecWritten,
 				healthRecChanged(healthChild.Hostname, name, [2]bool{false, false}, [2]bool{false, true}))
+		},
+	}
+}
+
+// healthChildHalfOffCase is `half-off`: localhost's alarm (two-hosts' hloc_calc) beside a child whose section
+// turns its health off, so the parent has one host whose health runs and one whose health never ran. Localhost's
+// chart goes 10, 70; the child's collects 70. Then the alerts rows of the two hosts (alertsV2HalfOff).
+func healthChildHalfOffCase() healthCase {
+	const local = "hloc_calc"
+	return healthCase{
+		conf:   healthTwoHostsConf,
+		stream: healthChildSection("health enabled = no", "postpone alerts on connect = 0"),
+		sc:     healthValues(healthTwoHostsChart, "hloc.ctx", []string{"a"}, map[string]int64{"a": 10}, map[string]int64{"a": 70}),
+		play: func(t *testing.T, h *healthPair) {
+			v := h.childViews(t)
+			h.create(t)
+			h.compareNow(t, "before the child: the transitions", h.changes, healthChangesOf(local, 4))
+			time.Sleep(healthUnlinkHold)
+			child := startFanoutChild(t, h.p, healthChild)
+			time.Sleep(2 * time.Second)
+			child.define(healthChildChart, healthChildContext, []string{"a"}, map[string]int64{"a": 70})
+			// localhost became a parent: its alert was linked again
+			h.compareNow(t, "the child connected: the transitions", h.changes, healthBoth(healthChangesOf(local, 4+healthParentRelink),
+				healthReloaded(local, "CLEAR", "CLEAR")))
+			h.release(t, "p1", 1, healthCalcHold)
+			h.compareNow(t, "at 70: /api/v1/alarms?all", h.all, healthAll("WARNING", local))
+			h.compareNow(t, "at 70: the child's /api/v1/alarms?all", v.all, healthHostOff)
+			h.processed(t, "at 70", local, "WARNING")
+			alertsV2HalfOff(t, h)
+			time.Sleep(healthUnlinkHold)
+			child.disconnect(t)
 		},
 	}
 }

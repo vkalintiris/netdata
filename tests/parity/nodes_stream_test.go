@@ -4,7 +4,11 @@ package parity
 
 import (
 	"bytes"
+	"crypto/tls"
 	"fmt"
+	"net"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -16,12 +20,15 @@ import (
 	"github.com/netdata/netdata/tests/query-corpus/stream"
 )
 
-// The node instances of agents that stream out (check `api.v2-node-instances-stream`, milestone 10 commit 11, D241
-// F3): `/api/v2|v3/node_instances` of an agent whose localhost has a sender, so that its instance prints `stream`
+// The node instances of agents that stream out (check `api.v2-node-instances-stream`, milestone 10 commit 11, D241 F3):
+// `/api/v2|v3/node_instances` of an agent whose localhost has a sender, so that its instance prints `stream`
 // (rrdhost_sender_to_json(), database/contexts/api_v2_contexts.c:381-433) with the sender's parents
 // (rrdhost_stream_parents_to_json(), streaming/stream-parents.c:174-225). The pairs (runNIStream) are an agent whose
-// sender never started (`never`, and `never-tz` in another time zone), two agents streaming to one scripted parent
-// (`out`), first connected, then refused, and two agents whose two parents are both banned at their probes (`ban`).
+// sender never started (`never`, and `never-tz` in another time zone; `never2` with two parents), two agents streaming
+// to one scripted parent, first connected, then refused (`out`; `tls` the same over TLS on [::1]), streaming to one
+// that takes compression (`zip`, one stage: `compressed`) and with their second connection reset (`reset`), and two
+// agents whose two parents are both banned at their probes (`ban`). The `load` subtest asks the rows back to back while
+// a scripted parent resets every session (niStreamLoad).
 
 // jsonRewrite is the JSON text b with each value visit handles replaced: visit gets every value's path (object keys
 // and `[i]`) and bytes, outermost first, and hands back what to write instead; a value it does not handle is walked
@@ -176,6 +183,16 @@ type niStreamSide struct {
 	// probed are the seconds the sender probed its parents in: from the second before the scripted parents' first
 	// probe to the second the side was first seen with both banned (ban).
 	probed [2]int64
+	// socket is the port of the sender's own end of its session with the scripted parent, once connected: the
+	// session's remote port that the side's agent holds (niSessionPort); empty where the harness has none.
+	socket string
+	// young says that the stage reads a connection reset within its first seconds (reset): its chart definitions'
+	// bytes are how far it got by then, which niStreamWords reads by form, and its reason and its parent's last
+	// handshake are one of C's reset texts (RESET, niStreamResetReasons)
+	young bool
+	// compressed says that the side's connection compresses (zip): the bytes counted are the compressed ones
+	// (stream-sender-commit.c:171-173), whose count for the chart definitions varied C against C
+	compressed bool
 }
 
 // niStreamRun is one of TestNodeInstancesStream's pairs in one of its stages, as runNIStream hands it to a
@@ -255,7 +272,7 @@ func niStreamCounted(s Value) bool {
 // niStreamSides are the two sides' own values (niStreamSide) of a pair streaming to stub, started (niStreamPair)
 // by the second up: the oracle was ready when the candidate's launch began, the candidate by then.
 func niStreamSides(p *Pair, stub *stream.Parent, up int64) [2]niStreamSide {
-	_, port, _ := strings.Cut(stub.Addr(), ":")
+	_, port, _ := net.SplitHostPort(stub.Addr())
 	var sides [2]niStreamSide
 	ready := [2]int64{p.Candidate.LaunchStartedAt.Unix(), up}
 	for i, s := range niSides(p, [2][2]int64{}) {
@@ -280,7 +297,78 @@ func niStreamPair(t *testing.T, opts daemon.Options) *Pair {
 }
 
 // niStreamPairs are runNIStream's pairs, in the order TestNodeInstancesStream runs them.
-var niStreamPairs = []string{"never", "never-tz", "out", "ban"}
+var niStreamPairs = []string{"never", "never-tz", "out", "ban", "tls", "zip", "reset", "never2"}
+
+// niStreamStub is the scripted parent of the pair named name: over TLS on [::1] for `tls` (a self-signed certificate,
+// which the agents are told not to verify), one that accepts every capability offered, compression with them, and
+// reads nothing for `zip`, else PlaintextAnswer's on 127.0.0.1 (stream.StartParent(nil)).
+func niStreamStub(t *testing.T, name string) *stream.Parent {
+	t.Helper()
+	var stub *stream.Parent
+	var err error
+	switch name {
+	case "tls":
+		key, cert := selfSigned(t)
+		pair, kerr := tls.X509KeyPair(cert, key)
+		if kerr != nil {
+			t.Fatal(kerr)
+		}
+		stub, err = stream.StartParentTLSOn("[::1]:0", nil, &tls.Config{Certificates: []tls.Certificate{pair}})
+	case "zip":
+		stub, err = stream.StartParent(func(r stream.Request) stream.Answer {
+			return stream.Answer{Reply: stream.VCaps(r.Caps())}
+		})
+	default:
+		stub, err = stream.StartParent(nil)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { stub.Close() })
+	return stub
+}
+
+// niStreamOutOptions are the options of a pair named name that streams to stub (pulseChildOptions): `tls` names the
+// stub's address with `:SSL` and skips the certificate's verification (stream.conf `ssl skip certificate
+// verification`), `zip` enables compression (both agents offer it by default, stream-conf.c; the harness turns it off
+// elsewhere).
+func niStreamOutOptions(name string, stub *stream.Parent) daemon.Options {
+	opts := pulseChildOptions(stub, true)
+	switch name {
+	case "tls":
+		opts.StreamTo.Destination = stub.Addr() + ":SSL"
+		opts.StreamTo.Extra += "    ssl skip certificate verification = yes\n"
+	case "zip":
+		opts.StreamTo.Compression = true
+	}
+	return opts
+}
+
+// niStreamResetAll resets every open session of stub (stream.Session.Reset: SO_LINGER 0, the sender's socket loses
+// its peer at once).
+func niStreamResetAll(stub *stream.Parent) {
+	for _, s := range stub.Sessions() {
+		if !s.Closed() {
+			_ = s.Reset()
+		}
+	}
+}
+
+// niStreamCountedAs holds of a `stream` of status whose connection is counted (niStreamCounted's id above 0).
+func niStreamCountedAs(status string) func(Value) bool {
+	return func(s Value) bool {
+		id, err := dashMember(s, "id")
+		return niStreamIs(status, "")(s) && err == nil && id.Kind == KindNumber && id.Text != "0"
+	}
+}
+
+// niStreamOnlineAs holds of an online `stream` whose connection count is id.
+func niStreamOnlineAs(id string) func(Value) bool {
+	return func(s Value) bool {
+		n, err := dashMember(s, "id")
+		return niStreamIs("online", "")(s) && err == nil && n.Text == id
+	}
+}
 
 // runNIStream starts TestNodeInstancesStream's pair named name, with the bearer tokens, reaches each of its stages by
 // waits of its own (never by a row's comparison) and runs compare in a subtest named after the stage (never-tz is
@@ -297,36 +385,107 @@ var niStreamPairs = []string{"never", "never-tz", "out", "ban"}
 //   - `ban`: as out, to two scripted parents (stub, then a second), whose probes answer with the agent's own machine
 //     GUID, as this host and as a parent receiving it: both are banned at the first probe, and nothing connects.
 //     Stage `banned` once each side has no parent left (NO PARENT TO SEND TO); afterwards neither parent may have
-//     had a session.
+//     had a session;
+//   - (H41) `tls`: as out, to a stub over TLS on [::1] (niStreamStub, niStreamOutOptions): stages `connected` and
+//     `denied`, the ends and the parent's destination with `:SSL` while connected, none once refused;
+//   - `zip`: as out, compression on, to a stub that takes every capability offered and asks no chart's
+//     replication: stage `compressed` once each side reads replicating and counted, 6 s after the later session;
+//   - `reset`: as out until connected; then a reset of every session once the parent's postponement is over, so that
+//     both senders connect again at once; then, in the second after both were seen connected again and inside the
+//     postponement that handshake set, a reset again: stage `reset` once each side reads offline (the disconnect's
+//     reason rests until the postponement ends, 5 s after the handshake; which of a reset's two texts it is, the
+//     path that saw the reset says: niStreamResetReasons);
+//   - `never2`: as never, the destination naming two stubs.
 //
 // A Function's comparison (commit 12) calls it with its own compare: runNIStream(t, "out", func(t *testing.T, r
 // *niStreamRun) { ... r.Stage, r.Pair ... }).
 func runNIStream(t *testing.T, name string, compare func(t *testing.T, r *niStreamRun)) {
 	t.Helper()
-	stub, err := stream.StartParent(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { stub.Close() })
+	stub := niStreamStub(t, name)
 	var env []string
 	if name == "never-tz" {
 		env = []string{"TZ=Asia/Kolkata"}
 	}
 	switch name {
-	case "never", "never-tz":
-		p := niStreamPair(t, niNeverOptions(stub, env))
+	case "never", "never-tz", "never2":
+		opts := niNeverOptions(stub, env)
+		var second *stream.Parent
+		if name == "never2" {
+			second = niStreamStub(t, "")
+			opts.StreamTo.Destination = stub.Addr() + " " + second.Addr()
+		}
+		p := niStreamPair(t, opts)
 		r := &niStreamRun{Pair: p, Stub: stub, Stage: "never", Sides: niStreamSides(p, stub, time.Now().Unix()),
 			pair: name}
 		if len(env) > 0 {
 			r.tz = strings.TrimPrefix(env[0], "TZ=")
 		}
+		if second != nil {
+			_, r.second, _ = net.SplitHostPort(second.Addr())
+		}
 		niReady(p)
 		t.Run(r.Stage, func(t *testing.T) { compare(t, r) })
-		if n, m := len(stub.Probes()), len(stub.Sessions()); n+m != 0 {
-			t.Errorf("the scripted parent had %d probes and %d sessions from senders that never started", n, m)
+		for _, s := range []*stream.Parent{stub, second} {
+			if s == nil {
+				continue
+			}
+			if n, m := len(s.Probes()), len(s.Sessions()); n+m != 0 {
+				t.Errorf("a scripted parent had %d probes and %d sessions from senders that never started", n, m)
+			}
 		}
-	case "out":
+	case "reset":
 		p := niStreamPair(t, pulseChildOptions(stub, true))
+		r := &niStreamRun{Pair: p, Stub: stub, Sides: niStreamSides(p, stub, time.Now().Unix()), pair: name}
+		niStreamStage(t, p, "online and counted", 60*time.Second, niStreamCounted)
+		last := time.Now()
+		for _, s := range stub.Sessions() {
+			last = s.At
+		}
+		time.Sleep(time.Until(last.Add(6 * time.Second)))
+		// a reset of every session past the parent's postponement makes both sides connect again at once, each at
+		// its connector's next pass (stream-sender.c:441-495, stream_connector_requeue(): no new postponement)
+		niStreamResetAll(stub)
+		from := time.Now().Unix()
+		again := niStreamStage(t, p, "online again", 30*time.Second, niStreamOnlineAs("2"))
+		for i := range r.Sides {
+			r.Sides[i].connected = [2]int64{from, again[i]}
+		}
+		// a reset inside the postponement the second handshake set (5 s, stream-connector.c:236-238,
+		// stream-parents.c:132-136): the disconnect's reason rests until it ends (stream-parents.c:633-642). It
+		// comes in the second after the one each side was seen connected again, so that the disconnect's whole
+		// second (the parent's `since`, stream-parents.c:103-108) is told apart from the connection's
+		time.Sleep(time.Until(time.Unix(max(again[0], again[1])+1, 0)))
+		niStreamResetAll(stub)
+		closed := time.Now().Unix()
+		gone := niStreamStage(t, p, "reset", 4*time.Second, niStreamIs("offline", ""))
+		for i := range r.Sides {
+			r.Sides[i].closed, r.Sides[i].young = [2]int64{closed, gone[i]}, true
+		}
+		r.Stage = "reset"
+		t.Run(r.Stage, func(t *testing.T) { compare(t, r) })
+	case "zip":
+		p := niStreamPair(t, niStreamOutOptions(name, stub))
+		r := &niStreamRun{Pair: p, Stub: stub, Sides: niStreamSides(p, stub, time.Now().Unix()), pair: name}
+		// online for under a second (the definitions being sent), then replicating for good: the stub answers no
+		// chart (SA-F's probe p1)
+		seen := niStreamStage(t, p, "replicating and counted", 60*time.Second, niStreamCountedAs("replicating"))
+		from := int64(0)
+		if probes := stub.ProbeTimes(); len(probes) > 0 {
+			from = probes[0].Unix() - 1
+		}
+		for i := range r.Sides {
+			r.Sides[i].connected, r.Sides[i].compressed = [2]int64{from, seen[i]}, true
+		}
+		last := time.Now()
+		for _, s := range stub.Sessions() {
+			last = s.At
+		}
+		time.Sleep(time.Until(last.Add(6 * time.Second)))
+		niStreamSockets(t, r)
+		r.Stage = "compressed"
+		t.Run(r.Stage, func(t *testing.T) { compare(t, r) })
+	case "out", "tls":
+		p := niStreamPair(t, niStreamOutOptions(name, stub))
 		r := &niStreamRun{Pair: p, Stub: stub, Sides: niStreamSides(p, stub, time.Now().Unix()), pair: name}
 		online := niStreamStage(t, p, "online and counted", 60*time.Second, niStreamCounted)
 		// the pass that connects a parent reads its clock before it probes it (stream-parents.c:608, :854)
@@ -345,6 +504,7 @@ func runNIStream(t *testing.T, name string, compare func(t *testing.T, r *niStre
 			last = s.At
 		}
 		time.Sleep(time.Until(last.Add(6 * time.Second)))
+		niStreamSockets(t, r)
 		r.Stage = "connected"
 		t.Run(r.Stage, func(t *testing.T) { compare(t, r) })
 		stub.SetScript(func(stream.Request) stream.Answer {
@@ -380,7 +540,7 @@ func runNIStream(t *testing.T, name string, compare func(t *testing.T, r *niStre
 		opts.StreamTo.Destination = stub.Addr() + " " + second.Addr()
 		p := niStreamPair(t, opts)
 		r := &niStreamRun{Pair: p, Stub: stub, Sides: niStreamSides(p, stub, time.Now().Unix()), pair: name}
-		_, r.second, _ = strings.Cut(second.Addr(), ":")
+		_, r.second, _ = net.SplitHostPort(second.Addr())
 		banned := niStreamStage(t, p, "banned", 60*time.Second, niStreamIs("offline", "NO PARENT TO SEND TO"))
 		from := int64(0)
 		if probes := stub.ProbeTimes(); len(probes) > 0 {
@@ -497,9 +657,17 @@ func niPortOf(end string) (before, port, after string, ok bool) {
 //   - `since` reads its window's word (niStreamWord; C: rrdhost-status.c:252, :289-290, the sender's connection
 //     second or the agent's start), with `options=rfc3339` its word and its shape (niTimeShape); `age` reads
 //     NOW-SINCE where since + age is the walk's clock (api_v2_contexts.c:392, :495);
-//   - the destination's `local` port reads SOCKET where it is a port (1 to 65535) other than the agent's listening
-//     port and the parent's: the sender's own end, which the kernel chose (rrdhost-status.c:253, socket-peers.c); the
+//   - the destination's `local` port reads SOCKET where it is the sender's own end, which the kernel chose
+//     (rrdhost-status.c:253, socket-peers.c): the port of its session that the scripted parent saw (niIsSocket); the
 //     address, `remote` and the rest are compared as written;
+//   - the traffic's counters niSentRendered names read SENT when above 0, and so do the chart definitions' bytes of a
+//     side whose connection compresses (niStreamSide.compressed); on a young connection (niStreamSide.young) the chart
+//     definitions' bytes read COUNT whatever they hold (how far it got: they varied C against C), and data and
+//     replication keep the SENT rule (C read 0 for both on every side recorded, niStreamFacts); the functions' bytes
+//     are compared as written (niSentRendered does not name them);
+//   - on a young connection the stream's `reason` reads RESET where it is a text C gives a reset
+//     (niStreamResetReasons), and so does each parent's `last_handshake` that is the stream's own reason (one call
+//     writes both, stream-parents.c:103-108);
 //   - each parent's `since` and `next_check` (local time, niLocalRe) read their window's word and shape, `next_check`
 //     LATER for a moment after the request began, at most 61 s after it ended (a refusal postpones a parent up to
 //     60 s, stream-connector.c:75-83, stream-parents.c:110-117); `age` reads NOW-SINCE and `next_in` NOW-NEXT where
@@ -533,19 +701,27 @@ func niStreamWords(side niStreamSide, v Value, now int64, clocked bool, flight [
 		}
 	}
 	if local, err := dashAt(v, "destination", "local"); err == nil && local.Kind == KindString {
-		if before, port, after, ok := niPortOf(local.Text); ok && port != side.listen && port != side.stub &&
-			niPeerRe.MatchString(port) {
-			if n, err := strconv.Atoi(port); err == nil && n <= 65535 {
-				words["destination.local"] = quote(before + "SOCKET" + after)
-			}
+		if before, port, after, ok := niPortOf(local.Text); ok && side.niIsSocket(port) {
+			words["destination.local"] = quote(before + "SOCKET" + after)
 		}
 	}
 	traffic, _ := dashAt(v, "destination", "traffic")
 	for _, m := range traffic.Members {
-		if n, err := strconv.ParseInt(m.Value.Text, 10, 64); err == nil && m.Value.Kind == KindNumber && n > 0 &&
-			slices.Contains(niSentRendered, m.Key) {
+		n, err := strconv.ParseInt(m.Value.Text, 10, 64)
+		if err != nil || m.Value.Kind != KindNumber {
+			continue
+		}
+		switch {
+		case side.young && m.Key == "metadata":
+			words["destination.traffic."+m.Key] = quote("COUNT")
+		case n > 0 && (slices.Contains(niSentRendered, m.Key) || (m.Key == "metadata" && side.compressed)):
 			words["destination.traffic."+m.Key] = quote("SENT")
 		}
+	}
+	reason, _ := dashMember(v, "reason")
+	reset := side.young && reason.Kind == KindString && slices.Contains(niStreamResetReasons, reason.Text)
+	if reset {
+		words["reason"] = quote("RESET")
 	}
 	path, _ := dashAt(v, "destination", "streaming_path")
 	for k, e := range path.Items {
@@ -565,6 +741,10 @@ func niStreamWords(side niStreamSide, v Value, now int64, clocked bool, flight [
 	parents, _ := dashAt(v, "destination", "parents")
 	for k, d := range parents.Items {
 		at := "destination.parents.[" + strconv.Itoa(k) + "]."
+		if h, err := dashMember(d, "last_handshake"); err == nil && reset && h.Kind == KindString &&
+			h.Text == reason.Text {
+			words[at+"last_handshake"] = quote("RESET")
+		}
 		for _, pair := range [][3]string{{"since", "age", "NOW-SINCE"}, {"next_check", "next_in", "NOW-NEXT"}} {
 			t, err := dashMember(d, pair[0])
 			if err != nil || t.Kind != KindString {
@@ -597,6 +777,126 @@ func niStreamWords(side niStreamSide, v Value, now int64, clocked bool, flight [
 	}
 	return words
 }
+
+// niIsSocket tells whether port is the side's sender's own: its session's port with the scripted parent where the
+// harness found it (socket: the kernel's choice, read back from both ends), else any port (1 to 65535) other than the
+// agent's listening port and the parent's (a stage whose session the harness did not map).
+func (s niStreamSide) niIsSocket(port string) bool {
+	if s.socket != "" {
+		return port == s.socket
+	}
+	n, err := strconv.Atoi(port)
+	return err == nil && niPeerRe.MatchString(port) && n <= 65535 && port != s.listen && port != s.stub
+}
+
+// niTCPSockets reads the text of /proc/net/tcp or /proc/net/tcp6 into into: each socket's inode (the tenth field)
+// keyed to its ports, `<local port>><remote port>` (the hex port after the last colon of `local_address` and of
+// `rem_address`); a line without both, as the header, is skipped.
+func niTCPSockets(text string, into map[string]string) {
+	for _, l := range strings.Split(text, "\n") {
+		f := strings.Fields(l)
+		if len(f) < 10 {
+			continue
+		}
+		var ports []string
+		for _, end := range f[1:3] {
+			at := strings.LastIndex(end, ":")
+			if at < 0 {
+				break
+			}
+			n, err := strconv.ParseUint(end[at+1:], 16, 16)
+			if err != nil {
+				break
+			}
+			ports = append(ports, strconv.FormatUint(n, 10))
+		}
+		if len(ports) == 2 {
+			into[f[9]] = ports[0] + ">" + ports[1]
+		}
+	}
+}
+
+// niSocketInode is the inode a file descriptor's link names when it is a socket (`socket:[inode]`).
+func niSocketInode(link string) (string, bool) {
+	inode, ok := strings.CutPrefix(link, "socket:[")
+	inode, closed := strings.CutSuffix(inode, "]")
+	return inode, ok && closed && inode != ""
+}
+
+// niHeldSockets are the TCP sockets the process pid holds, each as `<local port>><remote port>` (niTCPSockets): its
+// descriptors' links (/proc/<pid>/fd) matched to each socket's ports by inode (/proc/net/tcp and tcp6).
+func niHeldSockets(pid int) (map[string]bool, error) {
+	sockets := map[string]string{}
+	for _, f := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		if b, err := os.ReadFile(f); err == nil {
+			niTCPSockets(string(b), sockets)
+		}
+	}
+	dir := fmt.Sprintf("/proc/%d/fd", pid)
+	fds, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("harness: the agent's descriptors: %v", err)
+	}
+	held := map[string]bool{}
+	for _, fd := range fds {
+		if link, err := os.Readlink(filepath.Join(dir, fd.Name())); err == nil {
+			if inode, ok := niSocketInode(link); ok && sockets[inode] != "" {
+				held[sockets[inode]] = true
+			}
+		}
+	}
+	return held, nil
+}
+
+// niSessionPort is the port of the sender's own end of the open session the agent pid holds with stub: the remote
+// port of the one session whose socket is, at the agent's end, a socket the agent holds from that port to the stub's
+// (niHeldSockets). Both agents of a pair stream to one stub with one identity, so only the kernel tells their
+// sessions apart.
+func niSessionPort(stub *stream.Parent, pid int) (string, error) {
+	held, err := niHeldSockets(pid)
+	if err != nil {
+		return "", err
+	}
+	_, stubPort, err := net.SplitHostPort(stub.Addr())
+	if err != nil {
+		return "", fmt.Errorf("harness: the scripted parent's address: %v", err)
+	}
+	var found []string
+	for _, s := range stub.Sessions() {
+		if a, ok := s.RemoteAddr().(*net.TCPAddr); ok && !s.Closed() && held[strconv.Itoa(a.Port)+">"+stubPort] {
+			found = append(found, strconv.Itoa(a.Port))
+		}
+	}
+	if len(found) != 1 {
+		return "", fmt.Errorf("the agent (PID %d) holds %d open sessions with the scripted parent: %v", pid, len(found),
+			found)
+	}
+	return found[0], nil
+}
+
+// niStreamSockets sets each side's socket (niSessionPort) once its sender connected to r's scripted parent: the
+// oracle's failure ends the case, a candidate's is reported (its rows then judge its port by the general rule).
+func niStreamSockets(t *testing.T, r *niStreamRun) {
+	t.Helper()
+	for i, side := range r.Pair.Each() {
+		port, err := niSessionPort(r.Stub, side.Daemon.PID())
+		switch {
+		case err == nil:
+			r.Sides[i].socket = port
+		case side.Role == Oracle:
+			t.Fatalf("oracle: %v", err)
+		default:
+			t.Errorf("candidate: %v", err)
+		}
+	}
+}
+
+// niStreamResetReasons are the texts C's sender gives a connection its parent reset (SO_LINGER 0), by the path that
+// sees the reset first, which a run does not fix (C against C in SA-F2's pass c1: one side each): the poll's error or
+// hang-up (stream-sender.c:870-893, DISCONNECT SOCKET ERROR), or a send() or recv() failing with ECONNRESET
+// (:726-727, :748-750; :815, :835-837: DISCONNECTED SOCKET CLOSED BY REMOTE END). The port has the same three paths
+// (streaming/src/sender/dispatch.rs:260, :299-312, :357-380 at 553b778338).
+var niStreamResetReasons = []string{"DISCONNECT SOCKET ERROR", "DISCONNECTED SOCKET CLOSED BY REMOTE END"}
 
 // niSentRendered are the traffic counters niStreamWords reads by form (SENT for a count above 0, a 0 as written):
 // the bytes of each side's own collection (data) and of the replication answers to the parent's starts (5209 against
@@ -659,6 +959,18 @@ func niStreamAt(keys ...string) []string { return append(slices.Clone(niStreamIn
 const niStreamOurs = `["V1","V2","VN","VCAPS","HLABELS","CLAIM","CLABELS","FUNCTIONS","FUNCDEL","REPLICATION",` +
 	`"BINARY","INTERPOLATED","IEEE754","DYNCFG","SLOTS","PROGRESS","NODEID","PATHS","FLOATBASELINE"]`
 
+// niStreamOursZipped are niStreamOurs with compression on (the `zip` pair): the four compressions in C's order of
+// names (stream-capabilities.c:15-41; stream_our_capabilities(), :101-147).
+const niStreamOursZipped = `["V1","V2","VN","VCAPS","HLABELS","CLAIM","CLABELS","LZ4","FUNCTIONS","FUNCDEL",` +
+	`"REPLICATION","BINARY","INTERPOLATED","IEEE754","DYNCFG","SLOTS","ZSTD","GZIP","BROTLI","PROGRESS","NODEID",` +
+	`"PATHS","FLOATBASELINE"]`
+
+// niStreamZipped are the capabilities a sender holds once the `zip` pair's stub answered with every one it offered:
+// niStreamOursZipped less V1, V2 and VN (convert_stream_version_to_capabilities(), stream-capabilities.c:149-175), the
+// four compressions kept (the stub's answer names them all).
+const niStreamZipped = `["VCAPS","HLABELS","CLAIM","CLABELS","LZ4","FUNCTIONS","FUNCDEL","REPLICATION","BINARY",` +
+	`"INTERPOLATED","IEEE754","DYNCFG","SLOTS","ZSTD","GZIP","BROTLI","PROGRESS","NODEID","PATHS","FLOATBASELINE"]`
+
 // niStreamNegotiated are the capabilities a sender holds once the scripted parent answered with what it offered
 // (stream.PlaintextAnswer): niStreamOurs less V1, V2 and VN, which VCAPS replaces
 // (convert_stream_version_to_capabilities(), stream-capabilities.c:149-175).
@@ -669,11 +981,12 @@ const niStreamNegotiated = `["VCAPS","HLABELS","CLAIM","CLABELS","FUNCTIONS","FU
 // (rrdhost_stream_path_to_json(), stream-path.c:179-225; the scripted parent sends no path back), unclaimed (node and
 // claim ids null, no flag), hops 0, `since` its start (stream-path.c:128-136, :135: localhost has no receiver), START,
 // its first time the database's (first: `0` with nothing stored, else DB-FIRST, niStreamWords), start and
-// shutdown times 0 (a run directory without earlier starts), and niStreamOurs.
-func niStreamPath(first string) string {
+// shutdown times 0 (a run directory without earlier starts), and the capabilities it offers (ours: niStreamOurs, or
+// niStreamOursZipped with compression on).
+func niStreamPath(first, ours string) string {
 	return `[{"version":1,"hostname":"` + parentIdentity.Hostname + `","host_id":"` + parentIdentity.MachineGUID +
 		`","node_id":null,"claim_id":null,"hops":0,"since":"START","first_time_t":` + first + `,"start_time":0,` +
-		`"shutdown_time":0,"capabilities":` + niStreamOurs + `,"flags":[]}]`
+		`"shutdown_time":0,"capabilities":` + ours + `,"flags":[]}]`
 }
 
 // niStreamZone is the zone suffix C writes after a parent's local time on an agent whose TZ is tz (empty: the
@@ -689,11 +1002,30 @@ func niStreamZone(tz string) string {
 }
 
 // niStreamParent is a scripted parent's item in `parents` as niStreamWords renders it: the destination (the stub's
-// address on 127.0.0.1 at port, stream.StartParent), its attempts printed + 1 (stream-parents.c:183), `since` as
-// word and shape (fraction digits and zone), `age` NOW-SINCE, then the members its state prints (rest).
+// address at port as the agents' `destination` names it, niStreamWire, with `:SSL` over TLS: stream-parents.c:
+// 183-190), its attempts printed + 1 (stream-parents.c:183), `since` as word and shape (fraction digits and zone),
+// `age` NOW-SINCE, then the members its state prints (rest).
 func niStreamParent(r *niStreamRun, port string, attempts int, since, rest string) string {
-	return fmt.Sprintf(`{"attempts":%d,"destination":"127.0.0.1:%s","since":"%s 9999-99-99T99:99:99.99%s",`+
-		`"age":"NOW-SINCE",%s}`, attempts, port, since, niStreamZone(r.tz), rest)
+	return niStreamParentShaped(r, port, attempts, since, "9999-99-99T99:99:99.99", rest)
+}
+
+// niStreamParentShaped is niStreamParent with its `since` of the shape given before the zone: a whole second, which
+// a disconnect writes (stream-parents.c:103-108), has no fraction (rfc3339.c:141-150).
+func niStreamParentShaped(r *niStreamRun, port string, attempts int, since, shape, rest string) string {
+	_, host, ssl := niStreamWire(r)
+	return fmt.Sprintf(`{"attempts":%d,"destination":"%s:%s%s","since":"%s %s%s",`+
+		`"age":"NOW-SINCE",%s}`, attempts, host, port, ssl, since, shape, niStreamZone(r.tz), rest)
+}
+
+// niStreamWire is how r's agents reach their scripted parent: the address of a socket's end as the stream's
+// destination prints it (`[%s]`, rrdhost_sender_to_json(), api_v2_contexts.c:405-410: 127.0.0.1, or ::1 for `tls`,
+// whose stub listens on IPv6), the host a parent's `destination` names (the configured text: `[::1]` keeps its
+// brackets) and the suffix TLS adds to both (`:SSL`).
+func niStreamWire(r *niStreamRun) (end, host, ssl string) {
+	if r.pair == "tls" {
+		return "[::1]", "[::1]", ":SSL"
+	}
+	return "[127.0.0.1]", "127.0.0.1", ""
 }
 
 // niStreamFacts are the facts of the `stream` of localhost's instance in r's stage, as C printed them (probe p1) and
@@ -711,12 +1043,29 @@ func niStreamParent(r *niStreamRun, port string, attempts int, since, rest strin
 //     that connected it, its reason SOCKET CONNECTED (stream-connector.c:236-238 writes it at the handshake), no
 //     longer postponed (5 s after it), ranked alone (batch 1, order 1, not random: stream-parents.c:815-819), its probe
 //     unanswered (the stub's 404 has a length of 0: info false, :496-516) and not skipped;
+//   - compressed (zip): as connected, but the stub took every capability offered, the compressions with them
+//     (niStreamZipped), and asks no chart's replication: each chart waits for its parent's answer (replicating,
+//     completion 100 and 13 instances, stream-replication-sender.c), and only the chart definitions went, compressed
+//     (compression true; their bytes varied C against C: SENT), no data, function or replication bytes;
 //   - denied: offline with the refusal's reason (DENIED, stream-connector.c:75-83, :244-250), the connection count
 //     and `since` the dispatch's (a refusal is no dispatch), hops 1, nothing replicated (completion 0), both ends
 //     `[not connected]:0` (the socket closed, stream-sender.c:483), no capability, the last connection's traffic
 //     (zeroed only at a connect or a removal); the parent tried again after the close (attempts 2 + 1), since that
 //     pass, its reason DENIED, postponed 5 to 60 s (LATER, NOW-NEXT; stream-parents.c:110-117), its place reset by
 //     the next pass (no batch, info false, skipped true: :593-597);
+//   - reset: the second connection (id 2) reset in the second after both sides were seen connected again
+//     (runNIStream): about 1 s after the later side's handshake, up to a connector pass (1 s) more after an earlier
+//     side's (SA-F's probe p2: the handshake at about 14:44:09.00 by its parent's next_check 14:44:14.00, the reset in
+//     second 14:44:10). Offline with a reset's reason (RESET, niStreamResetReasons), `since` the connection's second,
+//     both ends `[not connected]:0`, no capability, nothing replicated (completion 0); the chart definitions' bytes how
+//     far the connection got (COUNT: 7437 and 8734 on p2's C sides), the data and the replication answers none yet (0
+//     on every C side recorded, p2's and, at an earlier timing (the reset 0.27 s after the handshake), p1's; how long
+//     the 0 lasts: niStreamResetSettle; a chart's data waits for its replication to finish,
+//     command-begin-set-end-init.c:71-77, stream-replication-sender.c:711, and C's replication thread had answered no
+//     request of the parent's by then; its idle waits are up to 1 s, :1719, :1879-1910); the parent tried twice
+//     (attempts 2 + 1), `since` the disconnect's whole second (CLOSED, no fraction: stream-parents.c:103-108,
+//     rfc3339.c:141-150), its reason the host's, postponed until 5 s after the handshake (LATER, NOW-NEXT) and its
+//     place reset (no batch, info false, skipped true);
 //   - banned: never connected (as never, the traffic zeros) and no parent left to try: the host's reason NO PARENT TO
 //     SEND TO (stream-parents.c:735-744); each parent probed once, never connected (attempts 0 + 1), since the
 //     probing pass (:653, :698), and only its ban printed (:212-218): the one that says it is this host banned for
@@ -732,8 +1081,15 @@ func niStreamFacts(r *niStreamRun, rfc3339 bool) []dashFact {
 		return `"` + word + `"`
 	}
 	port := r.Sides[0].stub
+	end, _, ssl := niStreamWire(r)
 	switch r.Stage {
 	case "never":
+		parents := niStreamParent(r, port, 1, "START", `"last_handshake":"NEVER CONNECTED","info":false,"skipped":false`)
+		if r.pair == "never2" {
+			// the second parent of the list, made in the same moment (stream-parents.c:927-950, :964)
+			parents += "," + niStreamParent(r, r.second, 1, "START", `"last_handshake":"NEVER CONNECTED","info":false,`+
+				`"skipped":false`)
+		}
 		return slices.Concat(
 			[]dashFact{dashKeys("id hops status since age reason replication destination", st...),
 				dashKeys("local remote capabilities traffic parents streaming_path", dst...)},
@@ -742,21 +1098,44 @@ func niStreamFacts(r *niStreamRun, rfc3339 bool) []dashFact {
 				"replication", `{"in_progress":false,"completion":0,"instances":0}`),
 			dashMembers(dst, "local", `"[not connected]:0"`, "remote", `"[not connected]:0"`, "capabilities", "[]",
 				"traffic", `{"compression":false,"data":0,"metadata":0,"functions":0,"replication":0}`,
-				"parents", "["+niStreamParent(r, port, 1, "START", `"last_handshake":"NEVER CONNECTED","info":false,`+
-					`"skipped":false`)+"]",
-				"streaming_path", niStreamPath("0")))
+				"parents", "["+parents+"]", "streaming_path", niStreamPath("0", niStreamOurs)))
 	case "connected":
 		return slices.Concat(
 			[]dashFact{dashKeys("id hops status since age replication destination", st...),
 				dashKeys("local remote capabilities traffic parents streaming_path", dst...)},
 			dashMembers(st, "id", "1", "hops", "1", "status", `"online"`, "since", since("CONNECTED"),
 				"age", `"NOW-SINCE"`, "replication", `{"in_progress":false,"completion":100,"instances":0}`),
-			dashMembers(dst, "local", `"[127.0.0.1]:SOCKET"`, "remote", `"[127.0.0.1]:`+port+`"`,
+			dashMembers(dst, "local", `"`+end+`:SOCKET`+ssl+`"`, "remote", `"`+end+`:`+port+ssl+`"`,
 				"capabilities", niStreamNegotiated,
 				"parents", "["+niStreamParent(r, port, 2, "CONNECTED", `"last_handshake":"SOCKET CONNECTED","batch":1,`+
 					`"order":1,"random":false,"info":false,"skipped":false`)+"]",
-				"streaming_path", niStreamPath(`"DB-FIRST"`)),
+				"streaming_path", niStreamPath(`"DB-FIRST"`, niStreamOurs)),
 			niStreamTraffic(dst))
+	case "compressed":
+		return slices.Concat(
+			[]dashFact{dashKeys("id hops status since age replication destination", st...),
+				dashKeys("local remote capabilities traffic parents streaming_path", dst...)},
+			dashMembers(st, "id", "1", "hops", "1", "status", `"replicating"`, "since", since("CONNECTED"),
+				"age", `"NOW-SINCE"`, "replication", `{"in_progress":true,"completion":100,"instances":13}`),
+			dashMembers(dst, "local", `"`+end+`:SOCKET`+ssl+`"`, "remote", `"`+end+`:`+port+ssl+`"`,
+				"capabilities", niStreamZipped,
+				"traffic", `{"compression":true,"data":0,"metadata":"SENT","functions":0,"replication":0}`,
+				"parents", "["+niStreamParent(r, port, 2, "CONNECTED", `"last_handshake":"SOCKET CONNECTED","batch":1,`+
+					`"order":1,"random":false,"info":false,"skipped":false`)+"]",
+				"streaming_path", niStreamPath(`"DB-FIRST"`, niStreamOursZipped)))
+	case "reset":
+		return slices.Concat(
+			[]dashFact{dashKeys("id hops status since age reason replication destination", st...),
+				dashKeys("local remote capabilities traffic parents streaming_path", dst...)},
+			dashMembers(st, "id", "2", "hops", "1", "status", `"offline"`, "since", since("CONNECTED"),
+				"age", `"NOW-SINCE"`, "reason", `"RESET"`,
+				"replication", `{"in_progress":false,"completion":0,"instances":0}`),
+			dashMembers(dst, "local", `"[not connected]:0"`, "remote", `"[not connected]:0"`, "capabilities", "[]",
+				"traffic", `{"compression":false,"data":0,"metadata":"COUNT","functions":0,"replication":0}`,
+				"parents", "["+niStreamParentShaped(r, port, 3, "CLOSED", "9999-99-99T99:99:99",
+					`"last_handshake":"RESET","next_check":"LATER 9999-99-99T99:99:99.99`+
+						niStreamZone(r.tz)+`","next_in":"NOW-NEXT","info":false,"skipped":true`)+"]",
+				"streaming_path", niStreamPath(`"DB-FIRST"`, niStreamOurs)))
 	case "denied":
 		return slices.Concat(
 			[]dashFact{dashKeys("id hops status since age reason replication destination", st...),
@@ -767,7 +1146,7 @@ func niStreamFacts(r *niStreamRun, rfc3339 bool) []dashFact {
 			dashMembers(dst, "local", `"[not connected]:0"`, "remote", `"[not connected]:0"`, "capabilities", "[]",
 				"parents", "["+niStreamParent(r, port, 3, "CLOSED", `"last_handshake":"DENIED","next_check":"LATER `+
 					`9999-99-99T99:99:99.99`+niStreamZone(r.tz)+`","next_in":"NOW-NEXT","info":false,"skipped":true`)+"]",
-				"streaming_path", niStreamPath(`"DB-FIRST"`)),
+				"streaming_path", niStreamPath(`"DB-FIRST"`, niStreamOurs)),
 			niStreamTraffic(dst))
 	case "banned":
 		return slices.Concat(
@@ -780,7 +1159,7 @@ func niStreamFacts(r *niStreamRun, rfc3339 bool) []dashFact {
 				"traffic", `{"compression":false,"data":0,"metadata":0,"functions":0,"replication":0}`,
 				"parents", "["+niStreamParent(r, port, 1, "PROBED", `"ban":"it is the localhost"`)+","+
 					niStreamParent(r, r.second, 1, "PROBED", `"ban":"it is our parent"`)+"]",
-				"streaming_path", niStreamPath(`"DB-FIRST"`)))
+				"streaming_path", niStreamPath(`"DB-FIRST"`, niStreamOurs)))
 	}
 	return []dashFact{func(Value) error { return fmt.Errorf("harness: no facts for the stage %q", r.Stage) }}
 }
@@ -817,9 +1196,10 @@ func niStreamAgent(sending bool) []dashFact {
 // between `ingest` and `ml` (api_v2_contexts.c:524-571), the agent's own functions, capabilities and dyncfg
 // (aclk_capas.c:41-42; rrdhost-status.c:404-405), ML and health off. Without a collection (never) the database and
 // the ingestion are initializing (rrdhost-status.c:124-130, :171-173) in the agent's dbengine, begun at its start
-// (niLocalIngest); collecting (out, ban), localhost is online and live (:176-177, :387-390) in memory mode alloc, its
-// first time a second of its first collection (FIRST, niFirstRender) and counts above 0 (pulse). rfc3339: the dates
-// are UTC texts, which niIngestRender names as it names the numbers (niDated's words); the first time 0 is null.
+// (niLocalIngest); collecting (out, ban, tls, zip, reset), localhost is online and live (:176-177, :387-390) in
+// memory mode alloc, its first time a second of its first collection (FIRST, niFirstRender) and counts above 0
+// (pulse). rfc3339: the dates are UTC texts, which niIngestRender names as it names the numbers (niDated's words); the
+// first time 0 is null.
 func niStreamHost(r *niStreamRun, rfc3339 bool) []dashFact {
 	node := []string{"nodes", "[0]"}
 	db, ingest := niStreamAt("db"), niStreamAt("ingest")
@@ -846,7 +1226,7 @@ func niStreamHost(r *niStreamRun, rfc3339 bool) []dashFact {
 		dashMembers(ingest, "status", `"online"`, "since", `"START"`, "age", `"NOW-SINCE"`),
 		dashMembers(db, "first_time", `"FIRST"`),
 		[]dashFact{dashAbove(0, append(slices.Clone(db), "metrics")...), dashAbove(0, append(slices.Clone(ingest), "metrics")...)},
-		niStreamAgent(r.Stage == "connected"))
+		niStreamAgent(r.Stage == "connected" || r.Stage == "compressed"))
 }
 
 // niStreamDeniedSettle is how long the `denied` stage's rows ask again while the sides differ: the stage starts 2 s
@@ -854,6 +1234,20 @@ func niStreamHost(r *niStreamRun, rfc3339 bool) []dashFact {
 // so a longer settle could compare a side that tried again (`attempts` 4, its parent's `since` past CLOSED). Nothing
 // of the stage moves before that attempt (C against C equal at once in every run).
 const niStreamDeniedSettle = 2 * time.Second
+
+// niStreamResetSettle is how long the `reset` stage's rows ask again while the sides differ: the stage starts at most
+// about 1.3 s after the later side's second handshake (the reset comes at the start of the second after that side was
+// seen connected, each side seen within a poll of 250 ms) and up to a connector pass (1 s) more after an earlier
+// side's (niStreamFacts' reset), and C tries the parent again 5 s after its handshake (SA-F's probe p1: the reason
+// rested 4.77 s, both sides alike), so the rows' rounds end before it while the two sides reconnect within about a
+// second of each other. A side that reconnects some 3 s after the other moves the reset past the earlier side's
+// postponement (RV-2 S4): the stage then fails, on the oracle's guard when the oracle is the earlier side. The guard's
+// 0 data and 0 replication bytes are a timing fact too: C read them about 1 s after its handshake (p2) and had sent
+// 5231 replication and 5920 data bytes 3 s after one (SA-F's probe p1, sessions 4 and 5); between the two nothing is
+// measured. So a candidate that reconnects a connector pass after the oracle can move the oracle's reset into that
+// window (an oracle failure at `traffic`), and a candidate whose replication answers within about 1 s reads SENT
+// against C's 0 (red, as the Function's reset row): either is a red run, never a false pass.
+const niStreamResetSettle = time.Second
 
 // niStreamRow is one request of TestNodeInstancesStream in r's stage, with its family.
 type niStreamRow struct {
@@ -866,8 +1260,11 @@ type niStreamRow struct {
 // buffer.h:1119-1128; the parents' times stay local, stream-parents.c:186).
 func niStreamRows(r *niStreamRun) []niStreamRow {
 	fam := niStreamFamily(r)
-	if r.Stage == "denied" {
+	switch r.Stage {
+	case "denied":
 		fam.settle = niStreamDeniedSettle
+	case "reset":
+		fam.settle = niStreamResetSettle
 	}
 	rows := []niStreamRow{{fam: fam, req: v2Req{name: "v3-ni", target: "/api/v3/node_instances", status: "200",
 		guard: dashGuard(niStreamHost(r, false), niStreamFacts(r, false))}}}
@@ -892,4 +1289,5 @@ func TestNodeInstancesStream(t *testing.T) {
 			})
 		})
 	}
+	t.Run("load", niStreamLoad)
 }

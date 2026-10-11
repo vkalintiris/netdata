@@ -588,7 +588,7 @@ func fnStreamCalls() fnStreamTopo {
 // byte for byte (the head's clock and transaction masked), the `functions` member of `/host/<host>/api/v1/info` by
 // value and by place, and `/api/v2|v3/functions` through the v2 envelope (compareInfoV2), where each parent's own
 // built-ins merge with the child's (since M8 commit 9); the oracle's guards.
-func fnStreamCatalog(t *testing.T, p *Pair, _ [2]*fnStreamSide) {
+func fnStreamCatalog(t *testing.T, p *Pair, sides [2]*fnStreamSide) {
 	t.Helper()
 	for _, target := range []string{fnChildHost + "/api/v1/functions", "/host/" + rvName + "/api/v1/functions"} {
 		var head, body [2]string
@@ -668,6 +668,8 @@ func fnStreamCatalog(t *testing.T, p *Pair, _ [2]*fnStreamSide) {
 		compareV2(t, p, v2Req{name: nodes, target: nodes, status: "200", guard: dashGuard(fnStreamNodesFacts)},
 			fnStreamNodesFamily([2]string{p.Oracle.Addr, p.Candidate.Addr}))
 	})
+	// the parents' node instances (set B, D241 F3): the child's functions and dyncfg, its vnode's hops
+	t.Run("node-instances", func(t *testing.T) { fnStreamNodeInstances(t, p, sides) })
 }
 
 // fnStreamTiming is the `timing` topology (debug level): a parent's wait timeout and GC, a client's cancel, progress.

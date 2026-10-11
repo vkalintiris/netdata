@@ -42,8 +42,9 @@ var (
 		render: mcpTextRender}
 
 	// searchFamily compares `/api/v2|v3/q`: the request's durations masked (infoV2Volatile). Its rows match no
-	// label, so no label list is printed (api_v2_contexts.c:1131-1135) and nothing is left unordered; a row that
-	// matches one is compared by searchLabelsFamily.
+	// label, so no label list is printed (api_v2_contexts.c:1131-1135), or one key of one value in each context,
+	// which has no order to be each agent's: nothing is left unordered, the layout compared whole (v2Layouts); a row
+	// that matches more is compared by searchLabelsFamily (searchOnePairLabels tells them apart).
 	searchFamily = v2Family{masks: infoV2Volatile, settle: dashSettle}
 
 	// searchLabelsFamily is searchFamily with each context's matched labels a set, its keys and each key's values: C
@@ -480,7 +481,7 @@ func TestContextsV2API(t *testing.T) {
 		for _, r := range contextsRows() {
 			t.Run(r.name, func(t *testing.T) { compareV2(t, p, r, contextsFamily) })
 		}
-		for _, r := range contextsOptionRows(base) {
+		for _, r := range slices.Concat(contextsOptionRows(base), contextsCloserRows()) {
 			t.Run(r.req.name, func(t *testing.T) { compareV2(t, p, r.req, r.fam) })
 		}
 	})
@@ -514,6 +515,13 @@ func TestContextsV2API(t *testing.T) {
 		second := dashChildAs(t, p, base-child2Earlier, child2Host, qOtherCharts, rCharts)
 		dashGone(t, p, child2Host, second)
 		for _, r := range contextsKeepRows(base) {
+			t.Run(r.req.name, func(t *testing.T) { compareV2(t, p, r.req, r.fam) })
+		}
+	})
+	t.Run("three", func(t *testing.T) {
+		p := dashPair(t, daemon.Options{})
+		searchThreeFixture(t, p)
+		for _, r := range contextsThreeRows() {
 			t.Run(r.req.name, func(t *testing.T) { compareV2(t, p, r.req, r.fam) })
 		}
 	})
@@ -724,7 +732,7 @@ func searchDataRows(base int64) []contextsRow {
 			`"dimensions"],"instances":["q.q_a_name"],"dimensions":["alpha","a"]}}`, 13, 0)),
 		labelled("label-key", "/api/v2/q?q=k", searchLabelled(all, "q.ctx", 15, 2,
 			searchContext("q.ctx", labels, `{"k":["v1","v2"]}`, "matched", `["labels"]`))),
-		labelled("label-value", "/api/v2/q?q=v2", searchLabelled(all, "q.ctx", 15, 1,
+		row("label-value", "/api/v2/q?q=v2", searchLabelled(all, "q.ctx", 15, 1,
 			searchContext("q.ctx", labels, `{"k":["v2"]}`, "matched", `["labels"]`))),
 		row("nomatch", "/api/v2/q?q=nomatch", searchIs(all, "{}", 15, 0)),
 		row("nomatch-scoped", "/api/v2/q?q=nomatch&scope_contexts=q.*", searchIs(searchNoNode, "{}", 15, 0)),
@@ -870,12 +878,14 @@ type searchDim struct {
 
 // searchChart is one chart of a search fixture: its id (`type.id`), title, units, family and context, its
 // dimensions, its labels (key, value), and the seconds of its data relative to the fixture's base: one sample a
-// second in (base+from, base+to].
+// second in (base+from, base+to]; obsolete, when the child declares the chart obsolete as a whole after its data
+// (its CHART line again with the option: plugins.d/pluginsd_parser.c:529-530).
 type searchChart struct {
 	id, title, units, family, context string
 	dims                              []searchDim
 	labels                            [][2]string
 	from, to                          int64
+	obsolete                          bool
 }
 
 // searchChildAs connects a child as `host` to each side (dashConnectAs), sends it the charts with their data, the
@@ -885,11 +895,11 @@ func searchChildAs(t *testing.T, p *Pair, base int64, host stream.HostInfo, char
 	conns := dashConnectAs(t, p, host)
 	for _, conn := range conns {
 		for _, c := range charts {
-			chart := func() {
-				conn.Linef("CHART '%s' '' '%s' '%s' '%s' '%s' line 1000 1 '' fixture-pusher corpus", c.id, c.title,
-					c.units, c.family, c.context)
+			chart := func(options string) {
+				conn.Linef("CHART '%s' '' '%s' '%s' '%s' '%s' line 1000 1 '%s' fixture-pusher corpus", c.id, c.title,
+					c.units, c.family, c.context, options)
 			}
-			chart()
+			chart("")
 			for _, d := range c.dims {
 				conn.Linef("DIMENSION '%s' '%s' absolute 1 1 ''", d.id, d.name)
 			}
@@ -908,12 +918,15 @@ func searchChildAs(t *testing.T, p *Pair, base int64, host stream.HostInfo, char
 			}
 			// a dimension is declared again under its chart's line, now with the option
 			if slices.ContainsFunc(c.dims, func(d searchDim) bool { return d.obsolete }) {
-				chart()
+				chart("")
 				for _, d := range c.dims {
 					if d.obsolete {
 						conn.Linef("DIMENSION '%s' '%s' absolute 1 1 'obsolete'", d.id, d.name)
 					}
 				}
+			}
+			if c.obsolete {
+				chart("obsolete")
 			}
 		}
 		if err := conn.Flush(); err != nil {
@@ -991,10 +1004,10 @@ func searchLabelRows() []contextsRow {
 			searchContext("l.ctx", labels, `{"lk":["w1","w2","w3","w4","w5"]}`, "matched", matched))),
 		row("three", "/api/v2/q?q=l3", searchLabelsFamily, searchLabelled(nodes, "l.ctx", 20, 5,
 			searchContext("l.ctx", labels, `{"l3":["x1","x2","x3"]}`, "matched", matched))),
-		row("take", "/api/v2/q?q=ltitle|only2", searchLabelsFamily, searchLabelled(nodes, "l.ctx", 20, 1,
+		row("take", "/api/v2/q?q=ltitle|only2", searchFamily, searchLabelled(nodes, "l.ctx", 20, 1,
 			searchContext("l.ctx", "title matched labels", `{"only2":["z"]}`, "title", `"[x]"`,
 				"matched", `["title","labels"]`))),
-		row("keep", "/api/v2/q?q=w1|mtitle", searchLabelsFamily, searchLabelled(nodes, "l.ctx", 20, 1,
+		row("keep", "/api/v2/q?q=w1|mtitle", searchFamily, searchLabelled(nodes, "l.ctx", 20, 1,
 			searchContext("l.ctx", "title matched labels", `{"lk":["w1"]}`, "title", `"[x]"`,
 				"matched", `["title","labels"]`))),
 		row("every", "/api/v2/q?q=**", five, searchLabelled(nodes, "l.ctx", 19, 44,
@@ -1004,7 +1017,7 @@ func searchLabelRows() []contextsRow {
 				"title", `"[x]"`, "family", `"[x]fam"`, "units", `"lunits"`,
 				"matched", `["id","title","units","families","instances","dimensions","labels"]`,
 				"instances", `["l.c1","l.c2","... 3 instances more"]`, "dimensions", `["d","epsilon"]`))),
-		row("fold-ascii", "/api/v2/q?q=GR%C3%BCN", searchLabelsFamily, searchLabelled(nodes, "l.ctx", 20, 1,
+		row("fold-ascii", "/api/v2/q?q=GR%C3%BCN", searchFamily, searchLabelled(nodes, "l.ctx", 20, 1,
 			searchContext("l.ctx", labels, `{"u":["Grün"]}`, "matched", matched))),
 		row("fold-bytes", "/api/v2/q?q=gr%C3%9Cn", searchFamily, searchIs(nodes, "{}", 20, 0)),
 	}
@@ -1177,7 +1190,7 @@ func TestSearchAPI(t *testing.T) {
 		for _, r := range searchRows() {
 			t.Run(r.name, func(t *testing.T) { compareV2(t, p, r, searchFamily) })
 		}
-		rows(t, p, searchDataRows(base))
+		rows(t, p, slices.Concat(searchDataRows(base), searchDataCloserRows()))
 	})
 	t.Run("merge", func(t *testing.T) {
 		p := dashPair(t, daemon.Options{})
@@ -1214,6 +1227,10 @@ func TestSearchAPI(t *testing.T) {
 			rows(t, p, searchNamelessRows())
 		})
 	})
+	// the closer rows' cases (search_closers_test.go)
+	for _, c := range searchCloserCases() {
+		t.Run(c.name, func(t *testing.T) { c.run(t, rows) })
+	}
 	t.Run("access", func(t *testing.T) {
 		accessRows(t, []accessConf{accessACL, accessBearer}, accessRoutes("/api/v2/q?q=alpha", "/api/v3/q?q=alpha"))
 	})

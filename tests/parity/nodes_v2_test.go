@@ -5,6 +5,7 @@ package parity
 import (
 	"bytes"
 	"fmt"
+	"net"
 	"regexp"
 	"slices"
 	"strconv"
@@ -329,10 +330,12 @@ var (
 // niSide is what one side's node-instance answers take from its own run, for niIngestRender: the port the agent
 // listens on, the seconds it started in (from its launch on), the seconds the fixture child's connection was opened
 // in (dashLinkAs) and, once the child left, the seconds from its close to the side's answer that showed the
-// disconnection (niGone; zero before).
+// disconnection (niGone; zero before); and the fixture child's own port where the harness holds its connection (its
+// socket's local end, stream.Conn.LocalAddr; empty for a child it does not).
 type niSide struct {
 	listen                string
 	started, opened, gone [2]int64
+	peer                  string
 }
 
 // niStartSlack is how many seconds after its launch an agent may read its start time: C takes it at the top of main()
@@ -396,8 +399,9 @@ var (
 // niIngestRender renders what a node-instance answer takes from the side's own run (sides[i]), each value by what it
 // is and only where it is that:
 //   - an ingestion source's `local` port reads LISTEN when it is the port the agent listens on, and its `remote` port
-//     PEER when it is a port (1 to 65535) other than that one: the child's own end, which the kernel chose
-//     (socket-peers.c:22-50, database/contexts/api_v2_contexts.c:366-371); the address and any suffix are kept;
+//     PEER when it is the child's own end, which the kernel chose (socket-peers.c:22-50,
+//     database/contexts/api_v2_contexts.c:366-371): the fixture child's own port where the side has it (peer), else
+//     any port (1 to 65535) other than the listening one; the address and any suffix are kept;
 //   - a `since` reads START when it is a second the agent started in: localhost's ingestion (rrdhost-status.c:177,
 //     :202: `netdata_start_time`) and the cloud status of an agent that never connected (claim/cloud-status.c:38-44);
 //     it reads CONNECTED when it is a second the child's connection was opened in: a child's ingestion
@@ -423,10 +427,8 @@ func niIngestRender(sides [2]niSide) func(i int, _ [2]int64, body []byte) []byte
 			switch end, port := string(g[1]), string(g[3]); {
 			case end == "local" && port == side.listen:
 				return []byte(`"local":` + string(g[2]) + "LISTEN")
-			case end == "remote" && port != side.listen && niPeerRe.MatchString(port):
-				if n, err := strconv.Atoi(port); err == nil && n <= 65535 {
-					return []byte(`"remote":` + string(g[2]) + "PEER")
-				}
+			case end == "remote" && side.niIsPeer(port):
+				return []byte(`"remote":` + string(g[2]) + "PEER")
 			}
 			return m
 		})
@@ -449,6 +451,24 @@ func niIngestRender(sides [2]niSide) func(i int, _ [2]int64, body []byte) []byte
 			return []byte(`"since":` + string(g[1]) + start + "," + string(g[3]) + `"age":` + string(g[4]) + span)
 		})
 	}
+}
+
+// niIsPeer tells whether port is a child's own end of its connection to side's agent (niIngestRender's PEER): the
+// fixture child's port where the side has it, else any port (1 to 65535) other than the agent's listening one.
+func (side niSide) niIsPeer(port string) bool {
+	if side.peer != "" {
+		return port == side.peer
+	}
+	n, err := strconv.Atoi(port)
+	return err == nil && niPeerRe.MatchString(port) && n <= 65535 && port != side.listen
+}
+
+// niConnPort is the port of a connection's local end (the fixture child's own port, as its parent sees the peer's).
+func niConnPort(c *stream.Conn) string {
+	if a, ok := c.LocalAddr().(*net.TCPAddr); ok {
+		return strconv.Itoa(a.Port)
+	}
+	return ""
 }
 
 // word is the render's word for a start of side's run: START, CONNECTED or GONE (niIngestRender); empty for a second
@@ -761,13 +781,19 @@ func niChildFacts(i, ni int) []dashFact { return niChildFactsIn(niShort, i, ni) 
 
 // niChildFactsIn are niChildFacts of an answer written in form f: the names of f, and its times' words.
 func niChildFactsIn(f niForm, i, ni int) []dashFact {
+	return niChildFactsOver(f, i, ni, "127.0.0.1", "")
+}
+
+// niChildFactsOver are niChildFactsIn of a child connected on the address addr (both ends: the loopback the agent
+// listens on) whose connection's ends carry suffix: `:SSL` over TLS (api_v2_contexts.c:366-371), empty otherwise.
+func niChildFactsOver(f niForm, i, ni int, addr, suffix string) []dashFact {
 	_, db, ingest := niChildPaths(i)
 	return slices.Concat(niChildInstance(f, i, ni),
 		dashMembers(db, "status", `"online"`, "liveness", `"live"`, "mode", `"ram"`, "last_time", f.word("NOW"),
 			"metrics", "7", "instances", "2", "contexts", "1"),
 		dashMembers(ingest, "id", "1", "hops", "1", "type", `"child"`, "status", `"online"`, "since",
 			f.word("CONNECTED"), "age", `"NOW-SINCE"`, "metrics", "7", "instances", "2", "contexts", "1"),
-		[]dashFact{dashIs(`{"local":"[127.0.0.1]:LISTEN","remote":"[127.0.0.1]:PEER",`+
+		[]dashFact{dashIs(`{"local":"[`+addr+`]:LISTEN`+suffix+`","remote":"[`+addr+`]:PEER`+suffix+`",`+
 			`"capabilities":["VCAPS","HLABELS","CLABELS","INTERPOLATED"]}`, append(slices.Clone(ingest), "source")...)})
 }
 
@@ -977,6 +1003,9 @@ func TestNodeInstancesAPI(t *testing.T) {
 		base := dashBase()
 		conns, opened := dashChildLinkAs(t, p, base, childHost, qCharts)
 		sides := niSides(p, opened)
+		for i := range sides {
+			sides[i].peer = niConnPort(conns[i])
+		}
 		fam := nodeInstancesFamily(sides)
 		for _, r := range nodeInstancesRows() {
 			t.Run(r.name, func(t *testing.T) { compareV2(t, p, r, fam) })
@@ -989,6 +1018,7 @@ func TestNodeInstancesAPI(t *testing.T) {
 		r := niGoneRow(base)
 		t.Run(r.name, func(t *testing.T) { compareV2(t, p, r, nodeInstancesFamily(sides)) })
 	})
+	t.Run("tls", niTLSChild)
 	t.Run("access", func(t *testing.T) {
 		accessRows(t, []accessConf{accessACL, accessBearer},
 			accessRoutes("/api/v2/node_instances", "/api/v3/node_instances"))
