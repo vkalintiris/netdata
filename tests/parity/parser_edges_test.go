@@ -588,6 +588,9 @@ func upstreamLines(data []byte, from int) []string {
 }
 
 // The proxied groups (W, V, C, S): what a proxy makes of a child's odd lines, in its records and upstream.
+// edgeDefinitionEndRe matches a chart's definition's last line in an upstream transcript.
+var edgeDefinitionEndRe = regexp.MustCompile(`(?m)^CHART_DEFINITION_END `)
+
 func TestStreamParserEdgesProxied(t *testing.T) {
 	bins := binaries(t)
 	m := stream.HostInfo{Hostname: "parity-edges", MachineGUID: "5a1e0000-0000-4000-8000-0000000003e7"}
@@ -644,15 +647,24 @@ func TestStreamParserEdgesProxied(t *testing.T) {
 			if sess == nil {
 				t.Fatalf("side %d: no upstream session", i)
 			}
-			for k := int64(1); rends > 0 && rendTrueCount(sess.Data()) < rends; k++ {
+			// poke the charts until their definitions are upstream (a sender not yet ready drops a block without
+			// sending a definition), then wait for their upstream replication with no collection in flight: both
+			// proxies mark a chart's replication finished before its REND reaches the stub, so a poke in between
+			// would pass the gate on one side alone (decision D261 in the status repository)
+			defined := func(b []byte) bool { return len(edgeDefinitionEndRe.FindAll(b, -1)) >= rends }
+			for k := int64(1); rends > 0 && !defined(sess.Data()); k++ {
 				if k > 30 {
-					t.Fatalf("side %d: %d charts' upstream replication did not end:\n%s", i, rends, sess.Data())
+					t.Fatalf("side %d: %d charts were not defined upstream:\n%s", i, rends, sess.Data())
 				}
 				poke(s.child, k)
 				if err := s.child.Flush(); err != nil {
 					t.Fatalf("side %d: %v", i, err)
 				}
-				time.Sleep(time.Second)
+				sess.WaitData(defined, time.Second)
+			}
+			replicated := func(b []byte) bool { return rendTrueCount(b) >= rends }
+			if rends > 0 && !sess.WaitData(replicated, 30*time.Second) {
+				t.Fatalf("side %d: %d charts' upstream replication did not end:\n%s", i, rends, sess.Data())
 			}
 			s.child.Linef("CHART '%s' '' 't' 'u' 'f' 'e.flush' line 1 1 '' p m", flush)
 			s.child.Linef("DIMENSION 'x' '' absolute 1 1 ''")
