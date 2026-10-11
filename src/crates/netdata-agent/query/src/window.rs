@@ -130,57 +130,65 @@ pub fn calculate(qt: &QueryTarget, wall_s: i64) -> Option<Window> {
     if duration < 0 {
         return None;
     }
-    // C also moves `after` here; the final `after` is recomputed from `before` below, so only the duration counts.
+    // A resampling longer than the window extends it to the past. C moves `after` with it and fails where that
+    // overflows; the final `after` is recomputed from `before` below, so only the tests are kept.
     if rs > duration {
+        aw = bw.checked_sub(rs)?;
         duration = rs;
     }
     if rs > qg && duration % rs != 0 {
         let delta = duration % rs;
         if delta > rs / 10 {
-            duration += rs - delta;
+            let extension = rs - delta;
+            aw.checked_sub(extension)?;
+            duration = duration.checked_add(extension)?;
         }
     }
-    let mut pa = duration / qg + i64::from(duration % qg == qg - 1);
+    // C counts the points in `uintmax_t` and `size_t`
+    let mut pa = (duration / qg) as u64;
+    if duration % qg == qg - 1 {
+        pa = pa.checked_add(1)?;
+    }
     if pa == 0 {
         pa = 1;
     }
     // size_t in C: a negative requested count is huge, so it is clamped here.
     let mut points = pw as u64;
-    if points > pa as u64 {
-        points = pa as u64;
+    if points > pa {
+        points = pa;
     }
     if points > 86400 {
         points = 86400;
     }
-    let pw = points as i64;
-    let mut group = pa / pw;
+    let mut group = pa / points;
     if group == 0 {
         group = 1;
     }
-    if pa % pw > pw / 2 {
+    if pa % points > points / 2 {
         group += 1;
     }
-    let required = duration / qg + i64::from(duration % qg != 0);
-    let mut pw = pw;
-    if pw * group < required {
-        pw = pa / group;
-        if pw * group < pa {
-            pw += 1;
+    let required = (duration / qg) as u64 + u64::from(duration % qg != 0);
+    // a product that does not fit skips the adjustment, as in C
+    if points.checked_mul(group).is_some_and(|grouped| grouped < required) {
+        points = pa / group;
+        if points * group < pa {
+            points += 1;
         }
-        if pw == 0 {
-            pw = 1;
+        if points == 0 {
+            points = 1;
         }
     }
     let mut divisor = 1.0;
     let mut rgroup = 1;
     if rs > qg {
-        rgroup = rs / qg + i64::from(rs % qg != 0);
+        rgroup = (rs / qg) as u64 + u64::from(rs % qg != 0);
         group = group.max(rgroup);
-        if group % rgroup != 0 {
-            group += rgroup - group % rgroup;
+        if !group.is_multiple_of(rgroup) {
+            group = group.checked_add(rgroup - group % rgroup)?;
         }
     }
-    let vue = group * qg;
+    let vue_wide = group.checked_mul(qg as u64)?;
+    let vue = i64::try_from(vue_wide).ok()?;
     if rs > qg {
         divisor = vue as f64 / rs as f64;
     }
@@ -189,22 +197,29 @@ pub fn calculate(qt: &QueryTarget, wall_s: i64) -> Option<Window> {
     if latest_end {
         bw = qt.db.last_time_s;
     }
-    if aligned && !latest_end && bw % vue != 0 {
+    // C tests the alignment in `size_t` (`before % (group * query_granularity)`) and moves `before` by the signed
+    // remainder: they differ only for a negative `before`
+    if aligned && !latest_end && !(bw as u64).is_multiple_of(vue_wide) {
+        let alignment = bw % vue;
         if before_db_end {
-            bw -= bw % vue;
+            bw = bw.checked_sub(alignment)?;
+        } else if alignment > 0 {
+            bw = bw.checked_add(vue - alignment)?;
         } else {
-            bw += vue - bw % vue;
+            bw = bw.checked_add(vue)?.checked_sub(alignment)?;
         }
     }
-    aw = bw - ((pw - 1) * vue + (vue - qg));
+    let final_duration = (points - 1).checked_mul(vue_wide)?.checked_add(vue_wide - qg as u64)?;
+    aw = bw.checked_sub(i64::try_from(final_duration).ok()?)?;
+    aw.checked_sub(qg)?;
     Some(Window {
         after: aw,
         before: bw,
         relative,
-        points: pw as u64,
-        group,
+        points,
+        group: group as i64,
         query_granularity: qg,
-        resampling_group: rgroup,
+        resampling_group: rgroup as i64,
         resampling_divisor: divisor,
         options: opts,
         aligned,
@@ -293,5 +308,58 @@ mod tests {
     fn latest_ends_at_the_last_sample() {
         let w = calculate(&qt("group=latest&points=1&after=-10", db()), T + 1).unwrap();
         assert_eq!(w.before, T);
+    }
+
+    /// `query_window_test_target_init()` (`daemon/unit_test.c:2251-2273`): the request, its window and a database of
+    /// 1000000000-1000000600 at `update_every`.
+    fn boundary(
+        after: i64,
+        before: i64,
+        points: u64,
+        rs: i64,
+        grouping: TimeGrouping,
+        opts: u64,
+        ue: i64,
+    ) -> QueryTarget {
+        let db = Db {
+            first_time_s: 1_000_000_000,
+            last_time_s: 1_000_000_600,
+            minimum_latest_update_every_s: ue,
+            ..Db::default()
+        };
+        let mut q = qt("", db);
+        (q.request.after, q.request.before, q.request.points) = (after, before, points);
+        (q.request.resampling_time, q.request.time_group) = (rs, grouping);
+        q.window = SelectionWindow { after, before, relative: false, options: opts };
+        q
+    }
+
+    /// C's `test_query_window_resampling_boundaries()` (`daemon/unit_test.c:2276-2382`), its cases on 64 bits: the
+    /// windows it keeps, and the maximum resampling it refuses, aligned or not (the port's arithmetic overflowed).
+    #[test]
+    fn the_resampling_boundaries_follow_c() {
+        // C runs it in its unit-test mode, which skips the clamp to ten years before the wall clock
+        // (`rrdr_relative_window_to_absolute_query()`, `libnetdata.c:566-577`): here the clock is the window's end.
+        const WALL: i64 = 1_000_000_601;
+        let (avg, ua) = (TimeGrouping::Average, options::NOT_ALIGNED);
+        for grouping in [avg, TimeGrouping::Latest] {
+            let w = calculate(&boundary(1_000_000_001, 1_000_000_600, 10, 60, grouping, ua, 1), WALL).unwrap();
+            assert_eq!((w.after, w.before, w.points, w.group), (1_000_000_001, 1_000_000_600, 10, 60));
+            assert_eq!((w.resampling_group, w.resampling_divisor), (60, 1.0));
+        }
+        let w = calculate(&boundary(1_000_000_001, 1_000_000_600, 10, 60, avg, 0, 1), WALL).unwrap();
+        assert_eq!((w.after, w.before, w.points, w.group), (1_000_000_021, 1_000_000_620, 10, 60));
+        let natural = options::NATURAL_POINTS | ua;
+        let w = calculate(&boundary(1_000_000_001, 1_000_000_600, 10, 60, avg, natural, 5), WALL).unwrap();
+        assert_eq!((w.after, w.before, w.points, w.group), (1_000_000_005, 1_000_000_600, 10, 12));
+        assert_eq!((w.query_granularity, w.resampling_group), (5, 12));
+        assert!(calculate(&boundary(-600, 0, 10, 0, avg, ua, 1), WALL).unwrap().relative);
+        let large = i64::from(i32::MAX) + 1;
+        let w = calculate(&boundary(1_000_000_000, 1_000_000_600, 2, large, avg, ua, 1), WALL).unwrap();
+        assert_eq!((w.group, w.after), (large, 1_000_000_600 - 4_294_967_295));
+        for opts in [0, ua] {
+            let w = calculate(&boundary(1_000_000_000, 1_000_000_600, 2, i64::MAX, avg, opts, 1), WALL);
+            assert!(w.is_none(), "{w:?}");
+        }
     }
 }
