@@ -8,6 +8,9 @@ use crate::tables::{options, options_to_id_string};
 
 /// `qt->id` holds at most 254 bytes before sanitizing.
 const ID_MAX: usize = 254;
+/// The sanitizer's buffer, `MAX_QUERY_TARGET_ID_LENGTH + 1`: one more than the cut id, so the hex of a character the
+/// cut split still fits.
+const SANITIZED_SIZE: usize = 256;
 
 fn or_star(v: &Option<Vec<u8>>) -> String {
     v.as_ref().map_or_else(
@@ -93,7 +96,7 @@ pub fn generate(req: &DataRequest, kind: IdKind) -> String {
     let mut bytes = id.into_bytes();
     bytes.truncate(ID_MAX);
     String::from_utf8_lossy(
-        &text_sanitize(&bytes, ID_MAX + 1, &RRD_STRING_ALLOWED_CHARS, true, b"").text,
+        &text_sanitize(&bytes, SANITIZED_SIZE, &RRD_STRING_ALLOWED_CHARS, true, b"").text,
     )
     .into_owned()
 }
@@ -147,5 +150,17 @@ mod tests {
             id.ends_with("options:jsonwrap,selected-tier,jw-anomaly-rates,virtual-poi"),
             "{id}"
         );
+    }
+
+    /// The cut at 254 bytes splits a two-byte character: C's sanitizer (`query_target.c:1225-1227`, a buffer of
+    /// `MAX_QUERY_TARGET_ID_LENGTH + 1`) still has room for the hex of its first byte, so the id ends in 255 bytes.
+    #[test]
+    fn a_character_split_by_the_cut_ends_the_id_as_its_hex() {
+        let p = parse_v1(b"chart=x", &Profile::default());
+        let prefix = "chart://hosts:h/instance:";
+        let name = format!("{}\u{e9}b", "a".repeat(ID_MAX - 1 - prefix.len()));
+        let id = generate(&p.request, IdKind::Chart { hostname: "h", chart_name: &name });
+        assert_eq!(id, format!("{prefix}{}c3", "a".repeat(ID_MAX - 1 - prefix.len())));
+        assert_eq!(id.len(), ID_MAX + 1);
     }
 }
