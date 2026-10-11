@@ -518,6 +518,13 @@ func TestInfoBeforeReady(t *testing.T) {
 		t.Run(c[0], func(t *testing.T) { compareBeforeReady(t, c[1]) })
 	}
 	t.Run("fns-v2", func(t *testing.T) { neverBeforeReady(t, "/api/v1/functions", "/api/v2/functions") })
+	// the routes whose C handlers hold no readiness gate (no netdata_ready_load(): web/api/v2/api_v2_q.c,
+	// api_v2_alert_transitions.c, web/api/v3/api_v3_settings.c), each polled beside the gated function list
+	for _, c := range [][2]string{{"q-v2", "/api/v2/q?q=x"}, {"q-v3", "/api/v3/q?q=x"},
+		{"transitions-v2", "/api/v2/alert_transitions"}, {"transitions-v3", "/api/v3/alert_transitions"},
+		{"settings-v3", "/api/v3/settings?file=default"}} {
+		t.Run(c[0], func(t *testing.T) { neverBeforeReady(t, "/api/v1/functions", c[1]) })
+	}
 }
 
 // neverBeforeReady polls a gated path and a free one in turn while each binary starts (up to 10 starts per side, until

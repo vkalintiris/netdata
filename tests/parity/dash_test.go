@@ -495,6 +495,7 @@ func compareV2(t *testing.T, p *Pair, req v2Req, fam v2Family) {
 	deadline := time.Now().Add(fam.settle)
 	a := v2Round(p, req, fam)
 	for len(a.problems) > 0 && time.Now().Before(deadline) {
+		t.Logf("%s: a round failed, asked again: %q", req.name, a.problems)
 		time.Sleep(time.Second)
 		a = v2Round(p, req, fam)
 	}
