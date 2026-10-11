@@ -8,7 +8,7 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::Path;
 use std::sync::{Arc, PoisonError, RwLock};
 
-use netdata_agent_log::{Priority, Source, errno_of, nd_log};
+use netdata_agent_log::{Priority, Source, errno_of, nd_log, take_errno};
 use netdata_agent_nrpc::reply::Reply as NrpcReply;
 use netdata_agent_query::request::pairs;
 use netdata_agent_rrd::host::Host;
@@ -60,10 +60,11 @@ fn stored(dir: &str, file: &str) -> Vec<u8> {
     let path = filename_from_path_entry(dir, file, None);
     match read_text(Path::new(&path), MAX_SIZE) {
         Some(content) => match version_of(&content) {
-            // C's logger attaches the thread's errno: what json-c left reading the file. What the request left
-            // before it (C clears it at each receive) is not modelled: decision D242 in the status repository
+            // C's logger attaches the thread's errno and clears it: what json-c left reading the file, else what the
+            // request left before it (an unknown bearer token's ENOENT; C clears it at each receive): D242, D260
             (0, errno) => {
-                nd_log!(Source::Daemon, Priority::Err, errno = errno.unwrap_or(0);
+                let left = take_errno();
+                nd_log!(Source::Daemon, Priority::Err, errno = errno.unwrap_or(left);
                     "file '{path}' cannot be parsed to extract version");
                 INITIAL.to_vec()
             }
@@ -325,6 +326,26 @@ mod tests {
         assert_eq!(get(&dir, "default"), verbatim);
         assert_eq!(put(&dir, "default", br#"{"version":2}"#), Ok(()));
         assert_eq!(get(&dir, "default"), r#"{ "version": 3 }"#);
+    }
+
+    /// C's record takes the thread's errno and clears it: what json-c left reading the file, else what the request left
+    /// before it (an unknown bearer token's ENOENT, decision D260 in the status repository).
+    #[test]
+    fn the_record_takes_the_errno_the_request_left() {
+        let enoent = Errno::ENOENT as i32;
+        let mut stale_taken = 0;
+        for content in ["not json", r#"{"version":0}"#, "", r#"{"value":1}"#, "[]", r#"{"version":"x"}"#] {
+            let (_top, dir) = dir();
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::write(Path::new(&dir).join("default"), content).unwrap();
+            let expected = version_of(content.as_bytes()).1.unwrap_or(enoent);
+            stale_taken += usize::from(expected == enoent);
+            netdata_agent_text::c::set_errno(enoent);
+            let (_, records) = netdata_agent_log::capture(|| get(&dir, "default"));
+            assert_eq!(records.iter().map(|record| record.errno).collect::<Vec<_>>(), [expected], "{content:?}");
+            assert_eq!(take_errno(), 0, "{content:?}: the record cleared it");
+        }
+        assert!(stale_taken > 0, "a file json-c leaves no errno for takes the request's");
     }
 
     /// The `.new` file: a regular one left behind is reused and emptied; a link or a directory in its place is

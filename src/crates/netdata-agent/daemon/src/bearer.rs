@@ -13,7 +13,7 @@ use netdata_agent_ingest::jsonc::{self, Presence::Required};
 use netdata_agent_log::{Priority, Source, errno_of, nd_log};
 use netdata_agent_nrpc::access;
 use netdata_agent_rrd::clock::now_realtime_s;
-use netdata_agent_text::c::{c_str, filename_from_path_entry};
+use netdata_agent_text::c::{c_str, filename_from_path_entry, set_errno};
 use netdata_agent_text::json::{JsonOptions, JsonWriter};
 use netdata_agent_text::parse::uuid_parse_flexi;
 use netdata_agent_text::print::print_uuid_lower;
@@ -21,7 +21,7 @@ use serde_json::{Map, Value};
 use twox_hash::XxHash3_64;
 
 use crate::access_log::Auth;
-use crate::status_file::io::read_text;
+use crate::status_file::io::read_text_errno;
 
 /// `CLOUD_CLIENT_NAME_LENGTH` less its NUL: what a token keeps of its client's name.
 const CLIENT_NAME_MAX: usize = 63;
@@ -127,8 +127,16 @@ impl Store {
     /// JSON kept. Whether the token is now known.
     fn load_token(&self, token: &[u8; 16]) -> bool {
         let filename = self.filename(token);
-        let Some(text) = read_text(filename.as_ref(), 1024 * 1024) else {
-            return false;
+        let text = match read_text_errno(filename.as_ref(), 1024 * 1024) {
+            Ok(text) => text,
+            Err(errno) => {
+                // the failed call's errno stays on the thread for its next record: an unknown token's ENOENT on a
+                // settings record (decision D260 in the status repository)
+                if errno != 0 {
+                    set_errno(errno);
+                }
+                return false;
+            }
         };
         let empty = Map::new();
         // json-c: a root that is no object has none of the members
@@ -476,6 +484,10 @@ mod tests {
         std::fs::write(store.filename(&token()), "123").unwrap();
         assert!(!store.load_token(&token()));
         assert!(!std::path::Path::new(&store.filename(&token())).exists(), "deleted: no version");
+        // no file at all: the failed stat() leaves ENOENT on the thread for its next record, as C's read does
+        netdata_agent_text::c::take_errno();
+        assert!(!store.load_token(&token()));
+        assert_eq!(netdata_agent_text::c::take_errno(), nix::errno::Errno::ENOENT as i32);
     }
 
     /// `bearer_create_token()` (`http_auth.c:208-237`): the first token, in insertion order, of the same role, access,

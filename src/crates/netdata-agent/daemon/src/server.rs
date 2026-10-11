@@ -17,6 +17,7 @@ use netdata_agent_web::request::{
 use netdata_agent_web::response::{self, Head};
 use netdata_agent_web::status;
 
+use netdata_agent_text::c::set_errno;
 use netdata_agent_text::print::html_escape;
 
 use netdata_agent_rrd::clock::{now_boottime_s, now_realtime_s};
@@ -778,6 +779,8 @@ impl WebWorker {
                 let start = client.received.len();
                 let want = client.recv.recv_len(start);
                 client.received.resize(start + want, 0);
+                // web_client_receive()'s errno_clear(): what an earlier request left on this thread is gone
+                set_errno(0);
                 match client.stream.read(&mut client.received[start..]) {
                     Ok(0) => {
                         // web_server_rcv_callback()'s `bytes == 0`: the client is kept, polled for nothing (readable

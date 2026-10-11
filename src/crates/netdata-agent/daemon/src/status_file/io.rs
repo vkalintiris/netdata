@@ -143,22 +143,29 @@ pub fn load(
 /// `read_txt_file_to_buffer()`: a regular file of at most `max` bytes, read whole (`O_NONBLOCK`, so a FIFO put in
 /// its place cannot block the open).
 pub fn read_text(path: &Path, max: u64) -> Option<Vec<u8>> {
+    read_text_errno(path, max).ok()
+}
+
+/// [`read_text`], failing with the `errno` C's failed call leaves behind: 0 where C fails on a test of its own (not
+/// a regular file, too large, a short read), which sets none.
+pub fn read_text_errno(path: &Path, max: u64) -> Result<Vec<u8>, i32> {
+    let os = |e: std::io::Error| e.raw_os_error().unwrap_or(0);
     let regular = |m: &std::fs::Metadata| m.file_type().is_file();
-    if !std::fs::metadata(path).is_ok_and(|m| regular(&m)) {
-        return None;
+    if !regular(&std::fs::metadata(path).map_err(os)?) {
+        return Err(0);
     }
     let mut file = File::options()
         .read(true)
         .custom_flags(OFlag::O_NONBLOCK.bits())
         .open(path)
-        .ok()?;
-    let meta = file.metadata().ok().filter(regular)?;
-    if meta.size() > max {
-        return None;
+        .map_err(os)?;
+    let meta = file.metadata().map_err(os)?;
+    if !regular(&meta) || meta.size() > max {
+        return Err(0);
     }
-    let mut content = vec![0; usize::try_from(meta.size()).ok()?];
-    file.read_exact(&mut content).ok()?;
-    Some(content)
+    let mut content = vec![0; usize::try_from(meta.size()).map_err(|_| 0)?];
+    file.read_exact(&mut content).map_err(os)?;
+    Ok(content)
 }
 
 /// `status_file_io_remove_obsolete()`: once, the file leaves every fallback but the protected one.
