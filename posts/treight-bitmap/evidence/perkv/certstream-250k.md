@@ -6,8 +6,10 @@ Universe 250000 rows; 1152 low/mid lists across 33 fields.
 |---|---|---|---|
 | stored bytes (treight wire vs roaring optimized) | 1802530 | 2668315 | 0.676 |
 | treight tree bytes only / roaring as built | 1792162 | 3514248 | 0.510 |
-| heap allocations to load all lists | 1140 | 6941 | 0.164 |
-| heap bytes requested to load all lists | 1792162 | 2796529 | 0.641 |
+| allocator calls to load all lists (incl. transient) | 1140 | 6941 | 0.164 |
+| heap bytes requested to load all lists (incl. transient) | 1792162 | 2796529 | 0.641 |
+| live heap blocks after loading all lists | 1140 | 4592 | 0.248 |
+| live heap bytes after loading all lists | 1792162 | 2769000 | 0.647 |
 | lists where treight is smaller | 656 of 1152 | | |
 
 Roaring containers: 3440 total (3103 array, 154 bitset, 183 run). Treight complemented lists: 23.
@@ -24,10 +26,10 @@ Roaring containers: 3440 total (3103 array, 154 bitset, 183 run). Treight comple
 
 | workload | treight ms | roaring ms | treight allocs (cold / warm) | roaring allocs |
 |---|---|---|---|---|
-| load all lists from bytes | 0.084 | 0.662 | 1140 | 6941 |
-| AND window_2pct (721 tree B) + len, every list | 10.730 | 0.273 | 1 / 0 | 1503 |
-| range_cardinality window_2pct, every list | 8.134 | 0.074 | 0 | 0 |
-| AND window_50pct (17862 tree B) + len, every list | 58.624 | 2.440 | 1 / 0 | 3757 |
-| range_cardinality window_50pct, every list | 8.169 | 0.086 | 0 | 0 |
-| AND ~10% list (card 25697, 20753 tree B) + len, every list | 89.760 | 1.056 | 1 / 0 | 3765 |
-| OR all values per field + len (33 fields) | 85.097 | 3.863 | 17 / 0 | 225 |
+| load all lists from bytes | 0.082 | 0.665 | 1140 | 6941 |
+| AND window_2pct (721 tree B) + len, every list | 11.207 | 0.304 | 1 / 0 | 1503 |
+| range_cardinality window_2pct, every list | 8.444 | 0.081 | 0 | 0 |
+| AND window_50pct (17862 tree B) + len, every list | 64.234 | 2.532 | 1 / 0 | 3757 |
+| range_cardinality window_50pct, every list | 8.429 | 0.093 | 0 | 0 |
+| AND ~10% list (card 25697, 20753 tree B) + len, every list | 92.630 | 1.153 | 1 / 0 | 3765 |
+| OR all values per field + len (33 fields) | 88.490 | 4.181 | 17 / 0 | 225 |

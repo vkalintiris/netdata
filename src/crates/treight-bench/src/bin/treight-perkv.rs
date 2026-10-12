@@ -42,6 +42,8 @@ struct CountingAlloc;
 static ALLOCS: AtomicU64 = AtomicU64::new(0);
 static REALLOCS: AtomicU64 = AtomicU64::new(0);
 static BYTES: AtomicU64 = AtomicU64::new(0);
+static DEALLOCS: AtomicU64 = AtomicU64::new(0);
+static FREED: AtomicU64 = AtomicU64::new(0);
 
 unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
@@ -57,6 +59,8 @@ unsafe impl GlobalAlloc for CountingAlloc {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        DEALLOCS.fetch_add(1, Ordering::Relaxed);
+        FREED.fetch_add(layout.size() as u64, Ordering::Relaxed);
         unsafe { System.dealloc(ptr, layout) }
     }
 
@@ -66,6 +70,10 @@ unsafe impl GlobalAlloc for CountingAlloc {
             new_size.saturating_sub(layout.size()) as u64,
             Ordering::Relaxed,
         );
+        FREED.fetch_add(
+            layout.size().saturating_sub(new_size) as u64,
+            Ordering::Relaxed,
+        );
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 }
@@ -73,31 +81,44 @@ unsafe impl GlobalAlloc for CountingAlloc {
 #[global_allocator]
 static GLOBAL: CountingAlloc = CountingAlloc;
 
-/// Heap activity inside a measured region: fresh allocations, reallocations
-/// (buffer growth), and bytes requested (growth counted as the delta).
+/// Heap activity inside a measured region: allocator calls (fresh
+/// allocations and reallocations, i.e. buffer growth), bytes requested
+/// (growth counted as the delta), and what is still live when the region
+/// ends (blocks allocated minus blocks freed, bytes requested minus freed).
 #[derive(Clone, Copy, Default, Debug)]
 struct AllocDelta {
     allocs: u64,
     reallocs: u64,
     bytes: u64,
+    live_blocks: i64,
+    live_bytes: i64,
 }
 
 fn measure<T>(f: impl FnOnce() -> T) -> (T, AllocDelta) {
     let a0 = ALLOCS.load(Ordering::Relaxed);
     let r0 = REALLOCS.load(Ordering::Relaxed);
     let b0 = BYTES.load(Ordering::Relaxed);
+    let d0 = DEALLOCS.load(Ordering::Relaxed);
+    let f0 = FREED.load(Ordering::Relaxed);
     let out = f();
+    let allocs = ALLOCS.load(Ordering::Relaxed) - a0;
+    let bytes = BYTES.load(Ordering::Relaxed) - b0;
     let d = AllocDelta {
-        allocs: ALLOCS.load(Ordering::Relaxed) - a0,
+        allocs,
         reallocs: REALLOCS.load(Ordering::Relaxed) - r0,
-        bytes: BYTES.load(Ordering::Relaxed) - b0,
+        bytes,
+        live_blocks: allocs as i64 - (DEALLOCS.load(Ordering::Relaxed) - d0) as i64,
+        live_bytes: bytes as i64 - (FREED.load(Ordering::Relaxed) - f0) as i64,
     };
     (out, d)
 }
 
 impl AllocDelta {
     fn json(self) -> serde_json::Value {
-        serde_json::json!({ "allocs": self.allocs, "reallocs": self.reallocs, "bytes": self.bytes })
+        serde_json::json!({
+            "allocs": self.allocs, "reallocs": self.reallocs, "bytes": self.bytes,
+            "live_blocks": self.live_blocks, "live_bytes": self.live_bytes,
+        })
     }
 }
 
@@ -277,6 +298,10 @@ fn main() -> Result<()> {
             ("roaring_load_bytes", rb_load.bytes),
             ("treight_load_allocs", t_load.allocs + t_load.reallocs),
             ("treight_load_bytes", t_load.bytes),
+            ("roaring_live_blocks", rb_load.live_blocks as u64),
+            ("roaring_live_bytes", rb_load.live_bytes as u64),
+            ("treight_live_blocks", t_load.live_blocks as u64),
+            ("treight_live_bytes", t_load.live_bytes as u64),
             ("complemented", u64::from(l.bm.is_inverted())),
             ("treight_smaller", u64::from(row.1 < row.3)),
         ] {
@@ -557,12 +582,12 @@ fn main() -> Result<()> {
     ));
     writeln!(
         w,
-        "field,value_sha256_48,tier,card,density,complemented,treight_tree,treight_wire,roaring_plain,roaring_opt,containers,array,bitset,run,roaring_load_allocs,roaring_load_bytes,treight_load_allocs,treight_load_bytes"
+        "field,value_sha256_48,tier,card,density,complemented,treight_tree,treight_wire,roaring_plain,roaring_opt,containers,array,bitset,run,roaring_load_allocs,roaring_load_bytes,treight_load_allocs,treight_load_bytes,roaring_live_blocks,roaring_live_bytes,treight_live_blocks,treight_live_bytes"
     )?;
     for (l, r) in lists.iter().zip(&csv_rows) {
         writeln!(
             w,
-            "{},{},{},{},{:.6},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{:.6},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             l.field.replace(',', ";"),
             l.value_hash,
             l.tier,
@@ -580,7 +605,11 @@ fn main() -> Result<()> {
             r.8.allocs + r.8.reallocs,
             r.8.bytes,
             r.9.allocs + r.9.reallocs,
-            r.9.bytes
+            r.9.bytes,
+            r.8.live_blocks,
+            r.8.live_bytes,
+            r.9.live_blocks,
+            r.9.live_bytes
         )?;
     }
     w.into_inner().map_err(|e| e.into_error())?.finish()?;
@@ -610,16 +639,28 @@ fn main() -> Result<()> {
         ratio(g("treight_tree"), g("roaring_plain"))
     ));
     md.push_str(&format!(
-        "| heap allocations to load all lists | {} | {} | {:.3} |\n",
+        "| allocator calls to load all lists (incl. transient) | {} | {} | {:.3} |\n",
         g("treight_load_allocs"),
         g("roaring_load_allocs"),
         ratio(g("treight_load_allocs"), g("roaring_load_allocs"))
     ));
     md.push_str(&format!(
-        "| heap bytes requested to load all lists | {} | {} | {:.3} |\n",
+        "| heap bytes requested to load all lists (incl. transient) | {} | {} | {:.3} |\n",
         g("treight_load_bytes"),
         g("roaring_load_bytes"),
         ratio(g("treight_load_bytes"), g("roaring_load_bytes"))
+    ));
+    md.push_str(&format!(
+        "| live heap blocks after loading all lists | {} | {} | {:.3} |\n",
+        g("treight_live_blocks"),
+        g("roaring_live_blocks"),
+        ratio(g("treight_live_blocks"), g("roaring_live_blocks"))
+    ));
+    md.push_str(&format!(
+        "| live heap bytes after loading all lists | {} | {} | {:.3} |\n",
+        g("treight_live_bytes"),
+        g("roaring_live_bytes"),
+        ratio(g("treight_live_bytes"), g("roaring_live_bytes"))
     ));
     md.push_str(&format!(
         "| lists where treight is smaller | {} of {} | | |\n",

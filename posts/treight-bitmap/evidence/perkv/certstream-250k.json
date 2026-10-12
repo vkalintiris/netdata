@@ -300,8 +300,8 @@
     }
   ],
   "load_all": {
-    "roaring_ns": 662285,
-    "treight_ns": 83692
+    "roaring_ns": 664684,
+    "treight_ns": 81502
   },
   "notes": [
     "treight_wire = 1 inverted-flag byte + RawBitmap wire (8-byte header + tree)",
@@ -317,11 +317,15 @@
     "complemented": 23,
     "containers": 3440,
     "lists": 1152,
+    "roaring_live_blocks": 4592,
+    "roaring_live_bytes": 2769000,
     "roaring_load_allocs": 6941,
     "roaring_load_bytes": 2796529,
     "roaring_opt": 2668315,
     "roaring_plain": 3514248,
     "run_containers": 183,
+    "treight_live_blocks": 1140,
+    "treight_live_bytes": 1792162,
     "treight_load_allocs": 1140,
     "treight_load_bytes": 1792162,
     "treight_smaller": 656,
@@ -337,20 +341,26 @@
       "roaring_allocs": {
         "allocs": 3765,
         "bytes": 4279398,
+        "live_blocks": 0,
+        "live_bytes": 0,
         "reallocs": 0
       },
-      "roaring_ns": 1055764,
+      "roaring_ns": 1153396,
       "treight_allocs_cold": {
         "allocs": 1,
         "bytes": 20753,
+        "live_blocks": 1,
+        "live_bytes": 20753,
         "reallocs": 0
       },
       "treight_allocs_warm": {
         "allocs": 0,
         "bytes": 0,
+        "live_blocks": 0,
+        "live_bytes": 0,
         "reallocs": 0
       },
-      "treight_ns": 89759592
+      "treight_ns": 92629720
     },
     "and_window_len": {
       "window_2pct": {
@@ -363,33 +373,43 @@
           "roaring_allocs": {
             "allocs": 0,
             "bytes": 0,
+            "live_blocks": 0,
+            "live_bytes": 0,
             "reallocs": 0
           },
-          "roaring_ns": 73741,
+          "roaring_ns": 80891,
           "treight_allocs": {
             "allocs": 0,
             "bytes": 0,
+            "live_blocks": 0,
+            "live_bytes": 0,
             "reallocs": 0
           },
-          "treight_ns": 8133953
+          "treight_ns": 8443688
         },
         "roaring_allocs": {
           "allocs": 1503,
           "bytes": 1223274,
+          "live_blocks": 0,
+          "live_bytes": 0,
           "reallocs": 0
         },
-        "roaring_ns": 272856,
+        "roaring_ns": 303697,
         "treight_allocs_cold": {
           "allocs": 1,
           "bytes": 721,
+          "live_blocks": 1,
+          "live_bytes": 721,
           "reallocs": 0
         },
         "treight_allocs_warm": {
           "allocs": 0,
           "bytes": 0,
+          "live_blocks": 0,
+          "live_bytes": 0,
           "reallocs": 0
         },
-        "treight_ns": 10730051,
+        "treight_ns": 11206669,
         "window_tree_bytes": 721
       },
       "window_50pct": {
@@ -402,33 +422,43 @@
           "roaring_allocs": {
             "allocs": 0,
             "bytes": 0,
+            "live_blocks": 0,
+            "live_bytes": 0,
             "reallocs": 0
           },
-          "roaring_ns": 86112,
+          "roaring_ns": 92832,
           "treight_allocs": {
             "allocs": 0,
             "bytes": 0,
+            "live_blocks": 0,
+            "live_bytes": 0,
             "reallocs": 0
           },
-          "treight_ns": 8168793
+          "treight_ns": 8429127
         },
         "roaring_allocs": {
           "allocs": 3757,
           "bytes": 3195174,
+          "live_blocks": 0,
+          "live_bytes": 0,
           "reallocs": 0
         },
-        "roaring_ns": 2439895,
+        "roaring_ns": 2532046,
         "treight_allocs_cold": {
           "allocs": 1,
           "bytes": 17862,
+          "live_blocks": 1,
+          "live_bytes": 17862,
           "reallocs": 0
         },
         "treight_allocs_warm": {
           "allocs": 0,
           "bytes": 0,
+          "live_blocks": 0,
+          "live_bytes": 0,
           "reallocs": 0
         },
-        "treight_ns": 58623581,
+        "treight_ns": 64233959,
         "window_tree_bytes": 17862
       }
     },
@@ -438,20 +468,26 @@
       "roaring_allocs": {
         "allocs": 221,
         "bytes": 1037606,
+        "live_blocks": 0,
+        "live_bytes": 0,
         "reallocs": 4
       },
-      "roaring_ns": 3863057,
+      "roaring_ns": 4180503,
       "treight_allocs_cold": {
         "allocs": 2,
         "bytes": 110320,
+        "live_blocks": 2,
+        "live_bytes": 110320,
         "reallocs": 15
       },
       "treight_allocs_warm": {
         "allocs": 0,
         "bytes": 0,
+        "live_blocks": 0,
+        "live_bytes": 0,
         "reallocs": 0
       },
-      "treight_ns": 85097066
+      "treight_ns": 88490418
     }
   },
   "zstd_concatenated": {
