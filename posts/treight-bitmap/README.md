@@ -158,6 +158,28 @@ are criterion medians over 50 samples with 1 s warm-up + 2 s measurement; compar
 sub-percent deltas), 31 GB RAM, rustc 1.95.0 (59807616e 2026-04-14), criterion 0.5.1. Full
 disclosure in `evidence/bench/environment.txt`.
 
+## 4b. Per-key=value measurements (the post's size, allocation and CPU tables)
+
+`treight-perkv` measures every low/mid-cardinality posting list (fields with fewer than 1,000
+distinct values) both ways: serialized sizes (roaring run-optimized), container shapes, zstd over the
+concatenated stored forms, heap allocations to load (counting global allocator: allocator calls,
+live blocks and live bytes), and set-op workloads over every list (AND with a 2% and a 50% time
+window then `len`, `range_cardinality` over the same windows, AND with a ~10%-density list, OR of
+all values per field). Every workload asserts both libraries return identical results.
+
+```sh
+cd src/crates
+cargo build --release -p treight-bench --bin treight-perkv
+for c in certstream jetstream; do
+  target/release/treight-perkv --derived ../../data/derived/$c-250k \
+      --out ../../posts/treight-bitmap/evidence/perkv/$c-250k
+done
+```
+
+Outputs `evidence/perkv/<corpus>-250k.{json,md,csv.gz}`. The CSV has one row per list with the
+field name and a 48-bit SHA-256 prefix of the value, never the value itself. Timings are the fastest
+of 7 runs on the same shared machine; compare orderings.
+
 ## 5. Correctness checks behind the post's claims
 
 ```sh
@@ -189,6 +211,7 @@ posts/treight-bitmap/
     │   ├── sha256sums.txt   fingerprints of the frozen corpora
     │   ├── stats.{json,md}  aggregate statistics (no personal data)
     │   └── corpus_stats.py  the tool that computes them
+    ├── perkv/               per-key=value sizes, allocations, workloads (step 4b)
     └── bench/               benchmark evidence
         ├── environment.txt  hardware, toolchain, roaring pin, exact commands
         ├── TRACE.md         the verified production flatten path the derivation mirrors
