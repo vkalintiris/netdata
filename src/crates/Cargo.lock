@@ -5818,6 +5818,7 @@ dependencies = [
  "sha2 0.10.9",
  "treight",
  "wal",
+ "zstd",
 ]
 
 [[package]]

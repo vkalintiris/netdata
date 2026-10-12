@@ -1,0 +1,474 @@
+{
+  "corpus_sha256": "cf0af069bd41de604c44c3436be9d60edae1d9441e5e17a616e92b784c66fd1a",
+  "fields": [
+    {
+      "field": "body.data.leaf_cert.all_domains",
+      "roaring_containers": 4,
+      "roaring_opt": 7678,
+      "tier": "low",
+      "treight_tree": 6355,
+      "treight_wire": 6364,
+      "values": 1
+    },
+    {
+      "field": "body.data.leaf_cert.extensions.authorityInfoAccess",
+      "roaring_containers": 602,
+      "roaring_opt": 367412,
+      "tier": "mid",
+      "treight_tree": 268060,
+      "treight_wire": 269770,
+      "values": 190
+    },
+    {
+      "field": "body.data.leaf_cert.extensions.authorityKeyIdentifier",
+      "roaring_containers": 591,
+      "roaring_opt": 365066,
+      "tier": "mid",
+      "treight_tree": 265453,
+      "treight_wire": 267073,
+      "values": 180
+    },
+    {
+      "field": "body.data.leaf_cert.extensions.basicConstraints",
+      "roaring_containers": 4,
+      "roaring_opt": 3497,
+      "tier": "low",
+      "treight_tree": 1785,
+      "treight_wire": 1794,
+      "values": 1
+    },
+    {
+      "field": "body.data.leaf_cert.extensions.certificatePolicies",
+      "roaring_containers": 96,
+      "roaring_opt": 116984,
+      "tier": "low",
+      "treight_tree": 67638,
+      "treight_wire": 67926,
+      "values": 32
+    },
+    {
+      "field": "body.data.leaf_cert.extensions.ctlPoisonByte",
+      "roaring_containers": 4,
+      "roaring_opt": 32808,
+      "tier": "low",
+      "treight_tree": 32064,
+      "treight_wire": 32073,
+      "values": 1
+    },
+    {
+      "field": "body.data.leaf_cert.extensions.keyUsage",
+      "roaring_containers": 12,
+      "roaring_opt": 97940,
+      "tier": "low",
+      "treight_tree": 80286,
+      "treight_wire": 80313,
+      "values": 3
+    },
+    {
+      "field": "body.data.leaf_cert.is_ca",
+      "roaring_containers": 4,
+      "roaring_opt": 61,
+      "tier": "low",
+      "treight_tree": 0,
+      "treight_wire": 9,
+      "values": 1
+    },
+    {
+      "field": "body.data.leaf_cert.issuer.C",
+      "roaring_containers": 60,
+      "roaring_opt": 54597,
+      "tier": "low",
+      "treight_tree": 28974,
+      "treight_wire": 29136,
+      "values": 18
+    },
+    {
+      "field": "body.data.leaf_cert.issuer.CN",
+      "roaring_containers": 591,
+      "roaring_opt": 365066,
+      "tier": "mid",
+      "treight_tree": 265453,
+      "treight_wire": 267073,
+      "values": 180
+    },
+    {
+      "field": "body.data.leaf_cert.issuer.L",
+      "roaring_containers": 13,
+      "roaring_opt": 637,
+      "tier": "low",
+      "treight_tree": 589,
+      "treight_wire": 625,
+      "values": 4
+    },
+    {
+      "field": "body.data.leaf_cert.issuer.O",
+      "roaring_containers": 144,
+      "roaring_opt": 199098,
+      "tier": "low",
+      "treight_tree": 131767,
+      "treight_wire": 132181,
+      "values": 46
+    },
+    {
+      "field": "body.data.leaf_cert.issuer.OU",
+      "roaring_containers": 22,
+      "roaring_opt": 11863,
+      "tier": "low",
+      "treight_tree": 7142,
+      "treight_wire": 7214,
+      "values": 8
+    },
+    {
+      "field": "body.data.leaf_cert.issuer.ST",
+      "roaring_containers": 4,
+      "roaring_opt": 61,
+      "tier": "low",
+      "treight_tree": 0,
+      "treight_wire": 9,
+      "values": 1
+    },
+    {
+      "field": "body.data.leaf_cert.issuer.aggregated",
+      "roaring_containers": 591,
+      "roaring_opt": 365066,
+      "tier": "mid",
+      "treight_tree": 265453,
+      "treight_wire": 267073,
+      "values": 180
+    },
+    {
+      "field": "body.data.leaf_cert.issuer.email_address",
+      "roaring_containers": 4,
+      "roaring_opt": 61,
+      "tier": "low",
+      "treight_tree": 0,
+      "treight_wire": 9,
+      "values": 1
+    },
+    {
+      "field": "body.data.leaf_cert.signature_algorithm",
+      "roaring_containers": 20,
+      "roaring_opt": 110624,
+      "tier": "low",
+      "treight_tree": 102189,
+      "treight_wire": 102234,
+      "values": 5
+    },
+    {
+      "field": "body.data.leaf_cert.subject.C",
+      "roaring_containers": 58,
+      "roaring_opt": 59552,
+      "tier": "low",
+      "treight_tree": 28044,
+      "treight_wire": 28242,
+      "values": 22
+    },
+    {
+      "field": "body.data.leaf_cert.subject.L",
+      "roaring_containers": 167,
+      "roaring_opt": 60440,
+      "tier": "low",
+      "treight_tree": 31967,
+      "treight_wire": 32723,
+      "values": 84
+    },
+    {
+      "field": "body.data.leaf_cert.subject.O",
+      "roaring_containers": 278,
+      "roaring_opt": 62328,
+      "tier": "mid",
+      "treight_tree": 33351,
+      "treight_wire": 34692,
+      "values": 149
+    },
+    {
+      "field": "body.data.leaf_cert.subject.OU",
+      "roaring_containers": 5,
+      "roaring_opt": 83,
+      "tier": "low",
+      "treight_tree": 12,
+      "treight_wire": 30,
+      "values": 2
+    },
+    {
+      "field": "body.data.leaf_cert.subject.ST",
+      "roaring_containers": 4,
+      "roaring_opt": 61,
+      "tier": "low",
+      "treight_tree": 0,
+      "treight_wire": 9,
+      "values": 1
+    },
+    {
+      "field": "body.data.leaf_cert.subject.email_address",
+      "roaring_containers": 4,
+      "roaring_opt": 61,
+      "tier": "low",
+      "treight_tree": 0,
+      "treight_wire": 9,
+      "values": 1
+    },
+    {
+      "field": "body.data.source.name",
+      "roaring_containers": 61,
+      "roaring_opt": 160614,
+      "tier": "low",
+      "treight_tree": 55726,
+      "treight_wire": 55870,
+      "values": 16
+    },
+    {
+      "field": "body.data.source.url",
+      "roaring_containers": 61,
+      "roaring_opt": 160614,
+      "tier": "low",
+      "treight_tree": 55726,
+      "treight_wire": 55870,
+      "values": 16
+    },
+    {
+      "field": "body.data.update_type",
+      "roaring_containers": 8,
+      "roaring_opt": 65616,
+      "tier": "low",
+      "treight_tree": 64128,
+      "treight_wire": 64146,
+      "values": 2
+    },
+    {
+      "field": "body.message_type",
+      "roaring_containers": 4,
+      "roaring_opt": 61,
+      "tier": "low",
+      "treight_tree": 0,
+      "treight_wire": 9,
+      "values": 1
+    },
+    {
+      "field": "event_name",
+      "roaring_containers": 4,
+      "roaring_opt": 61,
+      "tier": "low",
+      "treight_tree": 0,
+      "treight_wire": 9,
+      "values": 1
+    },
+    {
+      "field": "resource.attributes.service.name",
+      "roaring_containers": 4,
+      "roaring_opt": 61,
+      "tier": "low",
+      "treight_tree": 0,
+      "treight_wire": 9,
+      "values": 1
+    },
+    {
+      "field": "scope.name",
+      "roaring_containers": 4,
+      "roaring_opt": 61,
+      "tier": "low",
+      "treight_tree": 0,
+      "treight_wire": 9,
+      "values": 1
+    },
+    {
+      "field": "scope.version",
+      "roaring_containers": 4,
+      "roaring_opt": 61,
+      "tier": "low",
+      "treight_tree": 0,
+      "treight_wire": 9,
+      "values": 1
+    },
+    {
+      "field": "severity_number",
+      "roaring_containers": 4,
+      "roaring_opt": 61,
+      "tier": "low",
+      "treight_tree": 0,
+      "treight_wire": 9,
+      "values": 1
+    },
+    {
+      "field": "severity_text",
+      "roaring_containers": 4,
+      "roaring_opt": 61,
+      "tier": "low",
+      "treight_tree": 0,
+      "treight_wire": 9,
+      "values": 1
+    }
+  ],
+  "load_all": {
+    "roaring_ns": 662285,
+    "treight_ns": 83692
+  },
+  "notes": [
+    "treight_wire = 1 inverted-flag byte + RawBitmap wire (8-byte header + tree)",
+    "roaring_opt = serialized size after RoaringBitmap::optimize(); roaring_plain = as built by from_sorted_iter",
+    "load allocs/bytes: counting global allocator around deserialize_from of each side's stored bytes",
+    "timings: fastest of 7 runs, release build, one thread, shared machine; compare orderings"
+  ],
+  "scope": "low+mid cardinality fields (< 1000 distinct values per field)",
+  "totals": {
+    "array_containers": 3103,
+    "bitset_containers": 154,
+    "card": 7887187,
+    "complemented": 23,
+    "containers": 3440,
+    "lists": 1152,
+    "roaring_load_allocs": 6941,
+    "roaring_load_bytes": 2796529,
+    "roaring_opt": 2668315,
+    "roaring_plain": 3514248,
+    "run_containers": 183,
+    "treight_load_allocs": 1140,
+    "treight_load_bytes": 1792162,
+    "treight_smaller": 656,
+    "treight_tree": 1792162,
+    "treight_wire": 1802530
+  },
+  "universe": 250000,
+  "workloads": {
+    "and_partner_len": {
+      "matched_total": 804138,
+      "partner_card": 25697,
+      "partner_tree_bytes": 20753,
+      "roaring_allocs": {
+        "allocs": 3765,
+        "bytes": 4279398,
+        "reallocs": 0
+      },
+      "roaring_ns": 1055764,
+      "treight_allocs_cold": {
+        "allocs": 1,
+        "bytes": 20753,
+        "reallocs": 0
+      },
+      "treight_allocs_warm": {
+        "allocs": 0,
+        "bytes": 0,
+        "reallocs": 0
+      },
+      "treight_ns": 89759592
+    },
+    "and_window_len": {
+      "window_2pct": {
+        "matched_total": 157647,
+        "range": [
+          122500,
+          127500
+        ],
+        "range_cardinality": {
+          "roaring_allocs": {
+            "allocs": 0,
+            "bytes": 0,
+            "reallocs": 0
+          },
+          "roaring_ns": 73741,
+          "treight_allocs": {
+            "allocs": 0,
+            "bytes": 0,
+            "reallocs": 0
+          },
+          "treight_ns": 8133953
+        },
+        "roaring_allocs": {
+          "allocs": 1503,
+          "bytes": 1223274,
+          "reallocs": 0
+        },
+        "roaring_ns": 272856,
+        "treight_allocs_cold": {
+          "allocs": 1,
+          "bytes": 721,
+          "reallocs": 0
+        },
+        "treight_allocs_warm": {
+          "allocs": 0,
+          "bytes": 0,
+          "reallocs": 0
+        },
+        "treight_ns": 10730051,
+        "window_tree_bytes": 721
+      },
+      "window_50pct": {
+        "matched_total": 3943627,
+        "range": [
+          62500,
+          187500
+        ],
+        "range_cardinality": {
+          "roaring_allocs": {
+            "allocs": 0,
+            "bytes": 0,
+            "reallocs": 0
+          },
+          "roaring_ns": 86112,
+          "treight_allocs": {
+            "allocs": 0,
+            "bytes": 0,
+            "reallocs": 0
+          },
+          "treight_ns": 8168793
+        },
+        "roaring_allocs": {
+          "allocs": 3757,
+          "bytes": 3195174,
+          "reallocs": 0
+        },
+        "roaring_ns": 2439895,
+        "treight_allocs_cold": {
+          "allocs": 1,
+          "bytes": 17862,
+          "reallocs": 0
+        },
+        "treight_allocs_warm": {
+          "allocs": 0,
+          "bytes": 0,
+          "reallocs": 0
+        },
+        "treight_ns": 58623581,
+        "window_tree_bytes": 17862
+      }
+    },
+    "field_or_len": {
+      "fields": 33,
+      "matched_total": 7887187,
+      "roaring_allocs": {
+        "allocs": 221,
+        "bytes": 1037606,
+        "reallocs": 4
+      },
+      "roaring_ns": 3863057,
+      "treight_allocs_cold": {
+        "allocs": 2,
+        "bytes": 110320,
+        "reallocs": 15
+      },
+      "treight_allocs_warm": {
+        "allocs": 0,
+        "bytes": 0,
+        "reallocs": 0
+      },
+      "treight_ns": 85097066
+    }
+  },
+  "zstd_concatenated": {
+    "level_1": {
+      "ratio": 0.7539833125981718,
+      "roaring": 832724,
+      "treight": 627860
+    },
+    "level_19": {
+      "ratio": 0.7457203631190373,
+      "roaring": 726814,
+      "treight": 542000
+    },
+    "level_3": {
+      "ratio": 0.7443338231176548,
+      "roaring": 807158,
+      "treight": 600795
+    }
+  }
+}
