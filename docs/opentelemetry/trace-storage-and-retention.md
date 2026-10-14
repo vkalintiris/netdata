@@ -90,7 +90,8 @@ Stored traces are explored in the Traces tab, which queries the Agent's `otel-tr
 traces requires a signed-in Netdata Cloud user of the Agent's Space; trace data is not stored in Netdata Cloud.
 
 When a sender sends a span again, the Agent stores each copy. The span counts in the trace list include each stored
-copy. The trace view shows each span one time.
+copy. The trace view shows each span one time. Traces in files that an earlier version stored show each span one time
+in the list too, until those files leave retention.
 
 ## Where to next
 
