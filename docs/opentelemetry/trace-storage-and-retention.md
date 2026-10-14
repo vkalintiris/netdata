@@ -89,6 +89,9 @@ expire them with the object storage's own lifecycle rules. Add headroom for the 
 Stored traces are explored in the Traces tab, which queries the Agent's `otel-traces` Function. As with logs, viewing
 traces requires a signed-in Netdata Cloud user of the Agent's Space; trace data is not stored in Netdata Cloud.
 
+When a sender sends a span again, the Agent stores each copy. The span counts in the trace list include each stored
+copy. The trace view shows each span one time.
+
 ## Where to next
 
 - [OTLP Ingestion](/docs/opentelemetry/otlp-ingestion.md) — send traces through a Collector.
