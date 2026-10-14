@@ -660,7 +660,10 @@
                   "rollup_absent",
                   "remote_unavailable",
                   "byte_budget",
-                  "busy"
+                  "busy",
+                  "file_budget",
+                  "deadline",
+                  "no_new_matches"
                 ]
               }
             }
