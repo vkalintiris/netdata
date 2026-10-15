@@ -3809,6 +3809,7 @@ dependencies = [
  "opentelemetry-proto",
  "serde",
  "tempfile",
+ "tokio",
  "tracing",
 ]
 
