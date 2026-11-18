@@ -1224,7 +1224,7 @@
   "duration_count": 2,
   "duration_sum": 2.690750989,
   "error": 0,
-  "input": 30,
+  "input": 7754,
   "labels": [
    [
     "anthropic",
@@ -1243,7 +1243,7 @@
   "duration_count": 2,
   "duration_sum": 2.066163136,
   "error": 0,
-  "input": 30,
+  "input": 7758,
   "labels": [
    [
     "anthropic",
