@@ -125,6 +125,12 @@ const RULES: &[RuleSource] = &[
         gate: Gate::scope_in(&["langsmith"]),
     },
     RuleSource {
+        name: "logfire_openai_agents",
+        source: include_str!("../rules/logfire_openai_agents.vrl"),
+        signal: Signal::Span,
+        gate: Gate::scope_in(&["logfire.openai_agents"]),
+    },
+    RuleSource {
         name: "laminar",
         source: include_str!("../rules/laminar.vrl"),
         signal: Signal::Span,
