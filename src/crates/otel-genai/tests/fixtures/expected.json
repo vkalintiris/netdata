@@ -627,37 +627,58 @@
   "success": 1
  },
  "lj-langfuse-openai-cache": {
-  "cache_read": 0,
+  "cache_read": 2304,
   "cache_write": 0,
-  "duration_count": 0,
-  "duration_sum": 0.0,
+  "duration_count": 2,
+  "duration_sum": 3.358445454,
   "error": 0,
-  "input": 0,
-  "labels": [],
-  "output": 0,
-  "reasoning": 0,
-  "success": 0
+  "input": 4684,
+  "labels": [
+   [
+    "-",
+    "chat",
+    "-",
+    "deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 27,
+  "reasoning": 23,
+  "success": 2
  },
  "lj-langfuse-openai-chat": {
   "cache_read": 0,
   "cache_write": 0,
-  "duration_count": 0,
-  "duration_sum": 0.0,
+  "duration_count": 1,
+  "duration_sum": 2.641767864,
   "error": 0,
-  "input": 0,
-  "labels": [],
-  "output": 0,
-  "reasoning": 0,
-  "success": 0
+  "input": 99,
+  "labels": [
+   [
+    "-",
+    "chat",
+    "-",
+    "deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 111,
+  "reasoning": 93,
+  "success": 1
  },
  "lj-langfuse-openai-error": {
   "cache_read": 0,
   "cache_write": 0,
-  "duration_count": 0,
-  "duration_sum": 0.0,
-  "error": 0,
+  "duration_count": 1,
+  "duration_sum": 0.202191227,
+  "error": 1,
   "input": 0,
-  "labels": [],
+  "labels": [
+   [
+    "-",
+    "chat",
+    "-",
+    "no-such-model"
+   ]
+  ],
   "output": 0,
   "reasoning": 0,
   "success": 0
@@ -665,26 +686,40 @@
  "lj-langfuse-openai-stream": {
   "cache_read": 0,
   "cache_write": 0,
-  "duration_count": 0,
-  "duration_sum": 0.0,
+  "duration_count": 1,
+  "duration_sum": 2.879182093,
   "error": 0,
-  "input": 0,
-  "labels": [],
-  "output": 0,
-  "reasoning": 0,
-  "success": 0
+  "input": 99,
+  "labels": [
+   [
+    "-",
+    "chat",
+    "-",
+    "deepseek-v4-flash"
+   ]
+  ],
+  "output": 50,
+  "reasoning": 27,
+  "success": 1
  },
  "lj-langfuse-openai-tool": {
-  "cache_read": 0,
+  "cache_read": 512,
   "cache_write": 0,
-  "duration_count": 0,
-  "duration_sum": 0.0,
+  "duration_count": 2,
+  "duration_sum": 4.091871532,
   "error": 0,
-  "input": 0,
-  "labels": [],
-  "output": 0,
-  "reasoning": 0,
-  "success": 0
+  "input": 825,
+  "labels": [
+   [
+    "-",
+    "chat",
+    "-",
+    "deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 100,
+  "reasoning": 38,
+  "success": 2
  },
  "lj-native-anthropic-cache": {
   "cache_read": 3858,
