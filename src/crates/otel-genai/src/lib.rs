@@ -418,6 +418,7 @@ fn functions() -> Vec<Box<dyn Function>> {
     vec![
         Box::new(vrl::stdlib::Includes),
         Box::new(vrl::stdlib::Exists),
+        Box::new(vrl::stdlib::EndsWith),
         Box::new(vrl::stdlib::IsInteger),
         Box::new(vrl::stdlib::IsString),
         Box::new(vrl::stdlib::IsObject),
