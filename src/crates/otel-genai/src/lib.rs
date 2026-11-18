@@ -49,21 +49,21 @@ const RULES: &[RuleSource] = &[
         name: "claude_code",
         source: include_str!("../rules/claude_code.vrl"),
         signal: Signal::Log,
-        gate: Gate::scope("com.anthropic.claude_code.events")
+        gate: Gate::scope_in(&["com.anthropic.claude_code.events"])
             .and_attribute_in("event.name", &["api_request", "api_error"]),
     },
     RuleSource {
         name: "codex",
         source: include_str!("../rules/codex.vrl"),
         signal: Signal::Log,
-        gate: Gate::scope("codex_otel.log_only")
+        gate: Gate::scope_in(&["codex_otel.log_only"])
             .and_attribute_in("event.name", &["codex.sse_event"]),
     },
     RuleSource {
         name: "litellm",
         source: include_str!("../rules/litellm.vrl"),
         signal: Signal::Span,
-        gate: Gate::scope("litellm").and_attribute_in(
+        gate: Gate::scope_in(&["litellm"]).and_attribute_in(
             "gen_ai.operation.name",
             &[
                 "chat",
@@ -82,13 +82,20 @@ const RULES: &[RuleSource] = &[
         source: include_str!("../rules/openlit_anthropic.vrl"),
         signal: Signal::Span,
         // Its error span has no attributes: the scope is all there is to go by.
-        gate: Gate::scope("openlit.instrumentation.anthropic"),
+        gate: Gate::scope_in(&["openlit.instrumentation.anthropic"]),
     },
     RuleSource {
         name: "openinference",
         source: include_str!("../rules/openinference.vrl"),
         signal: Signal::Span,
         gate: Gate::attribute_in("openinference.span.kind", &["LLM", "EMBEDDING"]),
+    },
+    RuleSource {
+        name: "logfire",
+        source: include_str!("../rules/logfire.vrl"),
+        signal: Signal::Span,
+        gate: Gate::scope_in(&["logfire.openai", "logfire.anthropic"])
+            .and_attribute_in("gen_ai.operation.name", CALL_OPERATIONS),
     },
     RuleSource {
         name: "conventions",

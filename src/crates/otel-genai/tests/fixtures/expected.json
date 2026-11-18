@@ -642,7 +642,7 @@
    ]
   ],
   "output": 184,
-  "reasoning": 0,
+  "reasoning": 92,
   "success": 1
  },
  "lr-logfire-anthropic-cache": {
@@ -737,7 +737,7 @@
    ]
   ],
   "output": 208,
-  "reasoning": 0,
+  "reasoning": 87,
   "success": 2
  },
  "lr-logfire-anthropic-tool": {
@@ -775,7 +775,7 @@
    ]
   ],
   "output": 53,
-  "reasoning": 0,
+  "reasoning": 29,
   "success": 1
  },
  "lr-logfire-openai-cache": {
@@ -794,7 +794,7 @@
    ]
   ],
   "output": 40,
-  "reasoning": 0,
+  "reasoning": 36,
   "success": 2
  },
  "lr-logfire-openai-chat": {
@@ -813,7 +813,7 @@
    ]
   ],
   "output": 69,
-  "reasoning": 0,
+  "reasoning": 28,
   "success": 1
  },
  "lr-logfire-openai-error": {
@@ -857,7 +857,7 @@
    ]
   ],
   "output": 83,
-  "reasoning": 0,
+  "reasoning": 48,
   "success": 2
  },
  "lr-logfire-openai-tool": {
@@ -876,7 +876,7 @@
    ]
   ],
   "output": 92,
-  "reasoning": 0,
+  "reasoning": 29,
   "success": 2
  },
  "lr-mlflow-anthropic-async": {
