@@ -9,7 +9,10 @@
 //! Token counts follow the OpenTelemetry GenAI conventions: input includes cache reads and writes, output includes
 //! reasoning, and the cache and reasoning counts are parts of those totals, never additions to them.
 
+mod gate;
 mod value;
+
+use gate::Gate;
 
 use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
 use opentelemetry_proto::tonic::trace::v1::Span;
@@ -17,8 +20,16 @@ use vrl::compiler::state::RuntimeState;
 use vrl::compiler::{Context, Function, Program, TargetValue, TimeZone};
 use vrl::value::{ObjectMap, Secrets, Value};
 
-/// The rules, in the order they are tried.
-const RULES: &[(&str, &str)] = &[("conventions", include_str!("../rules/conventions.vrl"))];
+/// The rules, in the order they are tried. Each has a native gate that admits every record the rule can match, so
+/// records that concern no rule never reach VRL; the corpus tests check the gates against the rules.
+const RULES: &[(&str, &str, Gate)] = &[(
+    "conventions",
+    include_str!("../rules/conventions.vrl"),
+    Gate::AttributeIn {
+        key: "gen_ai.operation.name",
+        values: CALL_OPERATIONS,
+    },
+)];
 
 /// The call operations the charts count: agent and tool operations repeat the totals of the calls inside them.
 pub const CALL_OPERATIONS: &[&str] = &["chat", "text_completion", "generate_content", "embeddings"];
@@ -74,6 +85,7 @@ pub enum RuleError {
 
 struct Rule {
     name: &'static str,
+    gate: Gate,
     program: Program,
 }
 
@@ -89,7 +101,7 @@ impl Normalizer {
     pub fn new() -> Result<Self, Error> {
         let functions = functions();
         let mut rules = Vec::with_capacity(RULES.len());
-        for &(name, source) in RULES {
+        for &(name, source, gate) in RULES {
             let compiled = vrl::compiler::compile(source, &functions).map_err(|diagnostics| {
                 Error::Compile {
                     rule: name,
@@ -98,6 +110,7 @@ impl Normalizer {
             })?;
             rules.push(Rule {
                 name,
+                gate,
                 program: compiled.program,
             });
         }
@@ -114,9 +127,29 @@ impl Normalizer {
         scope: Option<&InstrumentationScope>,
         span: &Span,
     ) -> Result<Option<Call>, RuleError> {
-        let event = value::span(scope, span);
+        self.resolve(scope, span, true)
+    }
+
+    /// Whether any rule's gate admits `span`: when not, [`Self::span`] never runs VRL for it.
+    pub fn is_candidate(&self, scope: Option<&InstrumentationScope>, span: &Span) -> bool {
+        self.rules
+            .iter()
+            .any(|rule| rule.gate.admits(scope, &span.attributes))
+    }
+
+    fn resolve(
+        &self,
+        scope: Option<&InstrumentationScope>,
+        span: &Span,
+        gated: bool,
+    ) -> Result<Option<Call>, RuleError> {
         let timezone = TimeZone::default();
+        let mut event = None;
         for rule in &self.rules {
+            if gated && !rule.gate.admits(scope, &span.attributes) {
+                continue;
+            }
+            let event = event.get_or_insert_with(|| value::span(scope, span));
             let mut target = TargetValue {
                 value: event.clone(),
                 metadata: Value::Object(ObjectMap::new()),
@@ -140,6 +173,18 @@ impl Normalizer {
             return call(rule.name, &fields, end, Some((end - start) as f64 / 1e9)).map(Some);
         }
         Ok(None)
+    }
+}
+
+#[doc(hidden)]
+impl Normalizer {
+    /// [`Self::span`] with every gate open: the corpus tests compare it with the gated path.
+    pub fn span_ungated(
+        &self,
+        scope: Option<&InstrumentationScope>,
+        span: &Span,
+    ) -> Result<Option<Call>, RuleError> {
+        self.resolve(scope, span, false)
     }
 }
 

@@ -158,3 +158,48 @@ fn corpus_runs_match_the_oracle() {
     }
     assert_eq!(checked, expected_runs.len() - PAIRED.len());
 }
+
+/// The gates admit every span a rule matches, and keep the rest away from VRL.
+#[test]
+fn gates_admit_every_call_and_skip_the_rest() {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let normalizer = Normalizer::new().unwrap();
+    let (mut admitted, mut skipped) = (0, 0);
+    for entry in std::fs::read_dir(&fixtures).unwrap() {
+        let path = entry.unwrap().path();
+        if path
+            .extension()
+            .is_none_or(|extension| extension != "jsonl")
+        {
+            continue;
+        }
+        for export in exports(&path) {
+            for resource_spans in &export.resource_spans {
+                for scope_spans in &resource_spans.scope_spans {
+                    let scope = scope_spans.scope.as_ref();
+                    for span in &scope_spans.spans {
+                        let ungated = normalizer.span_ungated(scope, span).unwrap();
+                        if normalizer.is_candidate(scope, span) {
+                            admitted += 1;
+                        } else {
+                            skipped += 1;
+                            assert_eq!(
+                                ungated,
+                                None,
+                                "{}: {} matched without its gate",
+                                path.display(),
+                                span.name
+                            );
+                        }
+                        assert_eq!(normalizer.span(scope, span).unwrap(), ungated);
+                    }
+                }
+            }
+        }
+    }
+    // The fixtures hold both kinds: HTTP, agent and tool spans next to the calls.
+    assert!(
+        admitted > 0 && skipped > 0,
+        "admitted {admitted}, skipped {skipped}"
+    );
+}
