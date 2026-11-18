@@ -10,9 +10,11 @@
 //! reasoning, and the cache and reasoning counts are parts of those totals, never additions to them.
 
 mod gate;
+mod pairs;
 mod value;
 
 use gate::Gate;
+pub use pairs::{Candidate, Pairs};
 
 use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
 use opentelemetry_proto::tonic::trace::v1::Span;

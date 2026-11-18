@@ -5,25 +5,11 @@
 //! from the raw captures with the rules as specified.
 
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
-use otel_genai::{Call, Normalizer};
+use opentelemetry_proto::tonic::common::v1::any_value::Value as Av;
+use otel_genai::{Call, Candidate, Normalizer, Pairs};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::path::Path;
-
-/// Runs whose expected totals need call-span pair detection, which these tests do not apply yet.
-const PAIRED: &[&str] = &[
-    "otel-genai-anthropic-chat-r3",
-    "otel-genai-anthropic-error",
-    "otel-genai-anthropic-stream",
-    "otel-genai-anthropic-tool",
-    "pydantic-ai-anthropic-chat",
-    "pydantic-ai-anthropic-error",
-    "pydantic-ai-anthropic-stream",
-    "pydantic-ai-anthropic-tool",
-    "openllmetry-anthropic-chat",
-    "openllmetry-anthropic-stream",
-    "openllmetry-anthropic-tool",
-];
 
 #[derive(Debug, Default, PartialEq)]
 struct Totals {
@@ -111,18 +97,58 @@ fn exports(path: &Path) -> Vec<ExportTraceServiceRequest> {
         .collect()
 }
 
-fn calls(normalizer: &Normalizer, export: &ExportTraceServiceRequest) -> Vec<Call> {
-    let mut calls = Vec::new();
+/// The calls of one export request that count, after pair detection.
+fn calls(
+    normalizer: &Normalizer,
+    pairs: &Pairs<String>,
+    export: &ExportTraceServiceRequest,
+) -> Vec<Call> {
+    let mut candidates = Vec::new();
     for resource_spans in &export.resource_spans {
+        let attributes = resource_spans
+            .resource
+            .as_ref()
+            .map_or(&[][..], |resource| &resource.attributes[..]);
+        let group: String = [
+            "service.name",
+            "service.namespace",
+            "deployment.environment.name",
+        ]
+        .iter()
+        .map(|key| {
+            attributes
+                .iter()
+                .find(|attribute| attribute.key == *key)
+                .and_then(
+                    |attribute| match attribute.value.as_ref()?.value.as_ref()? {
+                        Av::StringValue(value) => Some(value.as_str()),
+                        _ => None,
+                    },
+                )
+                .unwrap_or("")
+        })
+        .collect::<Vec<_>>()
+        .join("\0");
         for scope_spans in &resource_spans.scope_spans {
             for span in &scope_spans.spans {
                 if let Some(call) = normalizer.span(scope_spans.scope.as_ref(), span).unwrap() {
-                    calls.push(call);
+                    candidates.push(Candidate {
+                        call,
+                        trace_id: span.trace_id.clone(),
+                        span_id: span.span_id.clone(),
+                        parent_span_id: span.parent_span_id.clone(),
+                        group: group.clone(),
+                        data: (),
+                    });
                 }
             }
         }
     }
-    calls
+    pairs
+        .retain(0, candidates)
+        .into_iter()
+        .map(|candidate| candidate.call)
+        .collect()
 }
 
 #[test]
@@ -134,12 +160,11 @@ fn corpus_runs_match_the_oracle() {
     let normalizer = Normalizer::new().unwrap();
     let mut checked = 0;
     for (run, want) in &expected_runs {
-        if PAIRED.contains(&run.as_str()) {
-            continue;
-        }
+        // One run is one producer session: its own pair memory.
+        let pairs = Pairs::new();
         let mut got = Totals::default();
         for export in exports(&fixtures.join(format!("{run}.jsonl"))) {
-            for call in calls(&normalizer, &export) {
+            for call in calls(&normalizer, &pairs, &export) {
                 got.add(&call);
             }
         }
@@ -156,7 +181,7 @@ fn corpus_runs_match_the_oracle() {
         assert_eq!(got, want, "{run}");
         checked += 1;
     }
-    assert_eq!(checked, expected_runs.len() - PAIRED.len());
+    assert_eq!(checked, expected_runs.len());
 }
 
 /// The gates admit every span a rule matches, and keep the rest away from VRL.
