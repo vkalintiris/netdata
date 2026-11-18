@@ -95,6 +95,13 @@ const RULES: &[RuleSource] = &[
         gate: Gate::attribute_in("openinference.span.kind", &["LLM", "EMBEDDING"]),
     },
     RuleSource {
+        name: "langfuse",
+        source: include_str!("../rules/langfuse.vrl"),
+        signal: Signal::Span,
+        gate: Gate::scope_in(&["langfuse-sdk"])
+            .and_attribute_in("langfuse.observation.type", &["generation", "embedding"]),
+    },
+    RuleSource {
         name: "mlflow",
         source: include_str!("../rules/mlflow.vrl"),
         signal: Signal::Span,
