@@ -118,6 +118,13 @@ const RULES: &[RuleSource] = &[
             .and_attribute_in("gen_ai.operation.name", CALL_OPERATIONS),
     },
     RuleSource {
+        name: "langsmith",
+        source: include_str!("../rules/langsmith.vrl"),
+        signal: Signal::Span,
+        // Every LangSmith run carries an operation; the rule drops the non-call ones the conventions would count.
+        gate: Gate::scope_in(&["langsmith"]),
+    },
+    RuleSource {
         name: "laminar",
         source: include_str!("../rules/laminar.vrl"),
         signal: Signal::Span,
