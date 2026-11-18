@@ -1759,6 +1759,120 @@
   "reasoning": 0,
   "success": 2
  },
+ "lr-langfuse-openai-async": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 2.00320266,
+  "error": 0,
+  "input": 99,
+  "labels": [
+   [
+    "-",
+    "chat",
+    "-",
+    "deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 44,
+  "reasoning": 20,
+  "success": 1
+ },
+ "lr-langfuse-openai-cache": {
+  "cache_read": 2304,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 5.528573113,
+  "error": 0,
+  "input": 4684,
+  "labels": [
+   [
+    "-",
+    "chat",
+    "-",
+    "deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 25,
+  "reasoning": 21,
+  "success": 2
+ },
+ "lr-langfuse-openai-chat": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 3.305930885,
+  "error": 0,
+  "input": 99,
+  "labels": [
+   [
+    "-",
+    "chat",
+    "-",
+    "deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 70,
+  "reasoning": 35,
+  "success": 1
+ },
+ "lr-langfuse-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.176025862,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "-",
+    "chat",
+    "-",
+    "no-such-model"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "lr-langfuse-openai-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 2.543239052,
+  "error": 0,
+  "input": 99,
+  "labels": [
+   [
+    "-",
+    "chat",
+    "-",
+    "alibaba-tp/deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 70,
+  "reasoning": 58,
+  "success": 1
+ },
+ "lr-langfuse-openai-tool": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 5.822013366,
+  "error": 0,
+  "input": 825,
+  "labels": [
+   [
+    "-",
+    "chat",
+    "-",
+    "deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 100,
+  "reasoning": 37,
+  "success": 2
+ },
  "lr-logfire-anthropic-async": {
   "cache_read": 0,
   "cache_write": 0,
