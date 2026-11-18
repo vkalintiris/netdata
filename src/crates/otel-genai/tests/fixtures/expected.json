@@ -474,6 +474,2947 @@
   "reasoning": 5,
   "success": 1
  },
+ "fp-agno-openinference-anthropic-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 1.652316054,
+  "error": 0,
+  "input": 972,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 69,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-agno-openinference-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.310212512,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-agno-openinference-anthropic-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 1.717824005,
+  "error": 0,
+  "input": 972,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 69,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-agno-openinference-openai-agent": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 3.444072802,
+  "error": 0,
+  "input": 852,
+  "labels": [
+   [
+    "OpenAI",
+    "chat",
+    "-",
+    "deepseek-v4-flash"
+   ]
+  ],
+  "output": 92,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-agno-openinference-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.232555829,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "OpenAI",
+    "chat",
+    "-",
+    "no-such-model"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-agno-openinference-openai-stream": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 5.023629981,
+  "error": 0,
+  "input": 852,
+  "labels": [
+   [
+    "OpenAI",
+    "chat",
+    "-",
+    "deepseek-v4-flash"
+   ]
+  ],
+  "output": 90,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-agno-stacked-anthropic-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 1.685983417,
+  "error": 0,
+  "input": 972,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 67,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-agno-stacked-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.330725278,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-agno-stacked-anthropic-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 1.722133673,
+  "error": 0,
+  "input": 972,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 69,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-agno-stacked-openai-agent": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 3.492205166,
+  "error": 0,
+  "input": 852,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 98,
+  "reasoning": 35,
+  "success": 2
+ },
+ "fp-agno-stacked-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.176679836,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-agno-stacked-openai-stream": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 4.263752268,
+  "error": 0,
+  "input": 852,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "alibaba-tp/deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 85,
+  "reasoning": 23,
+  "success": 2
+ },
+ "fp-claude-agent-sdk-native-anthropic-agent": {
+  "cache_read": 4873,
+  "cache_write": 4947,
+  "duration_count": 2,
+  "duration_sum": 1.536,
+  "error": 0,
+  "input": 9824,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "-"
+   ]
+  ],
+  "output": 75,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-claude-agent-sdk-native-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 1.334,
+  "error": 2,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-crewai-openinference-anthropic-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "input": 0,
+  "labels": [],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-crewai-openinference-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "input": 0,
+  "labels": [],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-crewai-openinference-anthropic-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "input": 0,
+  "labels": [],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-crewai-openinference-openai-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "input": 0,
+  "labels": [],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-crewai-openinference-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "input": 0,
+  "labels": [],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-crewai-openinference-openai-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "input": 0,
+  "labels": [],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-crewai-openllmetry-anthropic-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "input": 0,
+  "labels": [],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-crewai-openllmetry-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "input": 0,
+  "labels": [],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-crewai-openllmetry-anthropic-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "input": 0,
+  "labels": [],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-crewai-openllmetry-openai-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "input": 0,
+  "labels": [],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-crewai-openllmetry-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "input": 0,
+  "labels": [],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-crewai-openllmetry-openai-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "input": 0,
+  "labels": [],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-crewai-stacked-anthropic-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 3.455232436,
+  "error": 0,
+  "input": 1078,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 72,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-crewai-stacked-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 3,
+  "duration_sum": 1.178493122,
+  "error": 3,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-crewai-stacked-anthropic-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 3.395987211,
+  "error": 0,
+  "input": 1078,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 69,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-crewai-stacked-openai-agent": {
+  "cache_read": 768,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 3.720642084,
+  "error": 0,
+  "input": 954,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 86,
+  "reasoning": 23,
+  "success": 2
+ },
+ "fp-crewai-stacked-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 3,
+  "duration_sum": 0.609391207,
+  "error": 3,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-crewai-stacked-openai-stream": {
+  "cache_read": 768,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 3.728342187,
+  "error": 0,
+  "input": 954,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "alibaba-tp/deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 82,
+  "reasoning": 19,
+  "success": 2
+ },
+ "fp-dspy-openinference-anthropic-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 2.465503818,
+  "error": 0,
+  "input": 1584,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "-",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 165,
+  "reasoning": 51,
+  "success": 2
+ },
+ "fp-dspy-openinference-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.307790508,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "-",
+    "claude-no-such-model"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-dspy-openinference-anthropic-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 2.338382686,
+  "error": 0,
+  "input": 1584,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "-",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 151,
+  "reasoning": 37,
+  "success": 2
+ },
+ "fp-dspy-openinference-openai-agent": {
+  "cache_read": 1792,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 4.388678532,
+  "error": 0,
+  "input": 2034,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "-",
+    "deepseek-v4-flash"
+   ]
+  ],
+  "output": 206,
+  "reasoning": 71,
+  "success": 2
+ },
+ "fp-dspy-openinference-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.21838097,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "-",
+    "no-such-model"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-dspy-openinference-openai-stream": {
+  "cache_read": 1536,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 4.903242975,
+  "error": 0,
+  "input": 2034,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "-",
+    "deepseek-v4-flash"
+   ]
+  ],
+  "output": 176,
+  "reasoning": 39,
+  "success": 2
+ },
+ "fp-dspy-stacked-anthropic-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 2.515775756,
+  "error": 0,
+  "input": 1584,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "-",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 146,
+  "reasoning": 32,
+  "success": 2
+ },
+ "fp-dspy-stacked-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.305165139,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "-",
+    "claude-no-such-model"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-dspy-stacked-anthropic-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 2.384617057,
+  "error": 0,
+  "input": 1584,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "-",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 159,
+  "reasoning": 45,
+  "success": 2
+ },
+ "fp-dspy-stacked-openai-agent": {
+  "cache_read": 1536,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 5.107814825,
+  "error": 0,
+  "input": 2035,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "-",
+    "deepseek-v4-flash"
+   ]
+  ],
+  "output": 237,
+  "reasoning": 99,
+  "success": 2
+ },
+ "fp-dspy-stacked-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.220751114,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "-",
+    "no-such-model"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-dspy-stacked-openai-stream": {
+  "cache_read": 1536,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 5.32721163,
+  "error": 0,
+  "input": 2048,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "-",
+    "deepseek-v4-flash"
+   ]
+  ],
+  "output": 225,
+  "reasoning": 72,
+  "success": 2
+ },
+ "fp-google-adk-native-anthropic-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 4.223102162,
+  "error": 0,
+  "input": 955,
+  "labels": [
+   [
+    "anthropic",
+    "generate_content",
+    "anthropic/claude-haiku-5-5",
+    "-"
+   ]
+  ],
+  "output": 69,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-google-adk-native-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 2.690126652,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "generate_content",
+    "anthropic/claude-no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-google-adk-native-anthropic-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 3.874873688,
+  "error": 0,
+  "input": 955,
+  "labels": [
+   [
+    "anthropic",
+    "generate_content",
+    "anthropic/claude-haiku-5-5",
+    "-"
+   ]
+  ],
+  "output": 67,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-google-adk-native-openai-agent": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 5.68194436,
+  "error": 0,
+  "input": 926,
+  "labels": [
+   [
+    "openai",
+    "generate_content",
+    "openai/deepseek-v4-flash",
+    "-"
+   ]
+  ],
+  "output": 93,
+  "reasoning": 15,
+  "success": 2
+ },
+ "fp-google-adk-native-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 2.340487288,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "generate_content",
+    "openai/no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-google-adk-native-openai-stream": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 6.336649697,
+  "error": 0,
+  "input": 927,
+  "labels": [
+   [
+    "openai",
+    "generate_content",
+    "openai/deepseek-v4-flash",
+    "-"
+   ]
+  ],
+  "output": 95,
+  "reasoning": 16,
+  "success": 2
+ },
+ "fp-google-adk-openinference-anthropic-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 3.911637927,
+  "error": 0,
+  "input": 955,
+  "labels": [
+   [
+    "google",
+    "chat",
+    "-",
+    "anthropic/claude-haiku-5-5"
+   ]
+  ],
+  "output": 67,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-google-adk-openinference-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 2.623801716,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "generate_content",
+    "anthropic/claude-no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-google-adk-openinference-anthropic-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 3.851639106,
+  "error": 0,
+  "input": 955,
+  "labels": [
+   [
+    "google",
+    "chat",
+    "-",
+    "anthropic/claude-haiku-5-5"
+   ]
+  ],
+  "output": 67,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-google-adk-openinference-openai-agent": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 5.801646567,
+  "error": 0,
+  "input": 930,
+  "labels": [
+   [
+    "google",
+    "chat",
+    "-",
+    "openai/deepseek-v4-flash"
+   ]
+  ],
+  "output": 91,
+  "reasoning": 29,
+  "success": 2
+ },
+ "fp-google-adk-openinference-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 2.399650414,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "generate_content",
+    "openai/no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-google-adk-openinference-openai-stream": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 6.683023575,
+  "error": 0,
+  "input": 928,
+  "labels": [
+   [
+    "google",
+    "chat",
+    "-",
+    "openai/deepseek-v4-flash"
+   ]
+  ],
+  "output": 95,
+  "reasoning": 29,
+  "success": 2
+ },
+ "fp-google-adk-stacked-anthropic-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 3.880026229,
+  "error": 0,
+  "input": 955,
+  "labels": [
+   [
+    "anthropic",
+    "generate_content",
+    "anthropic/claude-haiku-5-5",
+    "-"
+   ]
+  ],
+  "output": 67,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-google-adk-stacked-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 2.690077523,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "generate_content",
+    "anthropic/claude-no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-google-adk-stacked-anthropic-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 4.073672526,
+  "error": 0,
+  "input": 955,
+  "labels": [
+   [
+    "anthropic",
+    "generate_content",
+    "anthropic/claude-haiku-5-5",
+    "-"
+   ]
+  ],
+  "output": 67,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-google-adk-stacked-openai-agent": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 5.568143612,
+  "error": 0,
+  "input": 933,
+  "labels": [
+   [
+    "openai",
+    "generate_content",
+    "openai/deepseek-v4-flash",
+    "-"
+   ]
+  ],
+  "output": 107,
+  "reasoning": 22,
+  "success": 2
+ },
+ "fp-google-adk-stacked-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 2.095429182,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "generate_content",
+    "openai/no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-google-adk-stacked-openai-stream": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 6.323611069,
+  "error": 0,
+  "input": 928,
+  "labels": [
+   [
+    "openai",
+    "generate_content",
+    "openai/deepseek-v4-flash",
+    "-"
+   ]
+  ],
+  "output": 100,
+  "reasoning": 17,
+  "success": 2
+ },
+ "fp-langchain-langsmith-anthropic-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 4,
+  "duration_sum": 3.923919864,
+  "error": 0,
+  "input": 1804,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "-"
+   ],
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 138,
+  "reasoning": 0,
+  "success": 4
+ },
+ "fp-langchain-langsmith-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 0.665205458,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 1
+ },
+ "fp-langchain-langsmith-anthropic-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 4,
+  "duration_sum": 3.195886861,
+  "error": 0,
+  "input": 1804,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "-"
+   ],
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 138,
+  "reasoning": 0,
+  "success": 4
+ },
+ "fp-langchain-langsmith-openai-agent": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 4.63088512,
+  "error": 0,
+  "input": 852,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "-"
+   ]
+  ],
+  "output": 88,
+  "reasoning": 26,
+  "success": 2
+ },
+ "fp-langchain-langsmith-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.200584192,
+  "error": 0,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 1
+ },
+ "fp-langchain-langsmith-openai-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 3.957342976,
+  "error": 0,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-langchain-openinference-anthropic-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 4,
+  "duration_sum": 3.474907947,
+  "error": 0,
+  "input": 1804,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 138,
+  "reasoning": 0,
+  "success": 4
+ },
+ "fp-langchain-openinference-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.315610018,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-langchain-openinference-anthropic-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 4,
+  "duration_sum": 3.590480143,
+  "error": 0,
+  "input": 1804,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 138,
+  "reasoning": 0,
+  "success": 4
+ },
+ "fp-langchain-openinference-openai-agent": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 5.059090688,
+  "error": 0,
+  "input": 852,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 100,
+  "reasoning": 38,
+  "success": 2
+ },
+ "fp-langchain-openinference-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.194540032,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "no-such-model",
+    "no-such-model"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-langchain-openinference-openai-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 3.247566848,
+  "error": 0,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-langchain-openllmetry-anthropic-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 1.639764617,
+  "error": 0,
+  "input": 902,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 69,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-langchain-openllmetry-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.312116467,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-langchain-openllmetry-anthropic-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 4,
+  "duration_sum": 3.31198516,
+  "error": 0,
+  "input": 1804,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 138,
+  "reasoning": 0,
+  "success": 4
+ },
+ "fp-langchain-openllmetry-openai-agent": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 3.51638566,
+  "error": 0,
+  "input": 852,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 87,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-langchain-openllmetry-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.415532573,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "no-such-model",
+    "no-such-model"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-langchain-openllmetry-openai-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 4.076638893,
+  "error": 0,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-langchain-stacked-anthropic-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 4,
+  "duration_sum": 3.069057745,
+  "error": 0,
+  "input": 1804,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 134,
+  "reasoning": 0,
+  "success": 4
+ },
+ "fp-langchain-stacked-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.309342913,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-langchain-stacked-anthropic-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 4,
+  "duration_sum": 3.107214746,
+  "error": 0,
+  "input": 1804,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 138,
+  "reasoning": 0,
+  "success": 4
+ },
+ "fp-langchain-stacked-openai-agent": {
+  "cache_read": 1024,
+  "cache_write": 0,
+  "duration_count": 4,
+  "duration_sum": 7.919956193,
+  "error": 0,
+  "input": 1704,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 158,
+  "reasoning": 32,
+  "success": 4
+ },
+ "fp-langchain-stacked-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 0.725069478,
+  "error": 2,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "no-such-model",
+    "-"
+   ],
+   [
+    "openai",
+    "chat",
+    "no-such-model",
+    "no-such-model"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-langchain-stacked-openai-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 4,
+  "duration_sum": 9.299501986,
+  "error": 0,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "alibaba-tp/deepseek-v4-flash-0731"
+   ],
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 4
+ },
+ "fp-llama-index-openinference-anthropic-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 1.570300973,
+  "error": 0,
+  "input": 942,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 69,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-llama-index-openinference-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.310474568,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-llama-index-openinference-anthropic-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 1.552312317,
+  "error": 0,
+  "input": 942,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 69,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-llama-index-openinference-openai-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 0.028024269,
+  "error": 0,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "-",
+    "deepseek-v4-flash"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-llama-index-openinference-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.027042941,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "-",
+    "no-such-model"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-llama-index-openinference-openai-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 0.029407175,
+  "error": 0,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "-",
+    "deepseek-v4-flash"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-llama-index-openllmetry-anthropic-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 1.787036878,
+  "error": 0,
+  "input": 942,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 69,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-llama-index-openllmetry-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.327497554,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-llama-index-openllmetry-anthropic-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 1.54717653,
+  "error": 0,
+  "input": 942,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 69,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-llama-index-openllmetry-openai-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 4.178165034,
+  "error": 0,
+  "input": 0,
+  "labels": [
+   [
+    "openailike",
+    "chat",
+    "-",
+    "alibaba-tp/deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-llama-index-openllmetry-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "input": 0,
+  "labels": [],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-llama-index-openllmetry-openai-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 4.645611658,
+  "error": 0,
+  "input": 0,
+  "labels": [
+   [
+    "openailike",
+    "chat",
+    "-",
+    "alibaba-tp/deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-llama-index-stacked-anthropic-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 1.549893435,
+  "error": 0,
+  "input": 942,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 69,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-llama-index-stacked-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.319214154,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-llama-index-stacked-anthropic-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 1.587279957,
+  "error": 0,
+  "input": 942,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 69,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-llama-index-stacked-openai-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 4.617621969,
+  "error": 0,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "alibaba-tp/deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-llama-index-stacked-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.190033525,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-llama-index-stacked-openai-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 4.48209903,
+  "error": 0,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "alibaba-tp/deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-openai-agents-logfire-anthropic-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 1.988629148,
+  "error": 0,
+  "input": 934,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "anthropic/claude-haiku-5-5",
+    "anthropic/claude-haiku-5-5"
+   ]
+  ],
+  "output": 69,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-openai-agents-logfire-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.642177001,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "anthropic/claude-no-such-model",
+    "anthropic/claude-no-such-model"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-openai-agents-logfire-anthropic-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 1.987523654,
+  "error": 0,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "anthropic/claude-haiku-5-5",
+    "anthropic/claude-haiku-5-5"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-openai-agents-logfire-openai-agent": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 4.542508995,
+  "error": 0,
+  "input": 909,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash"
+   ]
+  ],
+  "output": 104,
+  "reasoning": 42,
+  "success": 2
+ },
+ "fp-openai-agents-logfire-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.234047644,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "no-such-model",
+    "no-such-model"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-openai-agents-logfire-openai-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 4.501205055,
+  "error": 0,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-openai-agents-openinference-anthropic-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 1.902468864,
+  "error": 0,
+  "input": 934,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "-",
+    "anthropic/claude-haiku-5-5"
+   ]
+  ],
+  "output": 69,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-openai-agents-openinference-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.524891904,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "-",
+    "anthropic/claude-no-such-model"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-openai-agents-openinference-anthropic-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 1.833665792,
+  "error": 0,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "-",
+    "anthropic/claude-haiku-5-5"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-openai-agents-openinference-openai-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 3.618793984,
+  "error": 0,
+  "input": 907,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "-",
+    "deepseek-v4-flash"
+   ]
+  ],
+  "output": 102,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-openai-agents-openinference-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.288537088,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "-",
+    "no-such-model"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-openai-agents-openinference-openai-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 4.684035072,
+  "error": 0,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "-",
+    "deepseek-v4-flash"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-openai-agents-openllmetry-anthropic-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 1.948151489,
+  "error": 0,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "anthropic/claude-haiku-5-5",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-openai-agents-openllmetry-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.519325641,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "anthropic/claude-no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-openai-agents-openllmetry-anthropic-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 1.800384802,
+  "error": 0,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "anthropic/claude-haiku-5-5",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-openai-agents-openllmetry-openai-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 3.948394525,
+  "error": 0,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-openai-agents-openllmetry-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.254723981,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-openai-agents-openllmetry-openai-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 4.090420667,
+  "error": 0,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-openai-agents-stacked-anthropic-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 1.88505088,
+  "error": 0,
+  "input": 934,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "-",
+    "anthropic/claude-haiku-5-5"
+   ]
+  ],
+  "output": 69,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-openai-agents-stacked-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.518470912,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "-",
+    "anthropic/claude-no-such-model"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-openai-agents-stacked-anthropic-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 1.829068544,
+  "error": 0,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "-",
+    "anthropic/claude-haiku-5-5"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-openai-agents-stacked-openai-agent": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 3.559984866,
+  "error": 0,
+  "input": 897,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 78,
+  "reasoning": 15,
+  "success": 2
+ },
+ "fp-openai-agents-stacked-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.225280638,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-openai-agents-stacked-openai-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 4.90619857,
+  "error": 0,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "alibaba-tp/deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-pydantic-ai-native-anthropic-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 1.546002871,
+  "error": 0,
+  "input": 922,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 67,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-pydantic-ai-native-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.415875461,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-pydantic-ai-native-anthropic-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 1.590649316,
+  "error": 0,
+  "input": 922,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 69,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-pydantic-ai-native-openai-agent": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 3.738039276,
+  "error": 0,
+  "input": 882,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 108,
+  "reasoning": 45,
+  "success": 2
+ },
+ "fp-pydantic-ai-native-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.21564457,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-pydantic-ai-native-openai-stream": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 4.550984612,
+  "error": 0,
+  "input": 882,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "alibaba-tp/deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 92,
+  "reasoning": 30,
+  "success": 2
+ },
+ "fp-pydantic-ai-openinference-anthropic-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 1.569615777,
+  "error": 0,
+  "input": 922,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "-",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 69,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-pydantic-ai-openinference-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.339056158,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "-",
+    "claude-no-such-model"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-pydantic-ai-openinference-anthropic-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 1.527394645,
+  "error": 0,
+  "input": 922,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "-",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 69,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-pydantic-ai-openinference-openai-agent": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 4.275013919,
+  "error": 0,
+  "input": 869,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "-",
+    "deepseek-v4-flash"
+   ]
+  ],
+  "output": 80,
+  "reasoning": 17,
+  "success": 2
+ },
+ "fp-pydantic-ai-openinference-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.199810526,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "-",
+    "no-such-model"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-pydantic-ai-openinference-openai-stream": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 4.421138341,
+  "error": 0,
+  "input": 887,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "-",
+    "deepseek-v4-flash"
+   ]
+  ],
+  "output": 97,
+  "reasoning": 35,
+  "success": 2
+ },
+ "fp-pydantic-ai-stacked-anthropic-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 4,
+  "duration_sum": 1.928949882,
+  "error": 2,
+  "input": 922,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "-"
+   ],
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 69,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-pydantic-ai-stacked-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.325819567,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-pydantic-ai-stacked-anthropic-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 1.575005658,
+  "error": 0,
+  "input": 922,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 69,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-pydantic-ai-stacked-openai-agent": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 3.892284456,
+  "error": 0,
+  "input": 886,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 112,
+  "reasoning": 49,
+  "success": 2
+ },
+ "fp-pydantic-ai-stacked-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.171890634,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-pydantic-ai-stacked-openai-stream": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 4.146803799,
+  "error": 0,
+  "input": 879,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "alibaba-tp/deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 90,
+  "reasoning": 27,
+  "success": 2
+ },
+ "fp-strands-native-anthropic-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 1.525073609,
+  "error": 0,
+  "input": 922,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 69,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-strands-native-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.318938898,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-strands-native-anthropic-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 1.597459438,
+  "error": 0,
+  "input": 922,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 69,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-strands-native-openai-agent": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 4.308345429,
+  "error": 0,
+  "input": 866,
+  "labels": [
+   [
+    "strands-agents",
+    "chat",
+    "deepseek-v4-flash",
+    "-"
+   ]
+  ],
+  "output": 91,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-strands-native-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.302161882,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "strands-agents",
+    "chat",
+    "no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-strands-native-openai-stream": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 4.429176919,
+  "error": 0,
+  "input": 866,
+  "labels": [
+   [
+    "strands-agents",
+    "chat",
+    "deepseek-v4-flash",
+    "-"
+   ]
+  ],
+  "output": 97,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-strands-stacked-anthropic-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 1.53667481,
+  "error": 0,
+  "input": 922,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 69,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-strands-stacked-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.31858503,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-strands-stacked-anthropic-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 1.585939883,
+  "error": 0,
+  "input": 922,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 69,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-strands-stacked-openai-agent": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 4.389984558,
+  "error": 0,
+  "input": 866,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "alibaba-tp/deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 74,
+  "reasoning": 11,
+  "success": 2
+ },
+ "fp-strands-stacked-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.192418613,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-strands-stacked-openai-stream": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 5.04674796,
+  "error": 0,
+  "input": 866,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "alibaba-tp/deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 100,
+  "reasoning": 37,
+  "success": 2
+ },
  "litellm-chat": {
   "cache_read": 0,
   "cache_write": 0,
