@@ -1,7 +1,8 @@
 //! Charts the OTel plugin derives itself, outside OTLP metrics ingestion:
-//! per-service request rate, errors and duration from spans, per-service log
-//! records by severity, and the plugin's own ingest outcomes and derivation
-//! health (self-monitoring).
+//! per-service request rate, errors and duration from spans, GenAI model calls,
+//! tokens and call duration from spans, per-service log records by severity,
+//! and the plugin's own ingest outcomes and derivation health
+//! (self-monitoring).
 //!
 //! Each of these is a metric set that owns its aggregator behind its own
 //! lock, so recording from export requests never waits on another set, nor on
@@ -12,6 +13,7 @@
 //! once per second; the chunks it returns travel to the supervisor as chart
 //! data.
 
+mod genai_calls;
 mod self_monitoring;
 mod service;
 mod service_log_records;
@@ -19,6 +21,7 @@ mod service_requests;
 mod settings;
 mod shared_aggregator;
 
+use genai_calls::GenAiCalls;
 use netdata_plugin_metrics::Batch;
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
@@ -41,6 +44,8 @@ pub const MAX_CHUNK_BYTES: usize = 1 << 20;
 pub struct SpansBatch {
     service_requests: Arc<ServiceRequests>,
     batch: Batch,
+    genai: Arc<GenAiCalls>,
+    genai_pending: genai_calls::Pending,
 }
 
 impl SpansBatch {
@@ -49,11 +54,14 @@ impl SpansBatch {
     pub fn record(&mut self, tenant: &str, export: &ExportTraceServiceRequest) {
         self.service_requests
             .record(&mut self.batch, tenant, export);
+        self.genai.record(&mut self.genai_pending, tenant, export);
     }
 
     /// Count the batch: its spans are durable.
     pub fn commit(self) {
-        self.service_requests.commit(self.batch, unix_now());
+        let now = unix_now();
+        self.service_requests.commit(self.batch, now);
+        self.genai.commit(self.genai_pending, now);
     }
 }
 
@@ -84,6 +92,7 @@ impl LogsBatch {
 struct PerServiceMetrics {
     // Shared with the batches of the export requests in flight.
     requests: Arc<ServiceRequests>,
+    genai: Arc<GenAiCalls>,
     log_records: Arc<ServiceLogRecords>,
     health: DerivationHealth,
 }
@@ -104,6 +113,7 @@ impl DerivedMetrics {
         let per_service = if settings.enabled {
             Some(PerServiceMetrics {
                 requests: Arc::new(ServiceRequests::new(settings.max_services)?),
+                genai: Arc::new(GenAiCalls::new(genai_calls::MAX_SERIES)?),
                 log_records: Arc::new(ServiceLogRecords::new(settings.max_services)?),
                 health: DerivationHealth::new()?,
             })
@@ -119,10 +129,12 @@ impl DerivedMetrics {
     /// A batch for the spans of one export request; `None` when derived
     /// metrics are disabled.
     pub fn spans_batch(&self) -> Option<SpansBatch> {
-        let service_requests = &self.per_service.as_ref()?.requests;
+        let per_service = self.per_service.as_ref()?;
         Some(SpansBatch {
-            service_requests: Arc::clone(service_requests),
-            batch: service_requests.batch(),
+            service_requests: Arc::clone(&per_service.requests),
+            batch: per_service.requests.batch(),
+            genai: Arc::clone(&per_service.genai),
+            genai_pending: Vec::new(),
         })
     }
 
@@ -172,6 +184,7 @@ impl DerivedMetrics {
         if let Some(per_service) = &self.per_service {
             let requests_stats = per_service.requests.emit(now, &mut chunks);
             let log_records_stats = per_service.log_records.emit(now, &mut chunks);
+            per_service.genai.emit(now, &mut chunks);
             let signal_stats = [
                 (Signal::Traces, requests_stats),
                 (Signal::Logs, log_records_stats),

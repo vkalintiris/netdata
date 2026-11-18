@@ -3494,6 +3494,8 @@ dependencies = [
  "netdata-plugin-protocol",
  "opentelemetry-proto",
  "otel-bridge",
+ "otel-genai",
+ "tracing",
 ]
 
 [[package]]
