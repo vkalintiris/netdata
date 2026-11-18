@@ -147,7 +147,7 @@ fn outcome(span: &Span) -> Outcome {
 /// The number of spans a sampled span stands for: `2^56 / (2^56 -
 /// threshold)` for the rejection threshold in its tracestate, 1 when it
 /// carries no valid one.
-fn adjusted_count(trace_state: &str) -> f64 {
+pub(crate) fn adjusted_count(trace_state: &str) -> f64 {
     const THRESHOLD_RANGE: u64 = 1 << 56;
     let Some(threshold) = rejection_threshold(trace_state) else {
         return 1.0;
