@@ -157,6 +157,11 @@ impl GenAiCalls {
                         trace_id: span.trace_id.clone(),
                         span_id: span.span_id.clone(),
                         parent_span_id: span.parent_span_id.clone(),
+                        scope: scope_spans
+                            .scope
+                            .as_ref()
+                            .map(|scope| scope.name.clone())
+                            .unwrap_or_default(),
                         group: service.clone(),
                         data: adjusted_count(&span.trace_state),
                     });

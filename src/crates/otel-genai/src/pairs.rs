@@ -6,17 +6,23 @@
 //!   child in a short-lived cache. A parent exported before its child counts twice.
 //! - Same answer: two call spans in different traces that carry the same response id (`gen_ai.response.id`) for the
 //!   same service. The one that ended first counts.
+//! - Same failure: the Anthropic SDK's own span does not join a wrapper library's trace (seen with OpenLLMetry), and a
+//!   failed call has no response id. A failure without one from the SDK's scope and one from another scope, of the
+//!   same service and requested model, one lying within the other in time, count once: the later to arrive is dropped.
 //!
 //! Only direct parents are checked: in every captured pair the inner span is a child of the outer one.
 
 use crate::Call;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::mem;
 use std::sync::Mutex;
 
 /// How long, at least, a counted call is remembered for pairing with later requests; at most twice this.
 const MEMORY_SECONDS: u64 = 60;
+
+/// Scopes whose spans keep their own trace beside a wrapper library's span of the same call.
+const OWN_TRACE_SCOPE_PREFIX: &str = "com.anthropic.sdk.";
 
 /// A call span of one export request, with what pair detection needs to know about it.
 #[derive(Debug, Clone, PartialEq)]
@@ -26,6 +32,8 @@ pub struct Candidate<G, T> {
     pub span_id: Vec<u8>,
     /// Empty for a root span.
     pub parent_span_id: Vec<u8>,
+    /// The instrumentation scope's name.
+    pub scope: String,
     /// What a response id is unique within, for example the tenant and service.
     pub group: G,
     /// Anything the caller carries along with the call.
@@ -47,6 +55,15 @@ struct Memory<G> {
     /// `(trace id, parent span id)` of every call span seen: their parents must not count.
     parents: HashSet<(Vec<u8>, Vec<u8>)>,
     response_ids: HashSet<(G, String)>,
+    /// Counted failures without a response id, by service and requested model.
+    failures: HashMap<(G, Option<String>), Vec<Failure>>,
+}
+
+/// A counted failure's time span, and whether it came from a scope that keeps its own trace.
+struct Failure {
+    start: u64,
+    end: u64,
+    own_trace: bool,
 }
 
 impl<G> Default for Memory<G> {
@@ -54,6 +71,7 @@ impl<G> Default for Memory<G> {
         Self {
             parents: HashSet::new(),
             response_ids: HashSet::new(),
+            failures: HashMap::new(),
         }
     }
 }
@@ -109,7 +127,7 @@ impl<G: Hash + Eq + Clone> Pairs<G> {
         let mut order: Vec<usize> = (0..candidates.len()).collect();
         order.sort_by_key(|&index| candidates[index].call.end_time_unix_nano);
         let mut seen = HashSet::new();
-        for index in order {
+        for &index in &order {
             let candidate = &candidates[index];
             let Some(response_id) = &candidate.call.response_id else {
                 continue;
@@ -123,6 +141,29 @@ impl<G: Hash + Eq + Clone> Pairs<G> {
                 keep[index] = false;
             }
             state.current.response_ids.insert(key);
+        }
+
+        for &index in &order {
+            let candidate = &candidates[index];
+            let call = &candidate.call;
+            if !keep[index] || !call.error || call.response_id.is_some() {
+                continue;
+            }
+            let Some(duration) = call.duration_seconds else {
+                continue;
+            };
+            let end = call.end_time_unix_nano;
+            let failure = Failure {
+                start: end.saturating_sub((duration * 1e9) as u64),
+                end,
+                own_trace: candidate.scope.starts_with(OWN_TRACE_SCOPE_PREFIX),
+            };
+            let key = (candidate.group.clone(), call.request_model.clone());
+            if state.take_failure(&key, &failure) {
+                keep[index] = false;
+            } else {
+                state.current.failures.entry(key).or_default().push(failure);
+            }
         }
 
         for candidate in &candidates {
@@ -151,6 +192,24 @@ impl<G: Hash + Eq> State<G> {
 
     fn remembers_response(&self, key: &(G, String)) -> bool {
         self.current.response_ids.contains(key) || self.previous.response_ids.contains(key)
+    }
+
+    /// Forgets and reports a remembered failure that `failure` is the other half of.
+    fn take_failure(&mut self, key: &(G, Option<String>), failure: &Failure) -> bool {
+        let within = |a: &Failure, b: &Failure| a.start >= b.start && a.end <= b.end;
+        for memory in [&mut self.current, &mut self.previous] {
+            let Some(failures) = memory.failures.get_mut(key) else {
+                continue;
+            };
+            if let Some(position) = failures.iter().position(|other| {
+                other.own_trace != failure.own_trace
+                    && (within(other, failure) || within(failure, other))
+            }) {
+                failures.swap_remove(position);
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -185,6 +244,7 @@ mod tests {
             } else {
                 vec![parent]
             },
+            scope: String::new(),
             group: "service",
             data: span,
         }
@@ -248,6 +308,70 @@ mod tests {
         assert_eq!(
             kept(&pairs.retain(220, vec![candidate(5, 0, 7, Some("msg_1"), 30)])),
             vec![5]
+        );
+    }
+
+    fn failure(
+        span: u8,
+        trace: u8,
+        scope: &str,
+        start: u64,
+        end: u64,
+    ) -> Candidate<&'static str, u8> {
+        let mut candidate = candidate(span, 0, trace, None, end);
+        candidate.call.error = true;
+        candidate.call.duration_seconds = Some((end - start) as f64 / 1e9);
+        candidate.scope = scope.to_string();
+        candidate
+    }
+
+    #[test]
+    fn a_failure_seen_by_the_sdk_and_a_wrapper_counts_once() {
+        let sdk = "com.anthropic.sdk.python";
+        // The SDK's span lies within the wrapper's, in another trace; either may arrive first.
+        let pairs = Pairs::new();
+        assert_eq!(
+            kept(&pairs.retain(100, vec![failure(1, 9, sdk, 1_100, 1_900)])),
+            vec![1]
+        );
+        assert!(
+            pairs
+                .retain(100, vec![failure(2, 8, "wrapper", 1_000, 2_000)])
+                .is_empty()
+        );
+        let pairs = Pairs::new();
+        assert_eq!(
+            kept(&pairs.retain(
+                100,
+                vec![
+                    failure(2, 8, "wrapper", 1_000, 2_000),
+                    failure(1, 9, sdk, 1_100, 1_900)
+                ]
+            )),
+            vec![1]
+        );
+        // Two wrapper failures, or ones that do not nest in time, stay apart.
+        let pairs = Pairs::new();
+        assert_eq!(
+            kept(&pairs.retain(
+                100,
+                vec![
+                    failure(1, 9, "wrapper", 1_100, 1_900),
+                    failure(2, 8, "wrapper", 1_000, 2_000)
+                ]
+            )),
+            vec![1, 2]
+        );
+        let pairs = Pairs::new();
+        assert_eq!(
+            kept(&pairs.retain(
+                100,
+                vec![
+                    failure(1, 9, sdk, 1_100, 2_100),
+                    failure(2, 8, "wrapper", 1_000, 2_000)
+                ]
+            )),
+            vec![1, 2]
         );
     }
 }
