@@ -1,7 +1,9 @@
-# Langfuse SDK spans (`observeOpenAI` and the other wrappers): a generation's tokens sit in one JSON object,
-# `langfuse.observation.usage_details`, whose keys are disjoint parts (`total` is their sum): `input` leaves out
-# `input_cached_tokens` and `output` leaves out `output_reasoning_tokens`, so the parts are added back. Langfuse reports
-# one model name, the answering model when known, and no provider; a failure has level ERROR.
+# Langfuse SDK spans: a generation's tokens sit in one JSON object, `langfuse.observation.usage_details`, in one of two
+# shapes. The JavaScript SDK sends Langfuse's own keys, which are disjoint parts (`total` is their sum): `input` leaves
+# out `input_cached_tokens` and `output` leaves out `output_reasoning_tokens`, so the parts are added back. The Python
+# SDK passes on the OpenAI usage block as it came (`prompt_tokens`, `completion_tokens` and their `_details`), whose
+# totals already include cache and reasoning. Langfuse reports one model name, the answering model when known, and no
+# provider; a failure has level ERROR.
 a = .attributes
 kind = a."langfuse.observation.type"
 operation = if kind == "generation" {
@@ -17,12 +19,22 @@ if .scope.name == "langfuse-sdk" && operation != null {
     usage = parse_json(string!(a."langfuse.observation.usage_details")) ?? null
   }
   if !is_object(usage) { usage = {} }
-  cache_read = usage.input_cached_tokens
-  reasoning = usage.output_reasoning_tokens
-  input = usage.input
-  if is_integer(input) && is_integer(cache_read) { input = to_int!(input) + to_int!(cache_read) }
-  output = usage.output
-  if is_integer(output) && is_integer(reasoning) { output = to_int!(output) + to_int!(reasoning) }
+  input = usage.prompt_tokens
+  output = null
+  cache_read = null
+  reasoning = null
+  if exists(usage.prompt_tokens) {
+    output = usage.completion_tokens
+    cache_read = usage.prompt_tokens_details.cached_tokens
+    reasoning = usage.completion_tokens_details.reasoning_tokens
+  } else {
+    cache_read = usage.input_cached_tokens
+    reasoning = usage.output_reasoning_tokens
+    input = usage.input
+    if is_integer(input) && is_integer(cache_read) { input = to_int!(input) + to_int!(cache_read) }
+    output = usage.output
+    if is_integer(output) && is_integer(reasoning) { output = to_int!(output) + to_int!(reasoning) }
+  }
   {
     "operation": operation,
     "response_model": a."langfuse.observation.model.name",
