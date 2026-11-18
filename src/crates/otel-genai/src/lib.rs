@@ -91,6 +91,15 @@ const RULES: &[RuleSource] = &[
         gate: Gate::attribute_in("openinference.span.kind", &["LLM", "EMBEDDING"]),
     },
     RuleSource {
+        name: "mlflow",
+        source: include_str!("../rules/mlflow.vrl"),
+        signal: Signal::Span,
+        gate: Gate::scope_in(&["mlflow.tracing.provider"]).and_attribute_in(
+            "mlflow.spanType",
+            &["\"CHAT_MODEL\"", "\"LLM\"", "\"EMBEDDING\""],
+        ),
+    },
+    RuleSource {
         name: "logfire",
         source: include_str!("../rules/logfire.vrl"),
         signal: Signal::Span,
