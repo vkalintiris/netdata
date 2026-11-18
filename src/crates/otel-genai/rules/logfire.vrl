@@ -1,8 +1,21 @@
 # Logfire: the conventions' names, plus the provider's own usage block in `gen_ai.usage.raw`, the only place it reports
 # reasoning (OpenAI `completion_tokens_details.reasoning_tokens`, Anthropic `output_tokens_details.thinking_tokens`).
+# A streamed call arrives as two spans: the request span, with no answer, and a zero-length "streaming response" log
+# span with the answer, the usage and the call's length in `duration`. The log span is the call; the request span of a
+# stream is recognised by having neither an answer id nor an error, which a finished unstreamed call always has; the
+# rule returns false for it, so the conventions rule does not count it either.
 a = .attributes
 operation = a."gen_ai.operation.name"
-if includes(["logfire.openai", "logfire.anthropic"], .scope.name) && includes(["chat", "text_completion", "generate_content", "embeddings"], operation) {
+error = .status_code == 2 || exists(a."error.type")
+summary = a."logfire.span_type" == "log"
+stream_request = !summary && a."gen_ai.response.id" == null && !error
+if !includes(["logfire.openai", "logfire.anthropic"], .scope.name) || !includes(["chat", "text_completion", "generate_content", "embeddings"], operation) {
+  null
+} else if stream_request {
+  false
+} else {
+  seconds = null
+  if summary { seconds = a.duration }
   reasoning = null
   if is_string(a."gen_ai.usage.raw") {
     raw = parse_json(string!(a."gen_ai.usage.raw")) ?? null
@@ -20,9 +33,8 @@ if includes(["logfire.openai", "logfire.anthropic"], .scope.name) && includes(["
     "cache_read_tokens": a."gen_ai.usage.cache_read.input_tokens",
     "cache_write_tokens": a."gen_ai.usage.cache_write.input_tokens" || a."gen_ai.usage.cache_creation.input_tokens",
     "reasoning_tokens": reasoning,
-    "error": .status_code == 2 || exists(a."error.type"),
+    "error": error,
+    "duration_seconds": seconds,
     "response_id": a."gen_ai.response.id"
   }
-} else {
-  null
 }

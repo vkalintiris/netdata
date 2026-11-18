@@ -724,8 +724,8 @@
  "lr-logfire-anthropic-stream": {
   "cache_read": 0,
   "cache_write": 0,
-  "duration_count": 2,
-  "duration_sum": 0.666816571,
+  "duration_count": 1,
+  "duration_sum": 1.23471976,
   "error": 0,
   "input": 19,
   "labels": [
@@ -738,7 +738,7 @@
   ],
   "output": 208,
   "reasoning": 87,
-  "success": 2
+  "success": 1
  },
  "lr-logfire-anthropic-tool": {
   "cache_read": 0,
@@ -838,8 +838,8 @@
  "lr-logfire-openai-stream": {
   "cache_read": 0,
   "cache_write": 0,
-  "duration_count": 2,
-  "duration_sum": 2.071654862,
+  "duration_count": 1,
+  "duration_sum": 0.890208319,
   "error": 0,
   "input": 99,
   "labels": [
@@ -848,17 +848,11 @@
     "chat",
     "deepseek-v4-flash",
     "alibaba-tp/deepseek-v4-flash-0731"
-   ],
-   [
-    "openai",
-    "chat",
-    "deepseek-v4-flash",
-    "deepseek-v4-flash"
    ]
   ],
   "output": 83,
   "reasoning": 48,
-  "success": 2
+  "success": 1
  },
  "lr-logfire-openai-tool": {
   "cache_read": 512,
