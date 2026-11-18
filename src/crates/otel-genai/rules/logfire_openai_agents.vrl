@@ -1,0 +1,30 @@
+# Logfire's OpenAI Agents SDK instrumentation: a Chat Completions model call (the SDK's `generation` span) has no
+# `gen_ai.operation.name`; it is the span with `model_config` (Responses API calls carry the operation and fall through
+# to the conventions). Token counts arrive as strings; cache and reasoning sit only in the `usage` JSON, whose input
+# count includes cache reads. A failed call has `usage` null and status ERROR.
+a = .attributes
+if .scope.name == "logfire.openai_agents" && !exists(a."gen_ai.operation.name") && exists(a.model_config) {
+  usage = null
+  if is_string(a.usage) {
+    usage = parse_json(string!(a.usage)) ?? null
+  }
+  if !is_object(usage) { usage = {} }
+  input = a."gen_ai.usage.input_tokens"
+  if is_string(input) { input = parse_int(string!(input)) ?? null }
+  output = a."gen_ai.usage.output_tokens"
+  if is_string(output) { output = parse_int(string!(output)) ?? null }
+  {
+    "operation": "chat",
+    "provider": a."gen_ai.system",
+    "request_model": a."gen_ai.request.model",
+    "response_model": a."gen_ai.response.model",
+    "input_tokens": input,
+    "output_tokens": output,
+    "cache_read_tokens": usage.input_tokens_details.cached_tokens,
+    "cache_write_tokens": usage.input_tokens_details.cache_write_tokens,
+    "reasoning_tokens": usage.output_tokens_details.reasoning_tokens,
+    "error": .status_code == 2
+  }
+} else {
+  null
+}
