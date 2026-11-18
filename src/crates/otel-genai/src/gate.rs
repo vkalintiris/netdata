@@ -6,16 +6,16 @@ use opentelemetry_proto::tonic::common::v1::{InstrumentationScope, KeyValue};
 /// Admits a record when every condition it has holds.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Gate {
-    /// The instrumentation scope's name.
-    scope: Option<&'static str>,
+    /// The instrumentation scope's name is one of these.
+    scope: Option<&'static [&'static str]>,
     /// A string attribute whose value is one of a set.
     attribute: Option<(&'static str, &'static [&'static str])>,
 }
 
 impl Gate {
-    pub(crate) const fn scope(name: &'static str) -> Self {
+    pub(crate) const fn scope_in(names: &'static [&'static str]) -> Self {
         Self {
-            scope: Some(name),
+            scope: Some(names),
             attribute: None,
         }
     }
@@ -43,8 +43,8 @@ impl Gate {
         scope: Option<&InstrumentationScope>,
         attributes: &[KeyValue],
     ) -> bool {
-        if let Some(name) = self.scope
-            && scope_name(scope) != name
+        if let Some(names) = self.scope
+            && !names.contains(&scope_name(scope))
         {
             return false;
         }
