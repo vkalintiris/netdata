@@ -118,6 +118,18 @@ const RULES: &[RuleSource] = &[
             .and_attribute_in("gen_ai.operation.name", CALL_OPERATIONS),
     },
     RuleSource {
+        name: "laminar",
+        source: include_str!("../rules/laminar.vrl"),
+        signal: Signal::Span,
+        gate: Gate::scope_in(&["lmnr.tracer"]).and_attribute_in("lmnr.span.type", &["LLM"]),
+    },
+    RuleSource {
+        name: "datadog",
+        source: include_str!("../rules/datadog.vrl"),
+        signal: Signal::Span,
+        gate: Gate::attribute_in("gen_ai.operation.name", &["llm", "embedding"]),
+    },
+    RuleSource {
         name: "conventions",
         source: include_str!("../rules/conventions.vrl"),
         signal: Signal::Span,
