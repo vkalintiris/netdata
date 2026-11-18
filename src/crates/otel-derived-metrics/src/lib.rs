@@ -1,6 +1,7 @@
 //! Charts the OTel plugin derives itself, outside OTLP metrics ingestion:
 //! per-service request rate, errors and duration from spans, GenAI model calls,
-//! tokens and call duration from spans, per-service log records by severity,
+//! tokens and call duration from spans and log records, per-service log
+//! records by severity,
 //! and the plugin's own ingest outcomes and derivation health
 //! (self-monitoring).
 //!
@@ -71,6 +72,8 @@ impl SpansBatch {
 pub struct LogsBatch {
     service_log_records: Arc<ServiceLogRecords>,
     batch: Batch,
+    genai: Arc<GenAiCalls>,
+    genai_pending: genai_calls::PendingLogs,
 }
 
 impl LogsBatch {
@@ -79,11 +82,15 @@ impl LogsBatch {
     pub fn record(&mut self, tenant: &str, export: &ExportLogsServiceRequest) {
         self.service_log_records
             .record(&mut self.batch, tenant, export);
+        self.genai
+            .record_logs(&mut self.genai_pending, tenant, export);
     }
 
     /// Count the batch: its log records are durable.
     pub fn commit(self) {
-        self.service_log_records.commit(self.batch, unix_now());
+        let now = unix_now();
+        self.service_log_records.commit(self.batch, now);
+        self.genai.commit_logs(self.genai_pending, now);
     }
 }
 
@@ -141,10 +148,12 @@ impl DerivedMetrics {
     /// A batch for the log records of one export request; `None` when
     /// derived metrics are disabled.
     pub fn logs_batch(&self) -> Option<LogsBatch> {
-        let service_log_records = &self.per_service.as_ref()?.log_records;
+        let per_service = self.per_service.as_ref()?;
         Some(LogsBatch {
-            service_log_records: Arc::clone(service_log_records),
-            batch: service_log_records.batch(),
+            service_log_records: Arc::clone(&per_service.log_records),
+            batch: per_service.log_records.batch(),
+            genai: Arc::clone(&per_service.genai),
+            genai_pending: Vec::new(),
         })
     }
 
