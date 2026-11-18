@@ -1819,9 +1819,9 @@
  "lr-openllmetry-anthropic-error": {
   "cache_read": 0,
   "cache_write": 0,
-  "duration_count": 2,
-  "duration_sum": 0.632862066,
-  "error": 2,
+  "duration_count": 1,
+  "duration_sum": 0.313689596,
+  "error": 1,
   "input": 0,
   "labels": [
    [
@@ -2788,9 +2788,9 @@
  "openllmetry-anthropic-error": {
   "cache_read": 0,
   "cache_write": 0,
-  "duration_count": 2,
-  "duration_sum": 0.028217412,
-  "error": 2,
+  "duration_count": 1,
+  "duration_sum": 0.012078138,
+  "error": 1,
   "input": 0,
   "labels": [
    [
