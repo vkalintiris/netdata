@@ -17,6 +17,7 @@ members = [
     "file-lifecycle",
     "otel-bridge",
     "otel-derived-metrics",
+    "otel-genai",
     "otel-ingestor",
     "otel-job-scheduler",
     "otel-ledger",
@@ -82,6 +83,7 @@ ferryboat = { path = "ferryboat" }
 file-lifecycle = { path = "file-lifecycle" }
 otel-bridge = { path = "otel-bridge" }
 otel-derived-metrics = { path = "otel-derived-metrics" }
+otel-genai = { path = "otel-genai" }
 otel-ingestor = { path = "otel-ingestor" }
 otel-job-scheduler = { path = "otel-job-scheduler" }
 otel-ledger = { path = "otel-ledger" }
@@ -210,6 +212,8 @@ criterion = { version = "0.5" }
 flate2 = "1"
 moka = { version = "0.12", features = ["future"] }
 opentelemetry-proto = "0.33"
+# The local VRL checkout, until its source (release, git or fork) is decided.
+vrl = { path = "../../../../crates/vrl", default-features = false, features = ["compiler", "stdlib-base"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 serde_bytes = "0.11"
 serde_regex = "1.1.0"

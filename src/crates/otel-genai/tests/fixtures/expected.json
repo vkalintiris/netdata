@@ -1,0 +1,863 @@
+{
+ "agentgateway-chat": {
+  "cache_read": 80,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.003534216,
+  "error": 0,
+  "input": 120,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini"
+   ]
+  ],
+  "output": 30,
+  "reasoning": 5,
+  "success": 1
+ },
+ "agentgateway-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.003347322,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "agentgateway-stream": {
+  "cache_read": 80,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.235031293,
+  "error": 0,
+  "input": 120,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini"
+   ]
+  ],
+  "output": 30,
+  "reasoning": 5,
+  "success": 1
+ },
+ "agentgateway-tool": {
+  "cache_read": 80,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.004510087,
+  "error": 0,
+  "input": 120,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini"
+   ]
+  ],
+  "output": 30,
+  "reasoning": 5,
+  "success": 1
+ },
+ "anthropic-native-chat": {
+  "cache_read": 29,
+  "cache_write": 7,
+  "duration_count": 1,
+  "duration_sum": 0.015632494,
+  "error": 0,
+  "input": 49,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-5"
+   ]
+  ],
+  "output": 17,
+  "reasoning": 0,
+  "success": 1
+ },
+ "anthropic-native-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.015185614,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-error",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "anthropic-native-stream": {
+  "cache_read": 29,
+  "cache_write": 7,
+  "duration_count": 1,
+  "duration_sum": 0.164762521,
+  "error": 0,
+  "input": 49,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-5"
+   ]
+  ],
+  "output": 17,
+  "reasoning": 0,
+  "success": 1
+ },
+ "anthropic-native-tool": {
+  "cache_read": 58,
+  "cache_write": 14,
+  "duration_count": 2,
+  "duration_sum": 0.054214038,
+  "error": 0,
+  "input": 98,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-5"
+   ]
+  ],
+  "output": 34,
+  "reasoning": 0,
+  "success": 2
+ },
+ "bifrost-chat": {
+  "cache_read": 80,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.033718001,
+  "error": 0,
+  "input": 120,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini"
+   ]
+  ],
+  "output": 30,
+  "reasoning": 5,
+  "success": 1
+ },
+ "bifrost-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.016856759,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "bifrost-stream": {
+  "cache_read": 80,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.242770903,
+  "error": 0,
+  "input": 120,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini"
+   ]
+  ],
+  "output": 30,
+  "reasoning": 5,
+  "success": 1
+ },
+ "bifrost-tool": {
+  "cache_read": 80,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.041062947,
+  "error": 0,
+  "input": 120,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini"
+   ]
+  ],
+  "output": 30,
+  "reasoning": 5,
+  "success": 1
+ },
+ "envoy-aigw-genai-chat": {
+  "cache_read": 80,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.02585632,
+  "error": 0,
+  "input": 120,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini"
+   ]
+  ],
+  "output": 30,
+  "reasoning": 5,
+  "success": 1
+ },
+ "envoy-aigw-genai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.00429139,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "envoy-aigw-genai-stream": {
+  "cache_read": 80,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.236206563,
+  "error": 0,
+  "input": 120,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini"
+   ]
+  ],
+  "output": 30,
+  "reasoning": 5,
+  "success": 1
+ },
+ "envoy-aigw-genai-tool": {
+  "cache_read": 80,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.025190847,
+  "error": 0,
+  "input": 120,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini"
+   ]
+  ],
+  "output": 30,
+  "reasoning": 5,
+  "success": 1
+ },
+ "openlit-openai-chat": {
+  "cache_read": 31,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.013643521,
+  "error": 0,
+  "input": 53,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini-2024-07-18"
+   ]
+  ],
+  "output": 19,
+  "reasoning": 0,
+  "success": 1
+ },
+ "openlit-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.011013035,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-error",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "openlit-openai-stream": {
+  "cache_read": 31,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.149713142,
+  "error": 0,
+  "input": 53,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini-2024-07-18"
+   ]
+  ],
+  "output": 19,
+  "reasoning": 0,
+  "success": 1
+ },
+ "openlit-openai-tool": {
+  "cache_read": 62,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 0.058410506,
+  "error": 0,
+  "input": 106,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini-2024-07-18"
+   ]
+  ],
+  "output": 38,
+  "reasoning": 0,
+  "success": 2
+ },
+ "openllmetry-anthropic-chat": {
+  "cache_read": 29,
+  "cache_write": 7,
+  "duration_count": 1,
+  "duration_sum": 0.010679868,
+  "error": 0,
+  "input": 49,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-5"
+   ]
+  ],
+  "output": 17,
+  "reasoning": 0,
+  "success": 1
+ },
+ "openllmetry-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 0.028217412,
+  "error": 2,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-error",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "openllmetry-anthropic-events-chat": {
+  "cache_read": 58,
+  "cache_write": 14,
+  "duration_count": 2,
+  "duration_sum": 0.026724221,
+  "error": 0,
+  "input": 98,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "-",
+    "-"
+   ],
+   [
+    "anthropic",
+    "chat",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-5"
+   ]
+  ],
+  "output": 34,
+  "reasoning": 0,
+  "success": 2
+ },
+ "openllmetry-anthropic-stream": {
+  "cache_read": 29,
+  "cache_write": 7,
+  "duration_count": 1,
+  "duration_sum": 0.163056019,
+  "error": 0,
+  "input": 49,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-5"
+   ]
+  ],
+  "output": 17,
+  "reasoning": 0,
+  "success": 1
+ },
+ "openllmetry-anthropic-tool": {
+  "cache_read": 58,
+  "cache_write": 14,
+  "duration_count": 2,
+  "duration_sum": 0.053277617,
+  "error": 0,
+  "input": 98,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-5"
+   ]
+  ],
+  "output": 34,
+  "reasoning": 0,
+  "success": 2
+ },
+ "openllmetry-openai-chat": {
+  "cache_read": 31,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.007930299,
+  "error": 0,
+  "input": 53,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini-2024-07-18"
+   ]
+  ],
+  "output": 19,
+  "reasoning": 5,
+  "success": 1
+ },
+ "openllmetry-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.006664122,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-error",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "openllmetry-openai-stream": {
+  "cache_read": 31,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.147200541,
+  "error": 0,
+  "input": 53,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini-2024-07-18"
+   ]
+  ],
+  "output": 19,
+  "reasoning": 0,
+  "success": 1
+ },
+ "openllmetry-openai-tool": {
+  "cache_read": 62,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 0.052856958,
+  "error": 0,
+  "input": 106,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini-2024-07-18"
+   ]
+  ],
+  "output": 38,
+  "reasoning": 10,
+  "success": 2
+ },
+ "otel-genai-anthropic-chat-r3": {
+  "cache_read": 29,
+  "cache_write": 7,
+  "duration_count": 1,
+  "duration_sum": 0.010660438,
+  "error": 0,
+  "input": 49,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-5"
+   ]
+  ],
+  "output": 17,
+  "reasoning": 0,
+  "success": 1
+ },
+ "otel-genai-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.002070824,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-error",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "otel-genai-anthropic-stream": {
+  "cache_read": 29,
+  "cache_write": 7,
+  "duration_count": 1,
+  "duration_sum": 0.163007878,
+  "error": 0,
+  "input": 49,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-5"
+   ]
+  ],
+  "output": 17,
+  "reasoning": 0,
+  "success": 1
+ },
+ "otel-genai-anthropic-tool": {
+  "cache_read": 58,
+  "cache_write": 14,
+  "duration_count": 2,
+  "duration_sum": 0.051307609,
+  "error": 0,
+  "input": 98,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-5"
+   ]
+  ],
+  "output": 34,
+  "reasoning": 0,
+  "success": 2
+ },
+ "otel-genai-openai-chat": {
+  "cache_read": 31,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.011983297,
+  "error": 0,
+  "input": 53,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini-2024-07-18"
+   ]
+  ],
+  "output": 19,
+  "reasoning": 5,
+  "success": 1
+ },
+ "otel-genai-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.005996219,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-error",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "otel-genai-openai-stream": {
+  "cache_read": 31,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.146657004,
+  "error": 0,
+  "input": 53,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini-2024-07-18"
+   ]
+  ],
+  "output": 19,
+  "reasoning": 5,
+  "success": 1
+ },
+ "otel-genai-openai-tool": {
+  "cache_read": 62,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 0.053422575,
+  "error": 0,
+  "input": 106,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini-2024-07-18"
+   ]
+  ],
+  "output": 38,
+  "reasoning": 10,
+  "success": 2
+ },
+ "pydantic-ai-anthropic-chat": {
+  "cache_read": 29,
+  "cache_write": 7,
+  "duration_count": 1,
+  "duration_sum": 0.165982317,
+  "error": 0,
+  "input": 49,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-5"
+   ]
+  ],
+  "output": 17,
+  "reasoning": 0,
+  "success": 1
+ },
+ "pydantic-ai-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.012583438,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-error",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "pydantic-ai-anthropic-stream": {
+  "cache_read": 29,
+  "cache_write": 7,
+  "duration_count": 1,
+  "duration_sum": 0.164571128,
+  "error": 0,
+  "input": 49,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-5"
+   ]
+  ],
+  "output": 17,
+  "reasoning": 0,
+  "success": 1
+ },
+ "pydantic-ai-anthropic-tool": {
+  "cache_read": 58,
+  "cache_write": 14,
+  "duration_count": 2,
+  "duration_sum": 0.307581385,
+  "error": 0,
+  "input": 98,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-5"
+   ]
+  ],
+  "output": 34,
+  "reasoning": 0,
+  "success": 2
+ },
+ "pydantic-ai-openai-chat": {
+  "cache_read": 31,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.026026765,
+  "error": 0,
+  "input": 53,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini-2024-07-18"
+   ]
+  ],
+  "output": 19,
+  "reasoning": 5,
+  "success": 1
+ },
+ "pydantic-ai-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.024953832,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-error",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "pydantic-ai-openai-stream": {
+  "cache_read": 31,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.174106071,
+  "error": 0,
+  "input": 53,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini-2024-07-18"
+   ]
+  ],
+  "output": 19,
+  "reasoning": 5,
+  "success": 1
+ },
+ "pydantic-ai-openai-tool": {
+  "cache_read": 62,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 0.072482015,
+  "error": 0,
+  "input": 106,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini-2024-07-18"
+   ]
+  ],
+  "output": 38,
+  "reasoning": 10,
+  "success": 2
+ }
+}

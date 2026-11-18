@@ -1,0 +1,17 @@
+[package]
+name = "otel-genai"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+opentelemetry-proto = { workspace = true }
+thiserror = { workspace = true }
+vrl = { workspace = true }
+
+[dev-dependencies]
+opentelemetry-proto = { workspace = true, features = ["with-serde"] }
+serde_json = { workspace = true }
