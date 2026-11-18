@@ -1,8 +1,9 @@
-# OpenLIT's Anthropic path reports Anthropic's raw input, which leaves out the cache, so the cache counts are added to
-# it. Its error span has no attributes at all: operation and provider fall back to constants so the failure counts.
+# Producers that pass on Anthropic's raw input count, which leaves out cache reads and writes: OpenLIT's Anthropic path
+# and OpenLLMetry's JavaScript Anthropic instrumentation. The cache counts are added to it. OpenLIT's error span has no
+# attributes at all: operation and provider fall back to constants so the failure counts.
 a = .attributes
 operation = a."gen_ai.operation.name" || "chat"
-if .scope.name == "openlit.instrumentation.anthropic" && includes(["chat", "text_completion", "generate_content", "embeddings"], operation) {
+if includes(["openlit.instrumentation.anthropic", "@traceloop/instrumentation-anthropic"], .scope.name) && includes(["chat", "text_completion", "generate_content", "embeddings"], operation) {
   cache_read = a."gen_ai.usage.cache_read.input_tokens"
   cache_write = a."gen_ai.usage.cache_write.input_tokens" || a."gen_ai.usage.cache_creation.input_tokens"
   input = a."gen_ai.usage.input_tokens"

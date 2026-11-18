@@ -79,11 +79,14 @@ const RULES: &[RuleSource] = &[
         ),
     },
     RuleSource {
-        name: "openlit_anthropic",
-        source: include_str!("../rules/openlit_anthropic.vrl"),
+        name: "anthropic_raw_input",
+        source: include_str!("../rules/anthropic_raw_input.vrl"),
         signal: Signal::Span,
-        // Its error span has no attributes: the scope is all there is to go by.
-        gate: Gate::scope_in(&["openlit.instrumentation.anthropic"]),
+        // OpenLIT's error span has no attributes: the scope is all there is to go by.
+        gate: Gate::scope_in(&[
+            "openlit.instrumentation.anthropic",
+            "@traceloop/instrumentation-anthropic",
+        ]),
     },
     RuleSource {
         name: "openinference",
