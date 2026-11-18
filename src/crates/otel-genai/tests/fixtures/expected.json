@@ -882,59 +882,94 @@
  "lr-mlflow-anthropic-async": {
   "cache_read": 0,
   "cache_write": 0,
-  "duration_count": 0,
-  "duration_sum": 0.0,
+  "duration_count": 1,
+  "duration_sum": 2.033901285,
   "error": 0,
-  "input": 0,
-  "labels": [],
-  "output": 0,
+  "input": 19,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "-",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 214,
   "reasoning": 0,
-  "success": 0
+  "success": 1
  },
  "lr-mlflow-anthropic-cache": {
-  "cache_read": 0,
-  "cache_write": 0,
-  "duration_count": 0,
-  "duration_sum": 0.0,
+  "cache_read": 3861,
+  "cache_write": 3861,
+  "duration_count": 2,
+  "duration_sum": 2.390868172,
   "error": 0,
-  "input": 0,
-  "labels": [],
-  "output": 0,
+  "input": 7752,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "-",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 193,
   "reasoning": 0,
-  "success": 0
+  "success": 2
  },
  "lr-mlflow-anthropic-cache1h": {
-  "cache_read": 0,
-  "cache_write": 0,
-  "duration_count": 0,
-  "duration_sum": 0.0,
+  "cache_read": 3863,
+  "cache_write": 3863,
+  "duration_count": 2,
+  "duration_sum": 1.963447784,
   "error": 0,
-  "input": 0,
-  "labels": [],
-  "output": 0,
+  "input": 7756,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "-",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 89,
   "reasoning": 0,
-  "success": 0
+  "success": 2
  },
  "lr-mlflow-anthropic-chat": {
   "cache_read": 0,
   "cache_write": 0,
-  "duration_count": 0,
-  "duration_sum": 0.0,
+  "duration_count": 1,
+  "duration_sum": 1.050115979,
   "error": 0,
-  "input": 0,
-  "labels": [],
-  "output": 0,
+  "input": 29,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "-",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 67,
   "reasoning": 0,
-  "success": 0
+  "success": 1
  },
  "lr-mlflow-anthropic-error": {
   "cache_read": 0,
   "cache_write": 0,
-  "duration_count": 0,
-  "duration_sum": 0.0,
-  "error": 0,
+  "duration_count": 1,
+  "duration_sum": 0.335357118,
+  "error": 1,
   "input": 0,
-  "labels": [],
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "-",
+    "claude-haiku-5-5"
+   ]
+  ],
   "output": 0,
   "reasoning": 0,
   "success": 0
@@ -954,59 +989,94 @@
  "lr-mlflow-anthropic-tool": {
   "cache_read": 0,
   "cache_write": 0,
-  "duration_count": 0,
-  "duration_sum": 0.0,
+  "duration_count": 2,
+  "duration_sum": 1.744215476,
   "error": 0,
-  "input": 0,
-  "labels": [],
-  "output": 0,
+  "input": 813,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "-",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 77,
   "reasoning": 0,
-  "success": 0
+  "success": 2
  },
  "lr-mlflow-openai-async": {
   "cache_read": 0,
   "cache_write": 0,
-  "duration_count": 0,
-  "duration_sum": 0.0,
+  "duration_count": 1,
+  "duration_sum": 1.761912831,
   "error": 0,
-  "input": 0,
-  "labels": [],
-  "output": 0,
+  "input": 99,
+  "labels": [
+   [
+    "-",
+    "chat",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 33,
   "reasoning": 0,
-  "success": 0
+  "success": 1
  },
  "lr-mlflow-openai-cache": {
-  "cache_read": 0,
+  "cache_read": 2304,
   "cache_write": 0,
-  "duration_count": 0,
-  "duration_sum": 0.0,
+  "duration_count": 2,
+  "duration_sum": 4.846846932,
   "error": 0,
-  "input": 0,
-  "labels": [],
-  "output": 0,
+  "input": 4682,
+  "labels": [
+   [
+    "-",
+    "chat",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 203,
   "reasoning": 0,
-  "success": 0
+  "success": 2
  },
  "lr-mlflow-openai-chat": {
   "cache_read": 0,
   "cache_write": 0,
-  "duration_count": 0,
-  "duration_sum": 0.0,
+  "duration_count": 1,
+  "duration_sum": 1.942723483,
   "error": 0,
-  "input": 0,
-  "labels": [],
-  "output": 0,
+  "input": 99,
+  "labels": [
+   [
+    "-",
+    "chat",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 32,
   "reasoning": 0,
-  "success": 0
+  "success": 1
  },
  "lr-mlflow-openai-error": {
   "cache_read": 0,
   "cache_write": 0,
-  "duration_count": 0,
-  "duration_sum": 0.0,
-  "error": 0,
+  "duration_count": 1,
+  "duration_sum": 0.185426648,
+  "error": 1,
   "input": 0,
-  "labels": [],
+  "labels": [
+   [
+    "-",
+    "chat",
+    "no-such-model",
+    "-"
+   ]
+  ],
   "output": 0,
   "reasoning": 0,
   "success": 0
@@ -1014,26 +1084,40 @@
  "lr-mlflow-openai-stream": {
   "cache_read": 0,
   "cache_write": 0,
-  "duration_count": 0,
-  "duration_sum": 0.0,
+  "duration_count": 1,
+  "duration_sum": 3.234230332,
   "error": 0,
-  "input": 0,
-  "labels": [],
-  "output": 0,
+  "input": 99,
+  "labels": [
+   [
+    "-",
+    "chat",
+    "deepseek-v4-flash",
+    "alibaba-tp/deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 50,
   "reasoning": 0,
-  "success": 0
+  "success": 1
  },
  "lr-mlflow-openai-tool": {
-  "cache_read": 0,
+  "cache_read": 512,
   "cache_write": 0,
-  "duration_count": 0,
-  "duration_sum": 0.0,
+  "duration_count": 2,
+  "duration_sum": 4.214093894,
   "error": 0,
-  "input": 0,
-  "labels": [],
-  "output": 0,
+  "input": 831,
+  "labels": [
+   [
+    "-",
+    "chat",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 92,
   "reasoning": 0,
-  "success": 0
+  "success": 2
  },
  "lr-native-anthropic-async": {
   "cache_read": 0,
