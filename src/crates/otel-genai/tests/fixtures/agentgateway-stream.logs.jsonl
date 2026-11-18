@@ -1,0 +1,1 @@
+{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"agentgateway"}},{"key":"corpus.run","value":{"stringValue":"agentgateway-stream"}}]},"scopeLogs":[{"scope":{"name":"agentgateway.access"},"logRecords":[{"observedTimeUnixNano":"1794987782003450645","severityNumber":9,"attributes":[]}]}]}]}

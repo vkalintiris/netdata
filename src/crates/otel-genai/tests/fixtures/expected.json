@@ -227,6 +227,139 @@
   "reasoning": 5,
   "success": 1
  },
+ "claude-plain": {
+  "cache_read": 13177,
+  "cache_write": 46800,
+  "duration_count": 1,
+  "duration_sum": 2.364,
+  "error": 0,
+  "input": 59979,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-sonnet-5-5",
+    "-"
+   ]
+  ],
+  "output": 3,
+  "reasoning": 0,
+  "success": 1
+ },
+ "claude-subagent": {
+  "cache_read": 89625,
+  "cache_write": 60221,
+  "duration_count": 4,
+  "duration_sum": 7.902,
+  "error": 0,
+  "input": 149854,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-sonnet-5-5",
+    "-"
+   ]
+  ],
+  "output": 439,
+  "reasoning": 0,
+  "success": 4
+ },
+ "claude-tool": {
+  "cache_read": 73125,
+  "cache_write": 46868,
+  "duration_count": 2,
+  "duration_sum": 5.01,
+  "error": 0,
+  "input": 119997,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-sonnet-5-5",
+    "-"
+   ]
+  ],
+  "output": 142,
+  "reasoning": 0,
+  "success": 2
+ },
+ "codex-plain": {
+  "cache_read": 12288,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "input": 43234,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-6.1-sol",
+    "-"
+   ]
+  ],
+  "output": 5,
+  "reasoning": 0,
+  "success": 2
+ },
+ "codex-tool": {
+  "cache_read": 43008,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "input": 74129,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-6.1-sol",
+    "-"
+   ]
+  ],
+  "output": 51,
+  "reasoning": 0,
+  "success": 3
+ },
+ "envoy-aigw-chat": {
+  "cache_read": 80,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.033035423,
+  "error": 0,
+  "input": 120,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini"
+   ]
+  ],
+  "output": 30,
+  "reasoning": 5,
+  "success": 1
+ },
+ "envoy-aigw-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.008683144,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
  "envoy-aigw-genai-chat": {
   "cache_read": 80,
   "cache_write": 0,
@@ -302,6 +435,424 @@
   "output": 30,
   "reasoning": 5,
   "success": 1
+ },
+ "envoy-aigw-stream": {
+  "cache_read": 80,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.242928993,
+  "error": 0,
+  "input": 120,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini"
+   ]
+  ],
+  "output": 30,
+  "reasoning": 5,
+  "success": 1
+ },
+ "envoy-aigw-tool": {
+  "cache_read": 80,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.032954981,
+  "error": 0,
+  "input": 120,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini"
+   ]
+  ],
+  "output": 30,
+  "reasoning": 5,
+  "success": 1
+ },
+ "litellm-chat": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.041560832,
+  "error": 0,
+  "input": 120,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini"
+   ]
+  ],
+  "output": 30,
+  "reasoning": 0,
+  "success": 1
+ },
+ "litellm-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.039238144,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "litellm-semconv-chat": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.039394816,
+  "error": 0,
+  "input": 120,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini"
+   ]
+  ],
+  "output": 30,
+  "reasoning": 0,
+  "success": 1
+ },
+ "litellm-semconv-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.033950976,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "litellm-semconv-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.509807872,
+  "error": 0,
+  "input": 120,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini"
+   ]
+  ],
+  "output": 30,
+  "reasoning": 0,
+  "success": 1
+ },
+ "litellm-semconv-tool": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.043753984,
+  "error": 0,
+  "input": 120,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini"
+   ]
+  ],
+  "output": 30,
+  "reasoning": 0,
+  "success": 1
+ },
+ "litellm-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.499908096,
+  "error": 0,
+  "input": 120,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini"
+   ]
+  ],
+  "output": 30,
+  "reasoning": 0,
+  "success": 1
+ },
+ "litellm-tool": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.044984064,
+  "error": 0,
+  "input": 120,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini"
+   ]
+  ],
+  "output": 30,
+  "reasoning": 0,
+  "success": 1
+ },
+ "openinference-anthropic-chat": {
+  "cache_read": 29,
+  "cache_write": 7,
+  "duration_count": 1,
+  "duration_sum": 0.009996883,
+  "error": 0,
+  "input": 49,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-5"
+   ]
+  ],
+  "output": 17,
+  "reasoning": 0,
+  "success": 1
+ },
+ "openinference-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.015989951,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-error",
+    "claude-error"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "openinference-anthropic-stream": {
+  "cache_read": 29,
+  "cache_write": 7,
+  "duration_count": 1,
+  "duration_sum": 0.164593771,
+  "error": 0,
+  "input": 49,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-5"
+   ]
+  ],
+  "output": 17,
+  "reasoning": 0,
+  "success": 1
+ },
+ "openinference-anthropic-tool": {
+  "cache_read": 58,
+  "cache_write": 14,
+  "duration_count": 2,
+  "duration_sum": 0.052724505,
+  "error": 0,
+  "input": 98,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-5"
+   ]
+  ],
+  "output": 34,
+  "reasoning": 0,
+  "success": 2
+ },
+ "openinference-openai-chat": {
+  "cache_read": 31,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.007363917,
+  "error": 0,
+  "input": 53,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini-2024-07-18"
+   ]
+  ],
+  "output": 19,
+  "reasoning": 5,
+  "success": 1
+ },
+ "openinference-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.005953007,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-error",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "openinference-openai-stream": {
+  "cache_read": 31,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.147933275,
+  "error": 0,
+  "input": 53,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini-2024-07-18"
+   ]
+  ],
+  "output": 19,
+  "reasoning": 5,
+  "success": 1
+ },
+ "openinference-openai-tool": {
+  "cache_read": 62,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 0.049862333,
+  "error": 0,
+  "input": 106,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-4o-mini",
+    "gpt-4o-mini-2024-07-18"
+   ]
+  ],
+  "output": 38,
+  "reasoning": 10,
+  "success": 2
+ },
+ "openlit-anthropic-chat": {
+  "cache_read": 29,
+  "cache_write": 7,
+  "duration_count": 1,
+  "duration_sum": 0.015789087,
+  "error": 0,
+  "input": 49,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-5"
+   ]
+  ],
+  "output": 17,
+  "reasoning": 0,
+  "success": 1
+ },
+ "openlit-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.008870589,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "-",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "openlit-anthropic-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.168405131,
+  "error": 0,
+  "input": 13,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-5"
+   ]
+  ],
+  "output": 17,
+  "reasoning": 0,
+  "success": 1
+ },
+ "openlit-anthropic-tool": {
+  "cache_read": 58,
+  "cache_write": 14,
+  "duration_count": 2,
+  "duration_sum": 0.067905068,
+  "error": 0,
+  "input": 98,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-5"
+   ]
+  ],
+  "output": 34,
+  "reasoning": 0,
+  "success": 2
  },
  "openlit-openai-chat": {
   "cache_read": 31,

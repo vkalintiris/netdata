@@ -1,0 +1,27 @@
+# The OpenInference family (its libraries and Envoy AI Gateway's default mode), recognized by its span kind whatever
+# the scope. Its OpenAI instrumentation and Envoy keep the requested model only inside the JSON string
+# `llm.invocation_parameters`; their `llm.model_name` is the answering model.
+a = .attributes
+kind = a."openinference.span.kind"
+operation = if kind == "LLM" { "chat" } else if kind == "EMBEDDING" { "embeddings" } else { null }
+if operation != null {
+  request_model = a."llm.request.model_name"
+  if request_model == null && is_string(a."llm.invocation_parameters") {
+    parameters = parse_json(string!(a."llm.invocation_parameters")) ?? null
+    if is_object(parameters) && is_string(parameters.model) { request_model = parameters.model }
+  }
+  {
+    "operation": operation,
+    "provider": a."llm.provider" || a."llm.system",
+    "request_model": request_model,
+    "response_model": a."llm.response.model_name" || a."llm.model_name",
+    "input_tokens": a."llm.token_count.prompt",
+    "output_tokens": a."llm.token_count.completion",
+    "cache_read_tokens": a."llm.token_count.prompt_details.cache_read",
+    "cache_write_tokens": a."llm.token_count.prompt_details.cache_write" || a."llm.token_count.prompt_details.cache_creation",
+    "reasoning_tokens": a."llm.token_count.completion_details.reasoning",
+    "error": .status_code == 2 || exists(a."error.type")
+  }
+} else {
+  null
+}
