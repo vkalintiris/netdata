@@ -1,0 +1,21 @@
+# Spans that follow the OpenTelemetry GenAI conventions, whoever sends them; also the fallback for unknown
+# producers. Old names (`gen_ai.system`, `prompt_tokens`, `cache_creation`) are still emitted by producers.
+a = .attributes
+operation = a."gen_ai.operation.name"
+if includes(["chat", "text_completion", "generate_content", "embeddings"], operation) {
+  {
+    "operation": operation,
+    "provider": a."gen_ai.provider.name" || a."gen_ai.system",
+    "request_model": a."gen_ai.request.model",
+    "response_model": a."gen_ai.response.model",
+    "input_tokens": a."gen_ai.usage.input_tokens" || a."gen_ai.usage.prompt_tokens",
+    "output_tokens": a."gen_ai.usage.output_tokens" || a."gen_ai.usage.completion_tokens",
+    "cache_read_tokens": a."gen_ai.usage.cache_read.input_tokens",
+    "cache_write_tokens": a."gen_ai.usage.cache_write.input_tokens" || a."gen_ai.usage.cache_creation.input_tokens",
+    "reasoning_tokens": a."gen_ai.usage.reasoning.output_tokens" || a."gen_ai.usage.reasoning_tokens" || a."gen_ai.usage.details.reasoning_tokens",
+    "error": .status_code == 2 || exists(a."error.type"),
+    "response_id": a."gen_ai.response.id"
+  }
+} else {
+  null
+}
