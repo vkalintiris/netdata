@@ -3,7 +3,8 @@
 //!
 //! The rules are VRL programs under `rules/`, compiled into the binary and compiled by VRL once, in
 //! [`Normalizer::new`]. Each rule reads either spans or log records. Rules are tried in order and the first one that
-//! returns an object wins; a rule returns `null` for a record it does not describe. A rule only maps the producer's
+//! returns an object wins; a rule returns `null` for a record it does not describe, and `false` for one of its
+//! producer's records that is not a call, so no later rule counts it. A rule only maps the producer's
 //! vocabulary: the host supplies the call's end time, and a span's duration, from the record itself. A log rule
 //! supplies the duration, when the record has one.
 //!
@@ -339,10 +340,14 @@ impl Normalizer {
                         rule: rule.name,
                         message: terminate.to_string(),
                     })?;
-            let Value::Object(fields) = output else {
-                continue;
-            };
-            return call(rule.name, &fields, end_time_unix_nano, duration_seconds).map(Some);
+            match output {
+                Value::Object(fields) => {
+                    return call(rule.name, &fields, end_time_unix_nano, duration_seconds)
+                        .map(Some);
+                }
+                Value::Boolean(false) => return Ok(None),
+                _ => continue,
+            }
         }
         Ok(None)
     }
