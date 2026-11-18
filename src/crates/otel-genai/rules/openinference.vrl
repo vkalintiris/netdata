@@ -1,9 +1,15 @@
 # The OpenInference family (its libraries and Envoy AI Gateway's default mode), recognized by its span kind whatever
 # the scope. Its OpenAI instrumentation and Envoy keep the requested model only inside the JSON string
-# `llm.invocation_parameters`; their `llm.model_name` is the answering model.
+# `llm.invocation_parameters`; their `llm.model_name` is the answering model. LlamaIndex's instrumentation also marks
+# client-side request preparation (`_prepare_chat_with_tools`) as an LLM span: one that neither failed nor carries an
+# answer or a token count is not a model call.
 a = .attributes
 kind = a."openinference.span.kind"
 operation = if kind == "LLM" { "chat" } else if kind == "EMBEDDING" { "embeddings" } else { null }
+if operation == "chat" && .status_code != 2 && !exists(a."error.type") && !exists(a."llm.token_count.prompt") &&
+    !exists(a."llm.token_count.completion") && !exists(a."llm.output_messages.0.message.role") {
+  operation = null
+}
 if operation != null {
   request_model = a."llm.request.model_name"
   if request_model == null && is_string(a."llm.invocation_parameters") {
