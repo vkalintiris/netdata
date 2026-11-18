@@ -1,0 +1,29 @@
+# Claude Code counts from its `api_request` / `api_error` log events: its spans are off by default. Its input count
+# leaves out the cache, so the cache counts are added to it.
+a = .attributes
+event = a."event.name"
+if .scope.name == "com.anthropic.claude_code.events" && includes(["api_request", "api_error"], event) {
+  input = a.input_tokens
+  if is_integer(input) {
+    input = to_int!(input)
+    if a.cache_read_tokens != null { input = input + to_int!(a.cache_read_tokens) }
+    if a.cache_creation_tokens != null { input = input + to_int!(a.cache_creation_tokens) }
+  }
+  seconds = a.duration_ms
+  if seconds != null { seconds = to_float!(seconds) / 1000.0 }
+  {
+    "operation": "chat",
+    # `anthropic.provider` was only seen as `firstParty`; Bedrock, Vertex and Foundry values are unknown.
+    "provider": "anthropic",
+    # The event's only model field: what Claude Code asked for.
+    "request_model": a.model,
+    "input_tokens": input,
+    "output_tokens": a.output_tokens,
+    "cache_read_tokens": a.cache_read_tokens,
+    "cache_write_tokens": a.cache_creation_tokens,
+    "error": event == "api_error",
+    "duration_seconds": seconds
+  }
+} else {
+  null
+}

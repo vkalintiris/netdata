@@ -1,10 +1,14 @@
-//! GenAI normalization: turns a span that describes one model call into a [`Call`], whatever dialect its producer
-//! speaks.
+//! GenAI normalization: turns a span or log record that describes one model call into a [`Call`], whatever dialect
+//! its producer speaks.
 //!
 //! The rules are VRL programs under `rules/`, compiled into the binary and compiled by VRL once, in
-//! [`Normalizer::new`]. Rules are tried in order and the first one that returns an object wins; a rule returns `null`
-//! for a record it does not describe. A rule only maps the producer's vocabulary: the host supplies the call's end
-//! time and duration from the span itself.
+//! [`Normalizer::new`]. Each rule reads either spans or log records. Rules are tried in order and the first one that
+//! returns an object wins; a rule returns `null` for a record it does not describe. A rule only maps the producer's
+//! vocabulary: the host supplies the call's end time, and a span's duration, from the record itself. A log rule
+//! supplies the duration, when the record has one.
+//!
+//! A producer whose rule counts from its log records may also emit spans for the same calls; its span scopes are
+//! claimed, so no span rule ever counts them, even if a later version of the producer makes them look like calls.
 //!
 //! Token counts follow the OpenTelemetry GenAI conventions: input includes cache reads and writes, output includes
 //! reasoning, and the cache and reasoning counts are parts of those totals, never additions to them.
@@ -16,22 +20,86 @@ mod value;
 use gate::Gate;
 pub use pairs::{Candidate, Pairs};
 
-use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
+use opentelemetry_proto::tonic::common::v1::{InstrumentationScope, KeyValue};
+use opentelemetry_proto::tonic::logs::v1::LogRecord;
 use opentelemetry_proto::tonic::trace::v1::Span;
 use vrl::compiler::state::RuntimeState;
 use vrl::compiler::{Context, Function, Program, TargetValue, TimeZone};
 use vrl::value::{ObjectMap, Secrets, Value};
 
-/// The rules, in the order they are tried. Each has a native gate that admits every record the rule can match, so
-/// records that concern no rule never reach VRL; the corpus tests check the gates against the rules.
-const RULES: &[(&str, &str, Gate)] = &[(
-    "conventions",
-    include_str!("../rules/conventions.vrl"),
-    Gate::AttributeIn {
-        key: "gen_ai.operation.name",
-        values: CALL_OPERATIONS,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Signal {
+    Span,
+    Log,
+}
+
+struct RuleSource {
+    name: &'static str,
+    source: &'static str,
+    signal: Signal,
+    /// Admits every record the rule can match, so records that concern no rule never reach VRL; the corpus tests
+    /// check the gates against the rules.
+    gate: Gate,
+}
+
+/// The rules, in the order they are tried: producer rules first, the conventions last, as the fallback for any
+/// producer that follows them.
+const RULES: &[RuleSource] = &[
+    RuleSource {
+        name: "claude_code",
+        source: include_str!("../rules/claude_code.vrl"),
+        signal: Signal::Log,
+        gate: Gate::scope("com.anthropic.claude_code.events")
+            .and_attribute_in("event.name", &["api_request", "api_error"]),
     },
-)];
+    RuleSource {
+        name: "codex",
+        source: include_str!("../rules/codex.vrl"),
+        signal: Signal::Log,
+        gate: Gate::scope("codex_otel.log_only")
+            .and_attribute_in("event.name", &["codex.sse_event"]),
+    },
+    RuleSource {
+        name: "litellm",
+        source: include_str!("../rules/litellm.vrl"),
+        signal: Signal::Span,
+        gate: Gate::scope("litellm").and_attribute_in(
+            "gen_ai.operation.name",
+            &[
+                "chat",
+                "completion",
+                "acompletion",
+                "text_completion",
+                "atext_completion",
+                "embedding",
+                "aembedding",
+                "embeddings",
+            ],
+        ),
+    },
+    RuleSource {
+        name: "openlit_anthropic",
+        source: include_str!("../rules/openlit_anthropic.vrl"),
+        signal: Signal::Span,
+        // Its error span has no attributes: the scope is all there is to go by.
+        gate: Gate::scope("openlit.instrumentation.anthropic"),
+    },
+    RuleSource {
+        name: "openinference",
+        source: include_str!("../rules/openinference.vrl"),
+        signal: Signal::Span,
+        gate: Gate::attribute_in("openinference.span.kind", &["LLM", "EMBEDDING"]),
+    },
+    RuleSource {
+        name: "conventions",
+        source: include_str!("../rules/conventions.vrl"),
+        signal: Signal::Span,
+        gate: Gate::attribute_in("gen_ai.operation.name", CALL_OPERATIONS),
+    },
+];
+
+/// Span scopes of producers whose rule counts from log records: Claude Code and Codex.
+const CLAIMED_SPAN_SCOPES: &[&str] = &["com.anthropic.claude_code.tracing", "codex_exec"];
 
 /// The call operations the charts count: agent and tool operations repeat the totals of the calls inside them.
 pub const CALL_OPERATIONS: &[&str] = &["chat", "text_completion", "generate_content", "embeddings"];
@@ -87,6 +155,7 @@ pub enum RuleError {
 
 struct Rule {
     name: &'static str,
+    signal: Signal,
     gate: Gate,
     program: Program,
 }
@@ -103,16 +172,19 @@ impl Normalizer {
     pub fn new() -> Result<Self, Error> {
         let functions = functions();
         let mut rules = Vec::with_capacity(RULES.len());
-        for &(name, source, gate) in RULES {
-            let compiled = vrl::compiler::compile(source, &functions).map_err(|diagnostics| {
-                Error::Compile {
-                    rule: name,
-                    message: vrl::diagnostic::Formatter::new(source, diagnostics).to_string(),
-                }
-            })?;
+        for rule in RULES {
+            let compiled =
+                vrl::compiler::compile(rule.source, &functions).map_err(|diagnostics| {
+                    Error::Compile {
+                        rule: rule.name,
+                        message: vrl::diagnostic::Formatter::new(rule.source, diagnostics)
+                            .to_string(),
+                    }
+                })?;
             rules.push(Rule {
-                name,
-                gate,
+                name: rule.name,
+                signal: rule.signal,
+                gate: rule.gate,
                 program: compiled.program,
             });
         }
@@ -129,31 +201,116 @@ impl Normalizer {
         scope: Option<&InstrumentationScope>,
         span: &Span,
     ) -> Result<Option<Call>, RuleError> {
-        self.resolve(scope, span, true)
+        self.span_gated(scope, span, true)
+    }
+
+    /// The call the log `record` describes, if a rule matches it.
+    ///
+    /// # Errors
+    ///
+    /// As for [`Self::span`].
+    pub fn log(
+        &self,
+        scope: Option<&InstrumentationScope>,
+        record: &LogRecord,
+    ) -> Result<Option<Call>, RuleError> {
+        self.log_gated(scope, record, true)
     }
 
     /// Whether any rule's gate admits `span`: when not, [`Self::span`] never runs VRL for it.
     pub fn is_candidate(&self, scope: Option<&InstrumentationScope>, span: &Span) -> bool {
-        self.rules
-            .iter()
-            .any(|rule| rule.gate.admits(scope, &span.attributes))
+        !is_claimed(scope) && self.admits(Signal::Span, scope, &span.attributes)
     }
 
-    fn resolve(
+    /// Whether any rule's gate admits `record`: when not, [`Self::log`] never runs VRL for it.
+    pub fn is_log_candidate(
+        &self,
+        scope: Option<&InstrumentationScope>,
+        record: &LogRecord,
+    ) -> bool {
+        self.admits(Signal::Log, scope, &record.attributes)
+    }
+
+    fn admits(
+        &self,
+        signal: Signal,
+        scope: Option<&InstrumentationScope>,
+        attributes: &[KeyValue],
+    ) -> bool {
+        self.rules
+            .iter()
+            .any(|rule| rule.signal == signal && rule.gate.admits(scope, attributes))
+    }
+
+    fn span_gated(
         &self,
         scope: Option<&InstrumentationScope>,
         span: &Span,
         gated: bool,
     ) -> Result<Option<Call>, RuleError> {
+        if is_claimed(scope) {
+            return Ok(None);
+        }
+        let start = span.start_time_unix_nano;
+        // A span that ends before it starts has no duration.
+        let end = span.end_time_unix_nano.max(start);
+        let duration = Some((end - start) as f64 / 1e9);
+        self.resolve(
+            Signal::Span,
+            scope,
+            &span.attributes,
+            || value::span(scope, span),
+            gated,
+            end,
+            duration,
+        )
+    }
+
+    fn log_gated(
+        &self,
+        scope: Option<&InstrumentationScope>,
+        record: &LogRecord,
+        gated: bool,
+    ) -> Result<Option<Call>, RuleError> {
+        // Some producers set only the observed time.
+        let end = if record.time_unix_nano != 0 {
+            record.time_unix_nano
+        } else {
+            record.observed_time_unix_nano
+        };
+        self.resolve(
+            Signal::Log,
+            scope,
+            &record.attributes,
+            || value::log(scope, record),
+            gated,
+            end,
+            None,
+        )
+    }
+
+    /// The first matching rule of `signal`, applied; `duration_seconds` is the record's own unless the rule supplies
+    /// one.
+    #[allow(clippy::too_many_arguments)]
+    fn resolve(
+        &self,
+        signal: Signal,
+        scope: Option<&InstrumentationScope>,
+        attributes: &[KeyValue],
+        event: impl Fn() -> Value,
+        gated: bool,
+        end_time_unix_nano: u64,
+        duration_seconds: Option<f64>,
+    ) -> Result<Option<Call>, RuleError> {
         let timezone = TimeZone::default();
-        let mut event = None;
+        let mut converted = None;
         for rule in &self.rules {
-            if gated && !rule.gate.admits(scope, &span.attributes) {
+            if rule.signal != signal || (gated && !rule.gate.admits(scope, attributes)) {
                 continue;
             }
-            let event = event.get_or_insert_with(|| value::span(scope, span));
+            let converted = converted.get_or_insert_with(&event);
             let mut target = TargetValue {
-                value: event.clone(),
+                value: converted.clone(),
                 metadata: Value::Object(ObjectMap::new()),
                 secrets: Secrets::default(),
             };
@@ -169,10 +326,7 @@ impl Normalizer {
             let Value::Object(fields) = output else {
                 continue;
             };
-            let start = span.start_time_unix_nano;
-            // A span that ends before it starts has no duration.
-            let end = span.end_time_unix_nano.max(start);
-            return call(rule.name, &fields, end, Some((end - start) as f64 / 1e9)).map(Some);
+            return call(rule.name, &fields, end_time_unix_nano, duration_seconds).map(Some);
         }
         Ok(None)
     }
@@ -186,8 +340,21 @@ impl Normalizer {
         scope: Option<&InstrumentationScope>,
         span: &Span,
     ) -> Result<Option<Call>, RuleError> {
-        self.resolve(scope, span, false)
+        self.span_gated(scope, span, false)
     }
+
+    /// [`Self::log`] with every gate open.
+    pub fn log_ungated(
+        &self,
+        scope: Option<&InstrumentationScope>,
+        record: &LogRecord,
+    ) -> Result<Option<Call>, RuleError> {
+        self.log_gated(scope, record, false)
+    }
+}
+
+fn is_claimed(scope: Option<&InstrumentationScope>) -> bool {
+    CLAIMED_SPAN_SCOPES.contains(&gate::scope_name(scope))
 }
 
 /// The VRL functions rules may call: only what they use, so a rule cannot reach the environment or the network.
@@ -195,6 +362,16 @@ fn functions() -> Vec<Box<dyn Function>> {
     vec![
         Box::new(vrl::stdlib::Includes),
         Box::new(vrl::stdlib::Exists),
+        Box::new(vrl::stdlib::IsInteger),
+        Box::new(vrl::stdlib::IsString),
+        Box::new(vrl::stdlib::IsObject),
+        Box::new(vrl::stdlib::ToInt),
+        Box::new(vrl::stdlib::String),
+        Box::new(vrl::stdlib::ToFloat),
+        Box::new(vrl::stdlib::ParseInt),
+        Box::new(vrl::stdlib::ParseJson),
+        Box::new(vrl::stdlib::MapValues),
+        Box::new(vrl::stdlib::Merge),
     ]
 }
 
@@ -214,6 +391,14 @@ fn call(
         None | Some(Value::Null) => false,
         Some(Value::Boolean(error)) => *error,
         other => return Err(bad(rule, "error", other)),
+    };
+    let duration_seconds = match fields.get("duration_seconds") {
+        None | Some(Value::Null) => duration_seconds,
+        Some(Value::Integer(seconds)) if *seconds >= 0 => Some(*seconds as f64),
+        Some(Value::Float(seconds)) if seconds.into_inner() >= 0.0 && seconds.is_finite() => {
+            Some(seconds.into_inner())
+        }
+        other => return Err(bad(rule, "duration_seconds", other)),
     };
     Ok(Call {
         operation,
@@ -402,6 +587,57 @@ mod tests {
                 .unwrap(),
             None
         );
+    }
+
+    fn scope(name: &str) -> InstrumentationScope {
+        InstrumentationScope {
+            name: name.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn claimed_spans_never_count() {
+        let normalizer = Normalizer::new().unwrap();
+        // A later Codex that marks its spans as calls still counts from its log only.
+        let codex = scope("codex_exec");
+        let call = span(vec![
+            string("gen_ai.operation.name", "chat"),
+            int("gen_ai.usage.input_tokens", 10),
+        ]);
+        assert!(!normalizer.is_candidate(Some(&codex), &call));
+        assert_eq!(normalizer.span(Some(&codex), &call).unwrap(), None);
+        assert_eq!(normalizer.span_ungated(Some(&codex), &call).unwrap(), None);
+    }
+
+    #[test]
+    fn log_calls_end_at_the_record_time_else_the_observed_time() {
+        let normalizer = Normalizer::new().unwrap();
+        let codex = scope("codex_otel.log_only");
+        let mut record = LogRecord {
+            observed_time_unix_nano: 7_000_000_000,
+            attributes: vec![
+                string("event.name", "codex.sse_event"),
+                string("event.kind", "response.completed"),
+                string("model", "gpt-5.5"),
+                string("input_token_count", "120"),
+                int("cached_token_count", 80),
+            ],
+            ..Default::default()
+        };
+        let call = normalizer.log(Some(&codex), &record).unwrap().unwrap();
+        assert_eq!(
+            (
+                call.end_time_unix_nano,
+                call.duration_seconds,
+                call.tokens.input,
+                call.tokens.cache_read
+            ),
+            (7_000_000_000, None, Some(120), Some(80))
+        );
+        record.time_unix_nano = 6_000_000_000;
+        let call = normalizer.log(Some(&codex), &record).unwrap().unwrap();
+        assert_eq!(call.end_time_unix_nano, 6_000_000_000);
     }
 
     #[test]
