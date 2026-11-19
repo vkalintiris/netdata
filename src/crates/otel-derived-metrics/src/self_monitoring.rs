@@ -2,6 +2,7 @@
 //! when derived metrics are enabled, how their derivation behaves. Counted at
 //! arrival time, so the metric sets have no lateness.
 
+use crate::genai_calls::Uncounted;
 use crate::shared_aggregator::SharedAggregator;
 use netdata_plugin_metrics::{
     Batch, ChartDescriptor, ChartType, Counter, CumulativeCounter, Gauge, Labels, MetricSet,
@@ -43,6 +44,14 @@ columns! {
         Late = "late",
         Future = "future",
         Overflowed = "overflowed",
+    }
+}
+
+columns! {
+    /// Why a record that looked like a GenAI model call was not counted.
+    enum GenAiUncounted {
+        Duplicate = "duplicate",
+        FailedRule = "failed_rule",
     }
 }
 
@@ -208,6 +217,8 @@ pub(crate) struct DerivationHealth {
     expired: CumulativeCounter<Derivation>,
     adjusted_log_records: CumulativeCounter<Adjustment>,
     adjusted_requests: CumulativeCounter<Adjustment>,
+    adjusted_genai_calls: CumulativeCounter<Adjustment>,
+    genai_uncounted: CumulativeCounter<GenAiUncounted>,
 }
 
 impl DerivationHealth {
@@ -248,6 +259,23 @@ impl DerivationHealth {
             chart_type: ChartType::Line,
             priority: 150_013,
         })?;
+        let adjusted_genai_calls = builder.cumulative_counter::<Adjustment>(ChartDescriptor {
+            title: "Adjusted GenAI model calls".into(),
+            units: "calls/s".into(),
+            family: "derived metrics".into(),
+            context: "netdata.otel.derived_adjusted_genai_calls".into(),
+            // One call can be both late and overflowed.
+            chart_type: ChartType::Line,
+            priority: 150_014,
+        })?;
+        let genai_uncounted = builder.cumulative_counter::<GenAiUncounted>(ChartDescriptor {
+            title: "GenAI records not counted as model calls".into(),
+            units: "records/s".into(),
+            family: "derived metrics".into(),
+            context: "netdata.otel.derived_genai_uncounted".into(),
+            chart_type: ChartType::Line,
+            priority: 150_015,
+        })?;
         let metric_set = builder.build()?;
         let aggregator = SharedAggregator::new(&metric_set);
         Ok(Self {
@@ -257,16 +285,20 @@ impl DerivationHealth {
             expired,
             adjusted_log_records,
             adjusted_requests,
+            adjusted_genai_calls,
+            genai_uncounted,
         })
     }
 
     /// Record the statistics each signal's aggregator has at `now` (Unix
-    /// seconds), then add to `chunks` every window that ended by `now`: a
-    /// tick charts the statistics the tick before it recorded.
+    /// seconds), and those of the GenAI charts, then add to `chunks` every
+    /// window that ended by `now`: a tick charts the statistics the tick
+    /// before it recorded.
     pub(crate) fn emit(
         &self,
         now: u64,
         signal_stats: [(Signal, Stats); 2],
+        genai: (Stats, Uncounted),
         chunks: &mut Vec<Vec<u8>>,
     ) {
         let mut batch = Batch::new(&self.metric_set);
@@ -288,6 +320,26 @@ impl DerivationHealth {
                     stats.overflowed_events as f64,
                 );
         }
+        let (stats, uncounted) = genai;
+        let adjusted = self.adjusted_genai_calls;
+        measurements
+            .set_total(adjusted, Adjustment::Late, stats.late_events as f64)
+            .set_total(adjusted, Adjustment::Future, stats.future_events as f64)
+            .set_total(
+                adjusted,
+                Adjustment::Overflowed,
+                stats.overflowed_events as f64,
+            )
+            .set_total(
+                self.genai_uncounted,
+                GenAiUncounted::Duplicate,
+                uncounted.duplicates as f64,
+            )
+            .set_total(
+                self.genai_uncounted,
+                GenAiUncounted::FailedRule,
+                uncounted.failed_rules as f64,
+            );
 
         self.aggregator.merge(batch, now);
         self.aggregator.emit(now, chunks);
@@ -373,8 +425,17 @@ mod tests {
         let health = DerivationHealth::new().unwrap();
         let tick = |traces: Stats, now: u64| {
             let signal_stats = [(Signal::Traces, traces), (Signal::Logs, Stats::default())];
+            // The GenAI charts' own counts grow with the clock.
+            let genai = Stats {
+                late_events: now,
+                ..Stats::default()
+            };
+            let uncounted = Uncounted {
+                duplicates: 2 * now,
+                failed_rules: 3 * now,
+            };
             let mut chunks = Vec::new();
-            health.emit(now, signal_stats, &mut chunks);
+            health.emit(now, signal_stats, (genai, uncounted), &mut chunks);
             readable(chunks)
         };
         let earlier = Stats {
@@ -410,6 +471,12 @@ mod tests {
         ));
         assert!(second.contains(
             "BEGIN netdata.otel.derived_adjusted_log_records 1000000\nSET late = 0\nSET future = 0\nSET overflowed = 0\n"
+        ));
+        assert!(second.contains(
+            "BEGIN netdata.otel.derived_adjusted_genai_calls 1000000\nSET late = 1\nSET future = 0\nSET overflowed = 0\n"
+        ));
+        assert!(second.contains(
+            "BEGIN netdata.otel.derived_genai_uncounted 1000000\nSET duplicate = 2\nSET failed_rule = 3\n"
         ));
     }
 }

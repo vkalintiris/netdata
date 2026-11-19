@@ -193,12 +193,15 @@ impl DerivedMetrics {
         if let Some(per_service) = &self.per_service {
             let requests_stats = per_service.requests.emit(now, &mut chunks);
             let log_records_stats = per_service.log_records.emit(now, &mut chunks);
-            per_service.genai.emit(now, &mut chunks);
+            let genai_stats = per_service.genai.emit(now, &mut chunks);
             let signal_stats = [
                 (Signal::Traces, requests_stats),
                 (Signal::Logs, log_records_stats),
             ];
-            per_service.health.emit(now, signal_stats, &mut chunks);
+            let genai = (genai_stats, per_service.genai.uncounted());
+            per_service
+                .health
+                .emit(now, signal_stats, genai, &mut chunks);
         }
         self.ingest_outcomes.emit(now, &mut chunks);
         chunks
