@@ -19,8 +19,13 @@ use std::hash::{BuildHasher, Hash, RandomState};
 use std::mem;
 use std::sync::Mutex;
 
-/// How long, at least, a counted call is remembered for pairing with later requests; at most twice this.
+/// How long, at least, a counted call is remembered for pairing with later requests, unless more than
+/// [`MAX_REMEMBERED_CALLS`] arrive sooner; at most twice this.
 const MEMORY_SECONDS: u64 = 60;
+
+/// Call spans one half of the memory takes before the halves swap early. When calls arrive faster than this many in
+/// [`MEMORY_SECONDS`], the memory holds the last one to two times this many of them: about 20 MB at most.
+const MAX_REMEMBERED_CALLS: usize = 50_000;
 
 /// Failures remembered per service, model and kind in each half of the memory; the oldest is forgotten first. A
 /// storm of failures that find no partner would otherwise make every later failure search all of them.
@@ -76,6 +81,8 @@ struct Memory<G> {
     counted: HashSet<SpanKey>,
     /// Every answer seen, by its group's hash and its response id.
     response_ids: HashSet<(u64, String)>,
+    /// Call spans this half has taken.
+    calls: usize,
     /// Counted failures without a response id, by service and requested model.
     failures: HashMap<(G, Option<String>), Failures>,
 }
@@ -110,6 +117,7 @@ impl<G> Default for Memory<G> {
             parents: HashSet::new(),
             counted: HashSet::new(),
             response_ids: HashSet::new(),
+            calls: 0,
             failures: HashMap::new(),
         }
     }
@@ -139,10 +147,13 @@ impl<G: Hash + Eq + Clone> Pairs<G> {
             return candidates;
         }
         let mut state = self.state.lock().unwrap();
-        if now.saturating_sub(state.rotated_at) >= MEMORY_SECONDS {
+        if now.saturating_sub(state.rotated_at) >= MEMORY_SECONDS
+            || state.current.calls >= MAX_REMEMBERED_CALLS
+        {
             state.previous = mem::take(&mut state.current);
             state.rotated_at = now;
         }
+        state.current.calls += candidates.len();
 
         // Each candidate's own key and the key of the parent it names.
         let keys: Vec<(Option<SpanKey>, Option<SpanKey>)> = candidates
@@ -449,6 +460,34 @@ mod tests {
         candidate.call.duration_seconds = Some((end - start) as f64 / 1e9);
         candidate.scope = scope.to_string();
         candidate
+    }
+
+    #[test]
+    fn the_memory_is_bounded_by_calls_too() {
+        // As many unrelated calls as one half of the memory takes, all within one second.
+        let flood = || -> Vec<_> {
+            (0..MAX_REMEMBERED_CALLS)
+                .map(|_| candidate(7, 0, 8, None, 5))
+                .collect()
+        };
+        let pairs = Pairs::new();
+        assert_eq!(
+            kept(&pairs.retain(100, vec![candidate(2, 1, 9, None, 10)])),
+            vec![2]
+        );
+        // One flood later the child is still remembered: its parent does not count.
+        pairs.retain(100, flood());
+        assert!(
+            pairs
+                .retain(100, vec![candidate(1, 0, 9, None, 20)])
+                .is_empty()
+        );
+        // Two floods later it is forgotten.
+        pairs.retain(100, flood());
+        assert_eq!(
+            kept(&pairs.retain(100, vec![candidate(1, 0, 9, None, 20)])),
+            vec![1]
+        );
     }
 
     #[test]
