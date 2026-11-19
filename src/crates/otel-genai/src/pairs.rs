@@ -132,15 +132,21 @@ impl<G: Hash + Eq + Clone> Pairs<G> {
             let Some(response_id) = &candidate.call.response_id else {
                 continue;
             };
-            let key = (candidate.group.clone(), response_id.clone());
             if !keep[index] {
-                state.current.response_ids.insert(key);
                 continue;
             }
+            let key = (candidate.group.clone(), response_id.clone());
             if state.remembers_response(&key) || !seen.insert(key.clone()) {
                 keep[index] = false;
             }
             state.current.response_ids.insert(key);
+        }
+        // A dropped parent's answer is remembered too, but only now: its own child carries the same id.
+        for (candidate, keep) in candidates.iter().zip(&keep) {
+            if let (false, Some(response_id)) = (*keep, &candidate.call.response_id) {
+                let key = (candidate.group.clone(), response_id.clone());
+                state.current.response_ids.insert(key);
+            }
         }
 
         for &index in &order {
@@ -293,6 +299,20 @@ mod tests {
         let mut other = candidate(4, 0, 6, Some("msg_1"), 40);
         other.group = "other service";
         assert_eq!(kept(&pairs.retain(110, vec![other])), vec![4]);
+    }
+
+    #[test]
+    fn a_nested_pair_with_one_answer_keeps_the_inner_span() {
+        // Wrapper and SDK span carry the same answer id and end in the same instant, the wrapper first in the request.
+        let pairs = Pairs::new();
+        let outer = candidate(1, 0, 9, Some("msg_1"), 10);
+        let inner = candidate(2, 1, 9, Some("msg_1"), 10);
+        assert_eq!(kept(&pairs.retain(100, vec![outer, inner])), vec![2]);
+        // The answer stays remembered: the same id in a later request does not count.
+        assert_eq!(
+            kept(&pairs.retain(110, vec![candidate(3, 0, 7, Some("msg_1"), 30)])),
+            Vec::<u8>::new()
+        );
     }
 
     #[test]
