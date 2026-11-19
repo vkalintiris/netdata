@@ -56,14 +56,31 @@ struct Memory<G> {
     parents: HashSet<(Vec<u8>, Vec<u8>)>,
     response_ids: HashSet<(G, String)>,
     /// Counted failures without a response id, by service and requested model.
-    failures: HashMap<(G, Option<String>), Vec<Failure>>,
+    failures: HashMap<(G, Option<String>), Failures>,
 }
 
-/// A counted failure's time span, and whether it came from a scope that keeps its own trace.
+/// Counted failures of one service and model, apart by whether their scope keeps its own trace: a failure pairs
+/// only with one of the other kind, so it never searches its own.
+#[derive(Default)]
+struct Failures {
+    own_trace: Vec<Failure>,
+    joined: Vec<Failure>,
+}
+
+impl Failures {
+    fn of(&mut self, own_trace: bool) -> &mut Vec<Failure> {
+        if own_trace {
+            &mut self.own_trace
+        } else {
+            &mut self.joined
+        }
+    }
+}
+
+/// A counted failure's time span.
 struct Failure {
     start: u64,
     end: u64,
-    own_trace: bool,
 }
 
 impl<G> Default for Memory<G> {
@@ -162,13 +179,14 @@ impl<G: Hash + Eq + Clone> Pairs<G> {
             let failure = Failure {
                 start: end.saturating_sub((duration * 1e9) as u64),
                 end,
-                own_trace: candidate.scope.starts_with(OWN_TRACE_SCOPE_PREFIX),
             };
+            let own_trace = candidate.scope.starts_with(OWN_TRACE_SCOPE_PREFIX);
             let key = (candidate.group.clone(), call.request_model.clone());
-            if state.take_failure(&key, &failure) {
+            if state.take_failure(&key, &failure, own_trace) {
                 keep[index] = false;
             } else {
-                state.current.failures.entry(key).or_default().push(failure);
+                let failures = state.current.failures.entry(key).or_default();
+                failures.of(own_trace).push(failure);
             }
         }
 
@@ -200,18 +218,24 @@ impl<G: Hash + Eq> State<G> {
         self.current.response_ids.contains(key) || self.previous.response_ids.contains(key)
     }
 
-    /// Forgets and reports a remembered failure that `failure` is the other half of.
-    fn take_failure(&mut self, key: &(G, Option<String>), failure: &Failure) -> bool {
+    /// Forgets and reports a remembered failure of the other kind that `failure` is the other half of.
+    fn take_failure(
+        &mut self,
+        key: &(G, Option<String>),
+        failure: &Failure,
+        own_trace: bool,
+    ) -> bool {
         let within = |a: &Failure, b: &Failure| a.start >= b.start && a.end <= b.end;
         for memory in [&mut self.current, &mut self.previous] {
             let Some(failures) = memory.failures.get_mut(key) else {
                 continue;
             };
-            if let Some(position) = failures.iter().position(|other| {
-                other.own_trace != failure.own_trace
-                    && (within(other, failure) || within(failure, other))
-            }) {
-                failures.swap_remove(position);
+            let others = failures.of(!own_trace);
+            if let Some(position) = others
+                .iter()
+                .position(|other| within(other, failure) || within(failure, other))
+            {
+                others.swap_remove(position);
                 return true;
             }
         }
