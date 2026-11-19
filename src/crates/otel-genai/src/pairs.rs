@@ -15,7 +15,7 @@
 
 use crate::Call;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::hash::Hash;
+use std::hash::{BuildHasher, Hash, RandomState};
 use std::mem;
 use std::sync::Mutex;
 
@@ -45,9 +45,22 @@ pub struct Candidate<G, T> {
     pub data: T,
 }
 
+/// A span's key: its trace id and its span id.
+type SpanKey = (u128, u64);
+
+/// The key of span `span_id` of trace `trace_id`. `None` when an id does not have its OTLP length, 16 and 8 bytes
+/// (a root span's parent id is empty): such a span takes no part in nesting.
+fn span_key(trace_id: &[u8], span_id: &[u8]) -> Option<SpanKey> {
+    let trace_id = u128::from_be_bytes(trace_id.try_into().ok()?);
+    let span_id = u64::from_be_bytes(span_id.try_into().ok()?);
+    Some((trace_id, span_id))
+}
+
 /// Remembers recently counted calls across export requests.
 pub struct Pairs<G> {
     state: Mutex<State<G>>,
+    /// Hashes a group: every remembered answer keeps the hash, not a copy of its group.
+    hasher: RandomState,
 }
 
 struct State<G> {
@@ -57,11 +70,12 @@ struct State<G> {
 }
 
 struct Memory<G> {
-    /// `(trace id, parent span id)` of every call span seen: their parents must not count.
-    parents: HashSet<(Vec<u8>, Vec<u8>)>,
-    /// `(trace id, span id)` of every call span counted: their children must not count.
-    counted: HashSet<(Vec<u8>, Vec<u8>)>,
-    response_ids: HashSet<(G, String)>,
+    /// The parent every call span seen names: those parents must not count.
+    parents: HashSet<SpanKey>,
+    /// Every call span counted: their children must not count.
+    counted: HashSet<SpanKey>,
+    /// Every answer seen, by its group's hash and its response id.
+    response_ids: HashSet<(u64, String)>,
     /// Counted failures without a response id, by service and requested model.
     failures: HashMap<(G, Option<String>), Failures>,
 }
@@ -115,6 +129,7 @@ impl<G: Hash + Eq + Clone> Pairs<G> {
                 current: Memory::default(),
                 previous: Memory::default(),
             }),
+            hasher: RandomState::new(),
         }
     }
 
@@ -129,23 +144,22 @@ impl<G: Hash + Eq + Clone> Pairs<G> {
             state.rotated_at = now;
         }
 
-        let parents: HashSet<(&[u8], &[u8])> = candidates
+        // Each candidate's own key and the key of the parent it names.
+        let keys: Vec<(Option<SpanKey>, Option<SpanKey>)> = candidates
             .iter()
-            .filter(|candidate| !candidate.parent_span_id.is_empty())
             .map(|candidate| {
                 (
-                    candidate.trace_id.as_slice(),
-                    candidate.parent_span_id.as_slice(),
+                    span_key(&candidate.trace_id, &candidate.span_id),
+                    span_key(&candidate.trace_id, &candidate.parent_span_id),
                 )
             })
             .collect();
-        let mut keep: Vec<bool> = candidates
+        let parents: HashSet<SpanKey> = keys.iter().filter_map(|(_, parent)| *parent).collect();
+        let mut keep: Vec<bool> = keys
             .iter()
-            .map(|candidate| {
-                let key = (candidate.trace_id.as_slice(), candidate.span_id.as_slice());
-                !parents.contains(&key)
-                    && !state.remembers_parent(&candidate.trace_id, &candidate.span_id)
-                    && !state.remembers_counted(&candidate.trace_id, &candidate.parent_span_id)
+            .map(|(own, parent)| {
+                own.is_none_or(|own| !parents.contains(&own) && !state.remembers_parent(own))
+                    && parent.is_none_or(|parent| !state.remembers_counted(parent))
             })
             .collect();
 
@@ -161,7 +175,7 @@ impl<G: Hash + Eq + Clone> Pairs<G> {
             if !keep[index] {
                 continue;
             }
-            let key = (candidate.group.clone(), response_id.clone());
+            let key = (self.hasher.hash_one(&candidate.group), response_id.clone());
             if state.remembers_response(&key) || !seen.insert(key.clone()) {
                 keep[index] = false;
             }
@@ -170,7 +184,7 @@ impl<G: Hash + Eq + Clone> Pairs<G> {
         // A dropped parent's answer is remembered too, but only now: its own child carries the same id.
         for (candidate, keep) in candidates.iter().zip(&keep) {
             if let (false, Some(response_id)) = (*keep, &candidate.call.response_id) {
-                let key = (candidate.group.clone(), response_id.clone());
+                let key = (self.hasher.hash_one(&candidate.group), response_id.clone());
                 state.current.response_ids.insert(key);
             }
         }
@@ -203,18 +217,12 @@ impl<G: Hash + Eq + Clone> Pairs<G> {
             }
         }
 
-        for (candidate, keep) in candidates.iter().zip(&keep) {
-            if !candidate.parent_span_id.is_empty() {
-                state
-                    .current
-                    .parents
-                    .insert((candidate.trace_id.clone(), candidate.parent_span_id.clone()));
+        for ((own, parent), keep) in keys.iter().zip(&keep) {
+            if let Some(parent) = parent {
+                state.current.parents.insert(*parent);
             }
-            if *keep {
-                state
-                    .current
-                    .counted
-                    .insert((candidate.trace_id.clone(), candidate.span_id.clone()));
+            if let (true, Some(own)) = (*keep, own) {
+                state.current.counted.insert(*own);
             }
         }
         drop(state);
@@ -228,21 +236,15 @@ impl<G: Hash + Eq + Clone> Pairs<G> {
 }
 
 impl<G: Hash + Eq> State<G> {
-    fn remembers_parent(&self, trace_id: &[u8], span_id: &[u8]) -> bool {
-        let key = (trace_id.to_vec(), span_id.to_vec());
+    fn remembers_parent(&self, key: SpanKey) -> bool {
         self.current.parents.contains(&key) || self.previous.parents.contains(&key)
     }
 
-    /// Whether the span `parent_span_id` names was counted; a root span names none.
-    fn remembers_counted(&self, trace_id: &[u8], parent_span_id: &[u8]) -> bool {
-        if parent_span_id.is_empty() {
-            return false;
-        }
-        let key = (trace_id.to_vec(), parent_span_id.to_vec());
+    fn remembers_counted(&self, key: SpanKey) -> bool {
         self.current.counted.contains(&key) || self.previous.counted.contains(&key)
     }
 
-    fn remembers_response(&self, key: &(G, String)) -> bool {
+    fn remembers_response(&self, key: &(u64, String)) -> bool {
         self.current.response_ids.contains(key) || self.previous.response_ids.contains(key)
     }
 
@@ -296,12 +298,12 @@ mod tests {
                 time_to_first_chunk_seconds: None,
                 response_id: response_id.map(str::to_string),
             },
-            trace_id: vec![trace],
-            span_id: vec![span],
+            trace_id: vec![trace; 16],
+            span_id: vec![span; 8],
             parent_span_id: if parent == 0 {
                 Vec::new()
             } else {
-                vec![parent]
+                vec![parent; 8]
             },
             scope: String::new(),
             group: "service",
@@ -375,6 +377,18 @@ mod tests {
             kept(&pairs.retain(100, vec![candidate(3, 1, 9, None, 20)])),
             vec![3]
         );
+    }
+
+    #[test]
+    fn spans_with_malformed_ids_do_not_nest() {
+        // OTLP ids are 16 and 8 bytes; anything else cannot name a parent or be one.
+        let pairs = Pairs::new();
+        let mut outer = candidate(1, 0, 9, None, 20);
+        let mut inner = candidate(2, 1, 9, None, 10);
+        for span in [&mut outer, &mut inner] {
+            span.trace_id.truncate(4);
+        }
+        assert_eq!(kept(&pairs.retain(100, vec![outer, inner])), vec![1, 2]);
     }
 
     #[test]
