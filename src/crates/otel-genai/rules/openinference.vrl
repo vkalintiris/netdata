@@ -2,7 +2,9 @@
 # the scope. Its OpenAI instrumentation and Envoy keep the requested model only inside the JSON string
 # `llm.invocation_parameters`; their `llm.model_name` is the answering model. LlamaIndex's instrumentation also marks
 # client-side request preparation (`<Class>._prepare_chat_with_tools`) as an LLM span. Only its name tells it apart: a
-# streamed OpenAI Agents SDK call carries the same attributes (no tokens, no answer messages).
+# streamed OpenAI Agents SDK call carries the same attributes (no tokens, no answer messages). OpenInference itself
+# does not measure the time to the first chunk; a span of another library that also carries the OpenInference kind
+# keeps that library's value under the conventions' names.
 a = .attributes
 kind = a."openinference.span.kind"
 operation = if kind == "LLM" { "chat" } else if kind == "EMBEDDING" { "embeddings" } else { null }
@@ -25,7 +27,8 @@ if operation != null {
     "cache_read_tokens": a."llm.token_count.prompt_details.cache_read",
     "cache_write_tokens": a."llm.token_count.prompt_details.cache_write" || a."llm.token_count.prompt_details.cache_creation",
     "reasoning_tokens": a."llm.token_count.completion_details.reasoning",
-    "error": .status_code == 2 || exists(a."error.type")
+    "error": .status_code == 2 || exists(a."error.type"),
+    "time_to_first_chunk_seconds": a."gen_ai.response.time_to_first_chunk" || a."gen_ai.client.operation.time_to_first_chunk"
   }
 } else {
   null

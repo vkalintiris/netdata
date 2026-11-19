@@ -1,11 +1,12 @@
-//! GenAI charts from spans and log records: model calls, tokens, token details and call duration, per service,
-//! provider, operation, requested model and answering model.
+//! GenAI charts from spans and log records: model calls, tokens, token details, call duration and time to first
+//! chunk, per service, provider, operation, requested model and answering model.
 //!
 //! `otel-genai` turns each span or log record that describes a model call into a normalized call, whatever dialect
 //! its producer speaks, and drops the second span of a call that arrives twice. This set counts what is left. Each
 //! producer counts from one signal, so a call from a log record has no span twin to pair with. Token details (cache
 //! reads, cache writes, reasoning) are parts of the input and output tokens, never additions to them. A call counts
-//! at its end time; a call from a span is weighted like a request by its sampling threshold.
+//! at its end time; a call from a span is weighted like a request by its sampling threshold. The time to first chunk
+//! is the producer's own measurement, charted for the streamed calls of the producers that report one.
 
 use crate::service::{service_labels, service_settings};
 use crate::service_requests::adjusted_count;
@@ -22,7 +23,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Label sets (service, provider, operation and models) over this share the overflow entity.
 pub(crate) const MAX_SERIES: usize = 1000;
 
-/// Bucket bounds in seconds: the GenAI conventions' advice for `gen_ai.client.inference.duration`.
+/// Bucket bounds in seconds: the GenAI conventions' advice for `gen_ai.client.inference.duration` and for
+/// `gen_ai.client.inference.time_to_first_chunk`.
 const DURATION_BOUNDS: &[f64] = &[
     0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28, 2.56, 5.12, 10.24, 20.48, 40.96, 81.92,
 ];
@@ -70,6 +72,7 @@ pub(crate) struct GenAiCalls {
     tokens: Counter<Tokens>,
     token_details: Counter<TokenDetails>,
     duration: Histogram,
+    time_to_first_chunk: Histogram,
     rule_error_logged_at: AtomicU64,
     duplicates: AtomicU64,
     failed_rules: AtomicU64,
@@ -124,6 +127,19 @@ impl GenAiCalls {
             },
             "calls/s".into(),
         )?;
+        // Charts `otel.derived_metrics.genai.time_to_first_chunk_avg`, `_max` and `_histogram`.
+        let time_to_first_chunk = builder.histogram(
+            DURATION_BOUNDS,
+            ChartDescriptor {
+                title: "GenAI time to first chunk".into(),
+                units: "seconds".into(),
+                family: "genai".into(),
+                context: "otel.derived_metrics.genai.time_to_first_chunk".into(),
+                chart_type: ChartType::Line,
+                priority: 60_106,
+            },
+            "calls/s".into(),
+        )?;
         let metric_set = builder.build()?;
         let aggregator = SharedAggregator::new(&metric_set);
         // The rules are part of this binary and their tests compile them.
@@ -137,6 +153,7 @@ impl GenAiCalls {
             tokens,
             token_details,
             duration,
+            time_to_first_chunk,
             rule_error_logged_at: AtomicU64::new(0),
             duplicates: AtomicU64::new(0),
             failed_rules: AtomicU64::new(0),
@@ -292,6 +309,9 @@ impl GenAiCalls {
         if let Some(seconds) = call.duration_seconds {
             event.observe(self.duration, seconds, weight);
         }
+        if let Some(seconds) = call.time_to_first_chunk_seconds {
+            event.observe(self.time_to_first_chunk, seconds, weight);
+        }
     }
 
     fn log_rule_error(&self, error: &otel_genai::RuleError) {
@@ -332,6 +352,10 @@ mod tests {
 
     fn int(key: &str, value: i64) -> KeyValue {
         attr(key, Value::IntValue(value))
+    }
+
+    fn double(key: &str, value: f64) -> KeyValue {
+        attr(key, Value::DoubleValue(value))
     }
 
     /// A call span of 0.5 s ending at second 100.
@@ -430,6 +454,28 @@ mod tests {
         ] {
             assert!(out.contains(label), "{label} missing:\n{out}");
         }
+    }
+
+    /// The value of the time-to-first-chunk average chart in `out`; empty when the chart has a gap.
+    fn first_chunk_avg(out: &str) -> String {
+        let chart = out
+            .split("BEGIN ")
+            .find(|chart| chart.starts_with("otel.derived_metrics.genai.time_to_first_chunk_avg"))
+            .unwrap_or_else(|| panic!("no time to first chunk chart:\n{out}"));
+        first(chart, "avg")
+    }
+
+    #[test]
+    fn charts_the_time_to_first_chunk_of_a_streamed_call() {
+        let mut streamed = chat_attributes();
+        streamed.push(double("gen_ai.response.time_to_first_chunk", 0.25));
+        assert_eq!(first_chunk_avg(&render(vec![call(1, 0, streamed)])), "0.25");
+
+        // A call that was not streamed leaves a gap.
+        assert_eq!(
+            first_chunk_avg(&render(vec![call(1, 0, chat_attributes())])),
+            ""
+        );
     }
 
     #[test]

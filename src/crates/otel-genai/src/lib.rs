@@ -6,7 +6,8 @@
 //! returns an object wins; a rule returns `null` for a record it does not describe, and `false` for one of its
 //! producer's records that is not a call, so no later rule counts it. A rule only maps the producer's
 //! vocabulary: the host supplies the call's end time, and a span's duration, from the record itself. A log rule
-//! supplies the duration, when the record has one.
+//! supplies the duration, when the record has one. A rule also passes on the producer's time to the first chunk of a
+//! streamed answer, when the producer reports one.
 //!
 //! A producer whose rule counts from its log records may also emit spans for the same calls; its span scopes are
 //! claimed, so no span rule ever counts them, even if a later version of the producer makes them look like calls.
@@ -170,6 +171,9 @@ pub struct Call {
     pub end_time_unix_nano: u64,
     /// `None` when the record says nothing about how long the call took.
     pub duration_seconds: Option<f64>,
+    /// For a streamed answer, the time from the start of the call to the first chunk of the answer, as the producer
+    /// measured it; `None` when the producer does not report it.
+    pub time_to_first_chunk_seconds: Option<f64>,
     /// The provider's id of the answer, which identifies one call across records.
     pub response_id: Option<String>,
 }
@@ -449,14 +453,7 @@ fn call(
         Some(Value::Boolean(error)) => *error,
         other => return Err(bad(rule, "error", other)),
     };
-    let duration_seconds = match fields.get("duration_seconds") {
-        None | Some(Value::Null) => duration_seconds,
-        Some(Value::Integer(seconds)) if *seconds >= 0 => Some(*seconds as f64),
-        Some(Value::Float(seconds)) if seconds.into_inner() >= 0.0 && seconds.is_finite() => {
-            Some(seconds.into_inner())
-        }
-        other => return Err(bad(rule, "duration_seconds", other)),
-    };
+    let duration_seconds = seconds(rule, fields, "duration_seconds")?.or(duration_seconds);
     Ok(Call {
         operation,
         provider: string(rule, fields, "provider")?,
@@ -472,8 +469,25 @@ fn call(
         error,
         end_time_unix_nano,
         duration_seconds,
+        time_to_first_chunk_seconds: seconds(rule, fields, "time_to_first_chunk_seconds")?,
         response_id: string(rule, fields, "response_id")?,
     })
+}
+
+/// A span of time in seconds: a non-negative, finite number.
+fn seconds(
+    rule: &'static str,
+    fields: &ObjectMap,
+    field: &'static str,
+) -> Result<Option<f64>, RuleError> {
+    match fields.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Integer(seconds)) if *seconds >= 0 => Ok(Some(*seconds as f64)),
+        Some(Value::Float(seconds)) if seconds.into_inner() >= 0.0 && seconds.is_finite() => {
+            Ok(Some(seconds.into_inner()))
+        }
+        other => Err(bad(rule, field, other)),
+    }
 }
 
 /// A string field; empty counts as absent, as a blank chart label would.
@@ -544,6 +558,10 @@ mod tests {
         attribute(key, Av::IntValue(value))
     }
 
+    fn double(key: &str, value: f64) -> KeyValue {
+        attribute(key, Av::DoubleValue(value))
+    }
+
     fn span(attributes: Vec<KeyValue>) -> Span {
         Span {
             start_time_unix_nano: 1_000_000_000,
@@ -587,6 +605,7 @@ mod tests {
             error: false,
             end_time_unix_nano: 2_500_000_000,
             duration_seconds: Some(1.5),
+            time_to_first_chunk_seconds: None,
             response_id: Some("msg_1".into()),
         };
         assert_eq!(
@@ -626,6 +645,39 @@ mod tests {
 
         let fine = span(vec![string("gen_ai.operation.name", "chat")]);
         assert!(!normalizer.span(None, &fine).unwrap().unwrap().error);
+    }
+
+    #[test]
+    fn time_to_first_chunk_under_the_conventions_names() {
+        let normalizer = Normalizer::new().unwrap();
+        let first_chunk = |attributes: Vec<KeyValue>| {
+            let mut all = vec![string("gen_ai.operation.name", "chat")];
+            all.extend(attributes);
+            normalizer
+                .span(None, &span(all))
+                .unwrap()
+                .unwrap()
+                .time_to_first_chunk_seconds
+        };
+        assert_eq!(
+            first_chunk(vec![double("gen_ai.response.time_to_first_chunk", 0.75)]),
+            Some(0.75)
+        );
+        // The metric's former name, which some producers write on the span.
+        assert_eq!(
+            first_chunk(vec![double(
+                "gen_ai.client.operation.time_to_first_chunk",
+                0.5
+            )]),
+            Some(0.5)
+        );
+        // A call that was not streamed has none.
+        assert_eq!(first_chunk(vec![]), None);
+        // OpenLIT's attribute is not read: its clock starts after the response headers arrived.
+        assert_eq!(
+            first_chunk(vec![double("gen_ai.server.time_to_first_token", 0.002)]),
+            None
+        );
     }
 
     #[test]
@@ -710,6 +762,23 @@ mod tests {
                 rule: "conventions",
                 field: "input_tokens",
                 value: "-1".into()
+            })
+        );
+    }
+
+    #[test]
+    fn a_bad_time_to_first_chunk_is_an_error() {
+        let normalizer = Normalizer::new().unwrap();
+        let negative = span(vec![
+            string("gen_ai.operation.name", "chat"),
+            double("gen_ai.response.time_to_first_chunk", -0.5),
+        ]);
+        assert_eq!(
+            normalizer.span(None, &negative),
+            Err(RuleError::Output {
+                rule: "conventions",
+                field: "time_to_first_chunk_seconds",
+                value: "-0.5".into()
             })
         );
     }

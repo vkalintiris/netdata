@@ -28,6 +28,8 @@ struct Totals {
     reasoning: u64,
     duration_count: u64,
     duration_micros: u64,
+    first_chunk_count: u64,
+    first_chunk_micros: u64,
     labels: BTreeSet<[String; 4]>,
 }
 
@@ -47,6 +49,10 @@ impl Totals {
         if let Some(seconds) = call.duration_seconds {
             self.duration_count += 1;
             self.duration_micros += (seconds * 1e6).round() as u64;
+        }
+        if let Some(seconds) = call.time_to_first_chunk_seconds {
+            self.first_chunk_count += 1;
+            self.first_chunk_micros += (seconds * 1e6).round() as u64;
         }
         let label = |value: &Option<String>| value.clone().unwrap_or_else(|| "-".to_string());
         self.labels.insert([
@@ -89,6 +95,8 @@ fn expected(run: &Value) -> Totals {
         reasoning: number("reasoning"),
         duration_count: number("duration_count"),
         duration_micros: (run["duration_sum"].as_f64().unwrap() * 1e6).round() as u64,
+        first_chunk_count: number("first_chunk_count"),
+        first_chunk_micros: (run["first_chunk_sum"].as_f64().unwrap() * 1e6).round() as u64,
         labels,
     }
 }
@@ -203,16 +211,22 @@ fn corpus_runs_match_the_oracle() {
     let mut checked = 0;
     for (run, want) in expected_runs {
         let mut got = totals(&normalizer, &fixtures, run);
-        // Durations are summed in microseconds on both sides; allow one microsecond of rounding per call.
+        // Times are summed in microseconds on both sides; allow one microsecond of rounding per call.
         let want = expected(want);
-        let slack = got.duration_count;
         assert!(
-            got.duration_micros.abs_diff(want.duration_micros) <= slack,
+            got.duration_micros.abs_diff(want.duration_micros) <= got.duration_count,
             "{run}: duration {} vs {}",
             got.duration_micros,
             want.duration_micros
         );
         got.duration_micros = want.duration_micros;
+        assert!(
+            got.first_chunk_micros.abs_diff(want.first_chunk_micros) <= got.first_chunk_count,
+            "{run}: time to first chunk {} vs {}",
+            got.first_chunk_micros,
+            want.first_chunk_micros
+        );
+        got.first_chunk_micros = want.first_chunk_micros;
         assert_eq!(got, want, "{run}");
         checked += 1;
     }
