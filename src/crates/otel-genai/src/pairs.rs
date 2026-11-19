@@ -14,13 +14,17 @@
 //! Only direct parents are checked: in every captured pair the inner span is a child of the outer one.
 
 use crate::Call;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
 use std::mem;
 use std::sync::Mutex;
 
 /// How long, at least, a counted call is remembered for pairing with later requests; at most twice this.
 const MEMORY_SECONDS: u64 = 60;
+
+/// Failures remembered per service, model and kind in each half of the memory; the oldest is forgotten first. A
+/// storm of failures that find no partner would otherwise make every later failure search all of them.
+const MAX_REMEMBERED_FAILURES: usize = 1000;
 
 /// Scopes whose spans keep their own trace beside a wrapper library's span of the same call.
 const OWN_TRACE_SCOPE_PREFIX: &str = "com.anthropic.sdk.";
@@ -62,16 +66,16 @@ struct Memory<G> {
     failures: HashMap<(G, Option<String>), Failures>,
 }
 
-/// Counted failures of one service and model, apart by whether their scope keeps its own trace: a failure pairs
-/// only with one of the other kind, so it never searches its own.
+/// Counted failures of one service and model, oldest first, apart by whether their scope keeps its own trace: a
+/// failure pairs only with one of the other kind, so it never searches its own.
 #[derive(Default)]
 struct Failures {
-    own_trace: Vec<Failure>,
-    joined: Vec<Failure>,
+    own_trace: VecDeque<Failure>,
+    joined: VecDeque<Failure>,
 }
 
 impl Failures {
-    fn of(&mut self, own_trace: bool) -> &mut Vec<Failure> {
+    fn of(&mut self, own_trace: bool) -> &mut VecDeque<Failure> {
         if own_trace {
             &mut self.own_trace
         } else {
@@ -191,7 +195,11 @@ impl<G: Hash + Eq + Clone> Pairs<G> {
                 keep[index] = false;
             } else {
                 let failures = state.current.failures.entry(key).or_default();
-                failures.of(own_trace).push(failure);
+                let remembered = failures.of(own_trace);
+                if remembered.len() == MAX_REMEMBERED_FAILURES {
+                    remembered.pop_front();
+                }
+                remembered.push_back(failure);
             }
         }
 
@@ -255,7 +263,7 @@ impl<G: Hash + Eq> State<G> {
                 .iter()
                 .position(|other| within(other, failure) || within(failure, other))
             {
-                others.swap_remove(position);
+                others.remove(position);
                 return true;
             }
         }
@@ -427,6 +435,27 @@ mod tests {
         candidate.call.duration_seconds = Some((end - start) as f64 / 1e9);
         candidate.scope = scope.to_string();
         candidate
+    }
+
+    #[test]
+    fn remembered_failures_are_bounded() {
+        let sdk = "com.anthropic.sdk.python";
+        // One more wrapper failure than the memory holds, none with a partner yet; each lasts 100 ns.
+        let pairs = Pairs::new();
+        let storm: Vec<_> = (0..=MAX_REMEMBERED_FAILURES as u64)
+            .map(|index| failure(1, 8, "wrapper", index * 1_000, index * 1_000 + 100))
+            .collect();
+        assert_eq!(pairs.retain(100, storm).len(), MAX_REMEMBERED_FAILURES + 1);
+        // The oldest was forgotten: its partner counts. The next oldest is still there.
+        assert_eq!(
+            kept(&pairs.retain(100, vec![failure(2, 9, sdk, 10, 90)])),
+            vec![2]
+        );
+        assert!(
+            pairs
+                .retain(100, vec![failure(3, 9, sdk, 1_010, 1_090)])
+                .is_empty()
+        );
     }
 
     #[test]

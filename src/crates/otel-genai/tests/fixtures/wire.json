@@ -24,7 +24,6 @@
   "openllmetry-langchain-no-cache-reasoning": "OpenLLMetry's LangChain instrumentation sends no reasoning count (JavaScript: no cache-read count either)",
   "openllmetry-py-stream-no-reasoning": "OpenLLMetry (Python) sends no reasoning count on OpenAI streams",
   "otel-openai-no-cache-reasoning": "OpenTelemetry's OpenAI instrumentation (openai-v2, JavaScript, EDOT) sends no cache-read or reasoning count",
-  "parallel-failures-paired-by-time": "A failed call seen by the Anthropic SDK's own span and by a wrapper's span in two traces is paired by time; among parallel failures some pairs are missed and count twice",
   "pydantic-ai-rejected-attempts": "OpenTelemetry's Anthropic instrumentation emits failed call spans for attempts rejected before any request",
   "sdk-retry-one-call": "An SDK retries a failed request inside one call: Netdata counts the call once, as it ended, while the API saw every attempt",
   "strands-no-reasoning": "Strands sends no reasoning count",
@@ -95,9 +94,6 @@
    "cache_read": 0,
    "cache_write": 0,
    "error": 12,
-   "except": {
-    "error": "parallel-failures-paired-by-time"
-   },
    "input": 0,
    "output": 0,
    "reasoning": 0,
