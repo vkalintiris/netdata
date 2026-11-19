@@ -1,8 +1,13 @@
-//! Captured GenAI telemetry against independently computed totals.
+//! Captured GenAI telemetry against its expected chart totals and against what the provider's API returned.
 //!
 //! `tests/fixtures/<run>.traces.jsonl` and `<run>.logs.jsonl` hold the OTLP export requests of one captured run, one
-//! request per line, with only the attributes the rules read. `expected.json` holds the chart totals an independent
-//! script computed from the raw captures with the rules as specified.
+//! request per line, with only the attributes the rules read.
+//!
+//! - `expected.json` pins the chart totals of every run: a script that implements the rules as specified computed
+//!   them from the raw captures. It tells when a change alters what is charted, not whether that is right.
+//! - `wire.json` holds, for the runs that made real model calls, what the API returned: a recording proxy between
+//!   the client and the provider wrote down each request's outcome and usage. A run that is known to differ from it
+//!   names the fields that may differ and why.
 
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
@@ -161,38 +166,43 @@ fn calls(
         .collect()
 }
 
-#[test]
-fn corpus_runs_match_the_oracle() {
-    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-    let expected_runs: serde_json::Map<String, Value> =
-        serde_json::from_str(&std::fs::read_to_string(fixtures.join("expected.json")).unwrap())
-            .unwrap();
-    let normalizer = Normalizer::new().unwrap();
-    let mut checked = 0;
-    for (run, want) in &expected_runs {
-        // One run is one producer session: its own pair memory.
-        let pairs = Pairs::new();
-        let mut got = Totals::default();
-        for export in exports(&fixtures.join(format!("{run}.traces.jsonl"))) {
-            for call in calls(&normalizer, &pairs, &export) {
-                got.add(&call);
-            }
+/// The chart totals of one captured run.
+fn totals(normalizer: &Normalizer, fixtures: &Path, run: &str) -> Totals {
+    // One run is one producer session: its own pair memory.
+    let pairs = Pairs::new();
+    let mut got = Totals::default();
+    for export in exports(&fixtures.join(format!("{run}.traces.jsonl"))) {
+        for call in calls(normalizer, &pairs, &export) {
+            got.add(&call);
         }
-        for export in
-            exports::<ExportLogsServiceRequest>(&fixtures.join(format!("{run}.logs.jsonl")))
-        {
-            for resource_logs in &export.resource_logs {
-                for scope_logs in &resource_logs.scope_logs {
-                    for record in &scope_logs.log_records {
-                        if let Some(call) =
-                            normalizer.log(scope_logs.scope.as_ref(), record).unwrap()
-                        {
-                            got.add(&call);
-                        }
+    }
+    for export in exports::<ExportLogsServiceRequest>(&fixtures.join(format!("{run}.logs.jsonl"))) {
+        for resource_logs in &export.resource_logs {
+            for scope_logs in &resource_logs.scope_logs {
+                for record in &scope_logs.log_records {
+                    if let Some(call) = normalizer.log(scope_logs.scope.as_ref(), record).unwrap() {
+                        got.add(&call);
                     }
                 }
             }
         }
+    }
+    got
+}
+
+fn fixture_file(fixtures: &Path, name: &str) -> Value {
+    serde_json::from_str(&std::fs::read_to_string(fixtures.join(name)).unwrap()).unwrap()
+}
+
+#[test]
+fn corpus_runs_match_the_oracle() {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let expected_runs = fixture_file(&fixtures, "expected.json");
+    let expected_runs = expected_runs.as_object().unwrap();
+    let normalizer = Normalizer::new().unwrap();
+    let mut checked = 0;
+    for (run, want) in expected_runs {
+        let mut got = totals(&normalizer, &fixtures, run);
         // Durations are summed in microseconds on both sides; allow one microsecond of rounding per call.
         let want = expected(want);
         let slack = got.duration_count;
@@ -207,6 +217,60 @@ fn corpus_runs_match_the_oracle() {
         checked += 1;
     }
     assert_eq!(checked, expected_runs.len());
+}
+
+/// Every run of real model calls charts what the API returned, except in the fields a known difference names. A
+/// reason no run needs any more fails the test: the gap it describes is closed and must leave `wire.json`.
+#[test]
+fn real_call_runs_match_the_api() {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let wire = fixture_file(&fixtures, "wire.json");
+    let normalizer = Normalizer::new().unwrap();
+    let mut needed = BTreeSet::new();
+    let mut wrong = Vec::new();
+    for (run, api) in wire["runs"].as_object().unwrap() {
+        let got = totals(&normalizer, &fixtures, run);
+        let fields = [
+            ("success", got.success),
+            ("error", got.error),
+            ("input", got.input),
+            ("output", got.output),
+            ("cache_read", got.cache_read),
+            ("cache_write", got.cache_write),
+            ("reasoning", got.reasoning),
+        ];
+        // An answer without a usage block leaves only the calls to compare.
+        let comparable = if api["usage"].as_bool().unwrap() {
+            fields.len()
+        } else {
+            2
+        };
+        let excepted: Vec<&str> = api["except"]
+            .as_array()
+            .map(|fields| fields.iter().map(|field| field.as_str().unwrap()).collect())
+            .unwrap_or_default();
+        for (field, ours) in &fields[..comparable] {
+            let theirs = api[*field].as_u64().unwrap();
+            if *ours == theirs {
+                continue;
+            }
+            if excepted.contains(field) {
+                needed.insert(api["why"].as_str().unwrap());
+            } else {
+                wrong.push(format!(
+                    "{run}: {field} is {ours}, the API returned {theirs}"
+                ));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    let reasons: BTreeSet<&str> = wire["reasons"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(needed, reasons, "reasons no run needs any more");
 }
 
 /// The gates admit every record a rule matches, and keep the rest away from VRL.
