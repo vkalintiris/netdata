@@ -1,9 +1,15 @@
 # Spans that follow the OpenTelemetry GenAI conventions, whoever sends them; also the fallback for unknown
 # producers. Old names (`gen_ai.system`, `prompt_tokens`, `cache_creation`) are still emitted by producers. Pydantic AI
-# and the Vercel AI SDK write the time to the first chunk under the former name of the conventions' metric.
+# and the Vercel AI SDK write the time to the first chunk under the former name of the conventions' metric; Strands
+# writes it in integer milliseconds under the name the conventions give to a server's own measurement, although Strands
+# measures it in the client. OpenLIT uses that name too, in seconds, for a value that is not the time to the first chunk.
 a = .attributes
 operation = a."gen_ai.operation.name"
 if includes(["chat", "text_completion", "generate_content", "embeddings"], operation) {
+  first_chunk = a."gen_ai.response.time_to_first_chunk" || a."gen_ai.client.operation.time_to_first_chunk"
+  if .scope.name == "strands.telemetry.tracer" && is_integer(a."gen_ai.server.time_to_first_token") {
+    first_chunk = to_int!(a."gen_ai.server.time_to_first_token") / 1000.0
+  }
   {
     "operation": operation,
     "provider": a."gen_ai.provider.name" || a."gen_ai.system",
@@ -15,7 +21,7 @@ if includes(["chat", "text_completion", "generate_content", "embeddings"], opera
     "cache_write_tokens": a."gen_ai.usage.cache_write.input_tokens" || a."gen_ai.usage.cache_creation.input_tokens",
     "reasoning_tokens": a."gen_ai.usage.reasoning.output_tokens" || a."gen_ai.usage.reasoning_tokens" || a."gen_ai.usage.details.reasoning_tokens",
     "error": .status_code == 2 || exists(a."error.type"),
-    "time_to_first_chunk_seconds": a."gen_ai.response.time_to_first_chunk" || a."gen_ai.client.operation.time_to_first_chunk",
+    "time_to_first_chunk_seconds": first_chunk,
     "response_id": a."gen_ai.response.id"
   }
 } else {
