@@ -265,6 +265,7 @@ mod tests {
                 error: false,
                 end_time_unix_nano: end,
                 duration_seconds: None,
+                time_to_first_chunk_seconds: None,
                 response_id: response_id.map(str::to_string),
             },
             trace_id: vec![trace],

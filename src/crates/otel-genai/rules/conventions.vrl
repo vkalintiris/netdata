@@ -1,5 +1,6 @@
 # Spans that follow the OpenTelemetry GenAI conventions, whoever sends them; also the fallback for unknown
-# producers. Old names (`gen_ai.system`, `prompt_tokens`, `cache_creation`) are still emitted by producers.
+# producers. Old names (`gen_ai.system`, `prompt_tokens`, `cache_creation`) are still emitted by producers. Pydantic AI
+# and the Vercel AI SDK write the time to the first chunk under the former name of the conventions' metric.
 a = .attributes
 operation = a."gen_ai.operation.name"
 if includes(["chat", "text_completion", "generate_content", "embeddings"], operation) {
@@ -14,6 +15,7 @@ if includes(["chat", "text_completion", "generate_content", "embeddings"], opera
     "cache_write_tokens": a."gen_ai.usage.cache_write.input_tokens" || a."gen_ai.usage.cache_creation.input_tokens",
     "reasoning_tokens": a."gen_ai.usage.reasoning.output_tokens" || a."gen_ai.usage.reasoning_tokens" || a."gen_ai.usage.details.reasoning_tokens",
     "error": .status_code == 2 || exists(a."error.type"),
+    "time_to_first_chunk_seconds": a."gen_ai.response.time_to_first_chunk" || a."gen_ai.client.operation.time_to_first_chunk",
     "response_id": a."gen_ai.response.id"
   }
 } else {
