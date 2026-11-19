@@ -1,7 +1,9 @@
 # MLflow tracing: every attribute value is JSON-encoded (the span type arrives as `"CHAT_MODEL"`, quotes included).
 # Tokens sit in one JSON object, `mlflow.chat.tokenUsage`, whose input count already includes cache reads and writes
-# (`cache_creation_input_tokens_above_1hr` is a part of the cache writes). MLflow reports no reasoning count, and a
-# provider only on some paths.
+# (`cache_creation_input_tokens_above_1hr` is a part of the cache writes). It has no reasoning count: that sits only in
+# the provider's own usage block inside the answer, `mlflow.spanOutputs` (OpenAI
+# `completion_tokens_details.reasoning_tokens`, Anthropic `output_tokens_details.thinking_tokens`). A provider arrives
+# only on some paths.
 a = .attributes
 kind = null
 if is_string(a."mlflow.spanType") { kind = parse_json(string!(a."mlflow.spanType")) ?? null }
@@ -18,6 +20,13 @@ if .scope.name == "mlflow.tracing.provider" && operation != null {
   usage = null
   if is_string(a."mlflow.chat.tokenUsage") { usage = parse_json(string!(a."mlflow.chat.tokenUsage")) ?? null }
   if !is_object(usage) { usage = {} }
+  reasoning = null
+  if is_string(a."mlflow.spanOutputs") {
+    outputs = parse_json(string!(a."mlflow.spanOutputs")) ?? null
+    if is_object(outputs) && is_object(outputs.usage) {
+      reasoning = outputs.usage.completion_tokens_details.reasoning_tokens || outputs.usage.output_tokens_details.thinking_tokens
+    }
+  }
   provider = null
   if is_string(a."mlflow.llm.provider") { provider = parse_json(string!(a."mlflow.llm.provider")) ?? null }
   request_model = null
@@ -36,6 +45,7 @@ if .scope.name == "mlflow.tracing.provider" && operation != null {
     "output_tokens": usage.output_tokens,
     "cache_read_tokens": usage.cache_read_input_tokens,
     "cache_write_tokens": usage.cache_creation_input_tokens,
+    "reasoning_tokens": reasoning,
     "error": .status_code == 2
   }
 } else {
