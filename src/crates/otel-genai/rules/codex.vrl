@@ -1,24 +1,36 @@
-# Codex counts from its `codex.sse_event` log event, the only signal with both tokens and the model. Some counts
-# arrive as decimal strings. The event says nothing about the call's duration.
+# Codex counts from its log events; no event says how long a call took, and some counts arrive as decimal strings.
+# A `codex.sse_event` of kind `response.completed` ends a request: with token counts when the request was answered,
+# with only an error message when it failed (WebSocket transport). The same kind with neither is a marker next to
+# each answered request (HTTP transport) and is no call. Over HTTP a request that failed is a `codex.api_request`.
 a = .attributes
+event = a."event.name"
 kind = a."event.kind"
-if .scope.name == "codex_otel.log_only" && a."event.name" == "codex.sse_event" && includes(["response.completed", "response.failed"], kind) {
-  counts = map_values({
-    "input_tokens": a.input_token_count,
-    "output_tokens": a.output_token_count,
-    "cache_read_tokens": a.cached_token_count,
-    "cache_write_tokens": a.cache_write_token_count,
-    "reasoning_tokens": a.reasoning_token_count
-  }) -> |count| {
-    if is_string(count) { parse_int!(count) } else { count }
+call = {
+  "operation": "chat",
+  # The events name no provider.
+  "provider": "openai",
+  "request_model": a.model
+}
+if .scope.name != "codex_otel.log_only" {
+  null
+} else if event == "codex.sse_event" && includes(["response.completed", "response.failed"], kind) {
+  failed = kind == "response.failed" || exists(a."error.message")
+  if failed || exists(a.input_token_count) {
+    counts = map_values({
+      "input_tokens": a.input_token_count,
+      "output_tokens": a.output_token_count,
+      "cache_read_tokens": a.cached_token_count,
+      "cache_write_tokens": a.cache_write_token_count,
+      "reasoning_tokens": a.reasoning_token_count
+    }) -> |count| {
+      if is_string(count) { parse_int!(count) } else { count }
+    }
+    merge(merge(call, counts), { "error": failed })
+  } else {
+    null
   }
-  merge(counts, {
-    "operation": "chat",
-    # The event names no provider.
-    "provider": "openai",
-    "request_model": a.model,
-    "error": kind == "response.failed"
-  })
+} else if event == "codex.api_request" && a.endpoint == "/responses" && exists(a."error.message") {
+  merge(call, { "error": true })
 } else {
   null
 }

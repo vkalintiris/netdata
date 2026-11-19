@@ -251,6 +251,482 @@
   "reasoning": 5,
   "success": 1
  },
+ "ca1-claude-badmodel": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.639,
+  "error": 1,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "ca1-claude-exhaust": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.005,
+  "error": 1,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "ca1-claude-fail400": {
+  "cache_read": 12785,
+  "cache_write": 7639,
+  "duration_count": 1,
+  "duration_sum": 0.876,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 20426,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "-"
+   ]
+  ],
+  "output": 3,
+  "reasoning": 0,
+  "success": 1
+ },
+ "ca1-claude-loop": {
+  "cache_read": 95987,
+  "cache_write": 8625,
+  "duration_count": 5,
+  "duration_sum": 8.137,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 104622,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "-"
+   ]
+  ],
+  "output": 952,
+  "reasoning": 0,
+  "success": 5
+ },
+ "ca1-claude-par-a": {
+  "cache_read": 33220,
+  "cache_write": 7747,
+  "duration_count": 2,
+  "duration_sum": 1.911,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 40971,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "-"
+   ]
+  ],
+  "output": 101,
+  "reasoning": 0,
+  "success": 2
+ },
+ "ca1-claude-par-b": {
+  "cache_read": 74479,
+  "cache_write": 7988,
+  "duration_count": 4,
+  "duration_sum": 5.414,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 82475,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "-"
+   ]
+  ],
+  "output": 710,
+  "reasoning": 0,
+  "success": 4
+ },
+ "ca1-claude-plain": {
+  "cache_read": 12785,
+  "cache_write": 7637,
+  "duration_count": 1,
+  "duration_sum": 0.908,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 20424,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "-"
+   ]
+  ],
+  "output": 3,
+  "reasoning": 0,
+  "success": 1
+ },
+ "ca1-claude-retry429": {
+  "cache_read": 12785,
+  "cache_write": 7639,
+  "duration_count": 1,
+  "duration_sum": 0.783,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 20426,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "-"
+   ]
+  ],
+  "output": 3,
+  "reasoning": 0,
+  "success": 1
+ },
+ "ca1-claude-retry529x3": {
+  "cache_read": 33224,
+  "cache_write": 7751,
+  "duration_count": 2,
+  "duration_sum": 2.088,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 40979,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "-"
+   ]
+  ],
+  "output": 99,
+  "reasoning": 0,
+  "success": 2
+ },
+ "ca1-claude-subagent": {
+  "cache_read": 55854,
+  "cache_write": 19933,
+  "duration_count": 5,
+  "duration_sum": 9.0,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 75797,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "-"
+   ]
+  ],
+  "output": 959,
+  "reasoning": 0,
+  "success": 5
+ },
+ "ca1-claude-subagents2": {
+  "cache_read": 94362,
+  "cache_write": 15975,
+  "duration_count": 8,
+  "duration_sum": 12.94,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 110353,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "-"
+   ]
+  ],
+  "output": 1245,
+  "reasoning": 0,
+  "success": 8
+ },
+ "ca1-claude-tool": {
+  "cache_read": 53758,
+  "cache_write": 8085,
+  "duration_count": 3,
+  "duration_sum": 4.532,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 61849,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "-"
+   ]
+  ],
+  "output": 466,
+  "reasoning": 0,
+  "success": 3
+ },
+ "ca1-codex-badmodel": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 0,
+  "labels": [],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "ca1-codex-exhaust": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 29,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-6.2-sol",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "ca1-codex-fail400": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 1,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-6.2-sol",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "ca1-codex-loop": {
+  "cache_read": 75008,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 85890,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-6.2-sol",
+    "-"
+   ]
+  ],
+  "output": 129,
+  "reasoning": 0,
+  "success": 4
+ },
+ "ca1-codex-par-a": {
+  "cache_read": 37376,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 40868,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-6.2-sol",
+    "-"
+   ]
+  ],
+  "output": 84,
+  "reasoning": 0,
+  "success": 2
+ },
+ "ca1-codex-par-b": {
+  "cache_read": 63872,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 85908,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-6.2-sol",
+    "-"
+   ]
+  ],
+  "output": 126,
+  "reasoning": 0,
+  "success": 4
+ },
+ "ca1-codex-plain": {
+  "cache_read": 11136,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 20368,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-6.2-sol",
+    "-"
+   ]
+  ],
+  "output": 5,
+  "reasoning": 0,
+  "success": 1
+ },
+ "ca1-codex-reason": {
+  "cache_read": 4736,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 21339,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-6.2-sol",
+    "-"
+   ]
+  ],
+  "output": 5,
+  "reasoning": 0,
+  "success": 1
+ },
+ "ca1-codex-retry429": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 1,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-6.2-sol",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "ca1-codex-retry500x3": {
+  "cache_read": 31488,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 3,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 40881,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-6.2-sol",
+    "-"
+   ]
+  ],
+  "output": 85,
+  "reasoning": 0,
+  "success": 2
+ },
+ "ca1-codex-tool": {
+  "cache_read": 21120,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 42705,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-6.2-sol",
+    "-"
+   ]
+  ],
+  "output": 58,
+  "reasoning": 0,
+  "success": 2
+ },
  "cc-native-anthropic-parallel": {
   "cache_read": 0,
   "cache_write": 0,
@@ -689,6 +1165,223 @@
    ]
   ],
   "output": 51,
+  "reasoning": 0,
+  "success": 3
+ },
+ "cw2-codex-badmodel": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 1,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "cw2-codex-exhaust": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 35,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 2,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-6.2-sol",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 1
+ },
+ "cw2-codex-fail400": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 0,
+  "labels": [],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "cw2-codex-loop": {
+  "cache_read": 84992,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 85897,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-6.2-sol",
+    "-"
+   ]
+  ],
+  "output": 128,
+  "reasoning": 0,
+  "success": 5
+ },
+ "cw2-codex-par-a": {
+  "cache_read": 21120,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 42738,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-6.2-sol",
+    "-"
+   ]
+  ],
+  "output": 84,
+  "reasoning": 0,
+  "success": 3
+ },
+ "cw2-codex-par-b": {
+  "cache_read": 63872,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 85900,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-6.2-sol",
+    "-"
+   ]
+  ],
+  "output": 134,
+  "reasoning": 0,
+  "success": 5
+ },
+ "cw2-codex-plain": {
+  "cache_read": 21120,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 21304,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-6.2-sol",
+    "-"
+   ]
+  ],
+  "output": 5,
+  "reasoning": 0,
+  "success": 2
+ },
+ "cw2-codex-reason": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 20407,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-6.2-sol",
+    "-"
+   ]
+  ],
+  "output": 5,
+  "reasoning": 0,
+  "success": 2
+ },
+ "cw2-codex-retry429": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 0,
+  "labels": [],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "cw2-codex-retry500x3": {
+  "cache_read": 42240,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 3,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 42753,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-6.2-sol",
+    "-"
+   ]
+  ],
+  "output": 87,
+  "reasoning": 0,
+  "success": 3
+ },
+ "cw2-codex-tool": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 42733,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "gpt-6.2-sol",
+    "-"
+   ]
+  ],
+  "output": 83,
   "reasoning": 0,
   "success": 3
  },

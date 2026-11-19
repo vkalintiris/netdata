@@ -60,7 +60,7 @@ const RULES: &[RuleSource] = &[
         source: include_str!("../rules/codex.vrl"),
         signal: Signal::Log,
         gate: Gate::scope_in(&["codex_otel.log_only"])
-            .and_attribute_in("event.name", &["codex.sse_event"]),
+            .and_attribute_in("event.name", &["codex.sse_event", "codex.api_request"]),
     },
     RuleSource {
         name: "litellm",
