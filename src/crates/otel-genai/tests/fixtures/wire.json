@@ -11,6 +11,7 @@
   "langsmith-failure-as-ok": "LangSmith's OTLP mode exports a failed call with status OK (the error is a span event)",
   "langsmith-js-no-call-span": "LangSmith's OTLP mode exports no model-call spans in JavaScript",
   "llamaindex-openllmetry-error-no-span": "LlamaIndex with OpenLLMetry leaves no span for a failed call",
+  "llamaindex-openllmetry-no-reasoning": "LlamaIndex with OpenLLMetry sends no reasoning count",
   "mlflow-stream-not-traced": "MLflow does not trace Anthropic's messages.stream()",
   "openai-agents-anthropic-stream-no-usage": "The OpenAI Agents SDK's spans carry no usage for a streamed call on the Anthropic path",
   "openai-agents-js-separate-roots": "OpenAI Agents SDK (JavaScript) with a provider instrumentation: the provider span is a separate root, the call counts twice",
@@ -24,6 +25,7 @@
   "openllmetry-py-stream-no-reasoning": "OpenLLMetry (Python) sends no reasoning count on OpenAI streams",
   "otel-openai-no-cache-reasoning": "OpenTelemetry's OpenAI instrumentation (openai-v2, JavaScript, EDOT) sends no cache-read or reasoning count",
   "pydantic-ai-rejected-attempts": "OpenTelemetry's Anthropic instrumentation emits failed call spans for attempts rejected before any request",
+  "sdk-retry-one-call": "An SDK retries a failed request inside one call: Netdata counts the call once, as it ended, while the API saw every attempt",
   "strands-no-reasoning": "Strands sends no reasoning count",
   "vercel-no-reasoning": "The Vercel AI SDK sends no reasoning count"
  },
@@ -459,6 +461,16 @@
    "success": 2,
    "usage": false
   },
+  "fj-mastra-native-anthropic-streamusage": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 966,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
   "fj-mastra-native-openai-agent": {
    "cache_read": 512,
    "cache_write": 0,
@@ -488,6 +500,16 @@
    "reasoning": 0,
    "success": 2,
    "usage": false
+  },
+  "fj-mastra-native-openai-streamusage": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 919,
+   "output": 94,
+   "reasoning": 31,
+   "success": 2,
+   "usage": true
   },
   "fj-mastra-stacked-anthropic-agent": {
    "cache_read": 0,
@@ -519,6 +541,16 @@
    "success": 2,
    "usage": false
   },
+  "fj-mastra-stacked-anthropic-streamusage": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 966,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
   "fj-mastra-stacked-openai-agent": {
    "cache_read": 512,
    "cache_write": 0,
@@ -548,6 +580,16 @@
    "reasoning": 0,
    "success": 2,
    "usage": false
+  },
+  "fj-mastra-stacked-openai-streamusage": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 905,
+   "output": 83,
+   "reasoning": 17,
+   "success": 2,
+   "usage": true
   },
   "fj-openai-agents-openinference-anthropic-agent": {
    "cache_read": 0,
@@ -774,6 +816,19 @@
    "success": 2,
    "usage": false
   },
+  "fj-vercel-native-openai-streamusage": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": {
+    "reasoning": "vercel-no-reasoning"
+   },
+   "input": 926,
+   "output": 100,
+   "reasoning": 38,
+   "success": 2,
+   "usage": true
+  },
   "fj-vercel-stacked-anthropic-agent": {
    "cache_read": 0,
    "cache_write": 0,
@@ -851,6 +906,19 @@
    "reasoning": 0,
    "success": 2,
    "usage": false
+  },
+  "fj-vercel-stacked-openai-streamusage": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": {
+    "reasoning": "vercel-no-reasoning"
+   },
+   "input": 913,
+   "output": 87,
+   "reasoning": 25,
+   "success": 2,
+   "usage": true
   },
   "fp-agno-openinference-anthropic-agent": {
    "cache_read": 0,
@@ -1675,6 +1743,16 @@
    "success": 2,
    "usage": false
   },
+  "fp-langchain-langfuse-openai-streamusage": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 852,
+   "output": 91,
+   "reasoning": 28,
+   "success": 2,
+   "usage": true
+  },
   "fp-langchain-langsmith-anthropic-agent": {
    "cache_read": 0,
    "cache_write": 0,
@@ -1761,6 +1839,16 @@
    "success": 2,
    "usage": false
   },
+  "fp-langchain-langsmith-openai-streamusage": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 852,
+   "output": 92,
+   "reasoning": 29,
+   "success": 2,
+   "usage": true
+  },
   "fp-langchain-openinference-anthropic-agent": {
    "cache_read": 0,
    "cache_write": 0,
@@ -1838,6 +1926,16 @@
    "reasoning": 0,
    "success": 2,
    "usage": false
+  },
+  "fp-langchain-openinference-openai-streamusage": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 852,
+   "output": 98,
+   "reasoning": 35,
+   "success": 2,
+   "usage": true
   },
   "fp-langchain-openllmetry-anthropic-agent": {
    "cache_read": 0,
@@ -1919,6 +2017,20 @@
    "reasoning": 0,
    "success": 2,
    "usage": false
+  },
+  "fp-langchain-openllmetry-openai-streamusage": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": {
+    "cache_read": "openllmetry-langchain-no-cache-reasoning",
+    "reasoning": "openllmetry-langchain-no-cache-reasoning"
+   },
+   "input": 852,
+   "output": 99,
+   "reasoning": 36,
+   "success": 2,
+   "usage": true
   },
   "fp-langchain-stacked-anthropic-agent": {
    "cache_read": 0,
@@ -2094,6 +2206,16 @@
    "success": 2,
    "usage": false
   },
+  "fp-llama-index-openinference-openai-streamusage": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 886,
+   "output": 93,
+   "reasoning": 31,
+   "success": 2,
+   "usage": true
+  },
   "fp-llama-index-openllmetry-anthropic-agent": {
    "cache_read": 0,
    "cache_write": 0,
@@ -2157,6 +2279,19 @@
    "success": 2,
    "usage": false
   },
+  "fp-llama-index-openllmetry-openai-streamusage": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": {
+    "reasoning": "llamaindex-openllmetry-no-reasoning"
+   },
+   "input": 886,
+   "output": 90,
+   "reasoning": 27,
+   "success": 2,
+   "usage": true
+  },
   "fp-llama-index-stacked-anthropic-agent": {
    "cache_read": 0,
    "cache_write": 0,
@@ -2216,6 +2351,16 @@
    "reasoning": 0,
    "success": 2,
    "usage": false
+  },
+  "fp-llama-index-stacked-openai-streamusage": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 886,
+   "output": 80,
+   "reasoning": 17,
+   "success": 2,
+   "usage": true
   },
   "fp-openai-agents-logfire-anthropic-agent": {
    "cache_read": 0,
@@ -2283,6 +2428,16 @@
    "reasoning": 0,
    "success": 2,
    "usage": false
+  },
+  "fp-openai-agents-logfire-openai-streamusage": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 908,
+   "output": 88,
+   "reasoning": 26,
+   "success": 2,
+   "usage": true
   },
   "fp-openai-agents-openinference-anthropic-agent": {
    "cache_read": 0,
@@ -2362,6 +2517,20 @@
    "reasoning": 0,
    "success": 2,
    "usage": false
+  },
+  "fp-openai-agents-openinference-openai-streamusage": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": {
+    "cache_read": "openai-agents-openinference-no-cache-reasoning",
+    "reasoning": "openai-agents-openinference-no-cache-reasoning"
+   },
+   "input": 903,
+   "output": 83,
+   "reasoning": 21,
+   "success": 2,
+   "usage": true
   },
   "fp-openai-agents-openllmetry-anthropic-agent": {
    "cache_read": 0,
@@ -2465,6 +2634,23 @@
    "success": 2,
    "usage": false
   },
+  "fp-openai-agents-openllmetry-openai-streamusage": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": {
+    "cache_read": "openai-agents-openllmetry-no-tokens",
+    "cache_write": "openai-agents-openllmetry-no-tokens",
+    "input": "openai-agents-openllmetry-no-tokens",
+    "output": "openai-agents-openllmetry-no-tokens",
+    "reasoning": "openai-agents-openllmetry-no-tokens"
+   },
+   "input": 904,
+   "output": 88,
+   "reasoning": 22,
+   "success": 2,
+   "usage": true
+  },
   "fp-openai-agents-stacked-anthropic-agent": {
    "cache_read": 0,
    "cache_write": 0,
@@ -2531,6 +2717,16 @@
    "reasoning": 0,
    "success": 2,
    "usage": false
+  },
+  "fp-openai-agents-stacked-openai-streamusage": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 913,
+   "output": 114,
+   "reasoning": 51,
+   "success": 2,
+   "usage": true
   },
   "fp-pydantic-ai-native-anthropic-agent": {
    "cache_read": 0,
@@ -2896,6 +3092,34 @@
    "success": 0,
    "usage": true
   },
+  "lj-ddtrace-anthropic-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "error": "sdk-retry-one-call",
+    "reasoning": "datadog-anthropic-no-reasoning"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lj-ddtrace-anthropic-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "error": "sdk-retry-one-call",
+    "reasoning": "datadog-anthropic-no-reasoning"
+   },
+   "input": 29,
+   "output": 69,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true
+  },
   "lj-ddtrace-anthropic-stream": {
    "cache_read": 0,
    "cache_write": 0,
@@ -2950,6 +3174,32 @@
    "output": 0,
    "reasoning": 0,
    "success": 0,
+   "usage": true
+  },
+  "lj-ddtrace-openai-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lj-ddtrace-openai-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 99,
+   "output": 47,
+   "reasoning": 27,
+   "success": 1,
    "usage": true
   },
   "lj-ddtrace-openai-stream": {
@@ -3014,6 +3264,36 @@
    "success": 0,
    "usage": true
   },
+  "lj-edot-openai-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "cache_read": "otel-openai-no-cache-reasoning",
+    "error": "sdk-retry-one-call",
+    "reasoning": "otel-openai-no-cache-reasoning"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lj-edot-openai-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "cache_read": "otel-openai-no-cache-reasoning",
+    "error": "sdk-retry-one-call",
+    "reasoning": "otel-openai-no-cache-reasoning"
+   },
+   "input": 99,
+   "output": 42,
+   "reasoning": 22,
+   "success": 1,
+   "usage": true
+  },
   "lj-edot-openai-stream": {
    "cache_read": 0,
    "cache_write": 0,
@@ -3070,6 +3350,32 @@
    "output": 0,
    "reasoning": 0,
    "success": 0,
+   "usage": true
+  },
+  "lj-langfuse-openai-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lj-langfuse-openai-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 99,
+   "output": 40,
+   "reasoning": 23,
+   "success": 1,
    "usage": true
   },
   "lj-langfuse-openai-stream": {
@@ -3130,6 +3436,32 @@
    "output": 0,
    "reasoning": 0,
    "success": 0,
+   "usage": true
+  },
+  "lj-native-anthropic-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lj-native-anthropic-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 29,
+   "output": 88,
+   "reasoning": 0,
+   "success": 1,
    "usage": true
   },
   "lj-native-anthropic-stream": {
@@ -3204,6 +3536,34 @@
    "success": 0,
    "usage": true
   },
+  "lj-oivercel-anthropic-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "error": "sdk-retry-one-call",
+    "reasoning": "vercel-no-reasoning"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lj-oivercel-anthropic-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "error": "sdk-retry-one-call",
+    "reasoning": "vercel-no-reasoning"
+   },
+   "input": 29,
+   "output": 72,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true
+  },
   "lj-oivercel-anthropic-stream": {
    "cache_read": 0,
    "cache_write": 0,
@@ -3267,6 +3627,34 @@
    "output": 0,
    "reasoning": 0,
    "success": 0,
+   "usage": true
+  },
+  "lj-oivercel-openai-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "error": "sdk-retry-one-call",
+    "reasoning": "vercel-no-reasoning"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lj-oivercel-openai-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "error": "sdk-retry-one-call",
+    "reasoning": "vercel-no-reasoning"
+   },
+   "input": 99,
+   "output": 57,
+   "reasoning": 44,
+   "success": 1,
    "usage": true
   },
   "lj-oivercel-openai-stream": {
@@ -3335,6 +3723,32 @@
    "success": 0,
    "usage": true
   },
+  "lj-openinference-anthropic-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lj-openinference-anthropic-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 29,
+   "output": 67,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true
+  },
   "lj-openinference-anthropic-stream": {
    "cache_read": 0,
    "cache_write": 0,
@@ -3383,6 +3797,32 @@
    "output": 0,
    "reasoning": 0,
    "success": 0,
+   "usage": true
+  },
+  "lj-openinference-openai-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lj-openinference-openai-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 99,
+   "output": 50,
+   "reasoning": 28,
+   "success": 1,
    "usage": true
   },
   "lj-openinference-openai-stream": {
@@ -3461,6 +3901,36 @@
    "success": 0,
    "usage": true
   },
+  "lj-openllmetry-anthropic-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "cache_read": "openllmetry-js-no-cache-reasoning",
+    "error": "sdk-retry-one-call",
+    "reasoning": "openllmetry-js-no-cache-reasoning"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lj-openllmetry-anthropic-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "cache_read": "openllmetry-js-no-cache-reasoning",
+    "error": "sdk-retry-one-call",
+    "reasoning": "openllmetry-js-no-cache-reasoning"
+   },
+   "input": 29,
+   "output": 67,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true
+  },
   "lj-openllmetry-anthropic-stream": {
    "cache_read": 0,
    "cache_write": 0,
@@ -3530,6 +4000,36 @@
    "output": 0,
    "reasoning": 0,
    "success": 0,
+   "usage": true
+  },
+  "lj-openllmetry-openai-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "cache_read": "openllmetry-js-no-cache-reasoning",
+    "error": "openllmetry-js-error-no-span",
+    "reasoning": "openllmetry-js-no-cache-reasoning"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lj-openllmetry-openai-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "cache_read": "openllmetry-js-no-cache-reasoning",
+    "error": "sdk-retry-one-call",
+    "reasoning": "openllmetry-js-no-cache-reasoning"
+   },
+   "input": 99,
+   "output": 89,
+   "reasoning": 57,
+   "success": 1,
    "usage": true
   },
   "lj-openllmetry-openai-stream": {
@@ -3603,6 +4103,36 @@
    "output": 0,
    "reasoning": 0,
    "success": 0,
+   "usage": true
+  },
+  "lj-otel-openai-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "cache_read": "otel-openai-no-cache-reasoning",
+    "error": "sdk-retry-one-call",
+    "reasoning": "otel-openai-no-cache-reasoning"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lj-otel-openai-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "cache_read": "otel-openai-no-cache-reasoning",
+    "error": "sdk-retry-one-call",
+    "reasoning": "otel-openai-no-cache-reasoning"
+   },
+   "input": 99,
+   "output": 64,
+   "reasoning": 31,
+   "success": 1,
    "usage": true
   },
   "lj-otel-openai-stream": {
@@ -3685,6 +4215,34 @@
    "success": 0,
    "usage": true
   },
+  "lj-vercel-anthropic-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "error": "sdk-retry-one-call",
+    "reasoning": "vercel-no-reasoning"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lj-vercel-anthropic-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "error": "sdk-retry-one-call",
+    "reasoning": "vercel-no-reasoning"
+   },
+   "input": 29,
+   "output": 64,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true
+  },
   "lj-vercel-anthropic-stream": {
    "cache_read": 0,
    "cache_write": 0,
@@ -3748,6 +4306,34 @@
    "output": 0,
    "reasoning": 0,
    "success": 0,
+   "usage": true
+  },
+  "lj-vercel-openai-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "error": "sdk-retry-one-call",
+    "reasoning": "vercel-no-reasoning"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lj-vercel-openai-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "error": "sdk-retry-one-call",
+    "reasoning": "vercel-no-reasoning"
+   },
+   "input": 99,
+   "output": 57,
+   "reasoning": 36,
+   "success": 1,
    "usage": true
   },
   "lj-vercel-openai-stream": {
@@ -3841,6 +4427,34 @@
    "success": 0,
    "usage": true
   },
+  "lr-ddtrace-anthropic-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "error": "sdk-retry-one-call",
+    "reasoning": "datadog-anthropic-no-reasoning"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-ddtrace-anthropic-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "error": "sdk-retry-one-call",
+    "reasoning": "datadog-anthropic-no-reasoning"
+   },
+   "input": 29,
+   "output": 76,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true
+  },
   "lr-ddtrace-anthropic-stream": {
    "cache_read": 0,
    "cache_write": 0,
@@ -3907,6 +4521,32 @@
    "success": 0,
    "usage": true
   },
+  "lr-ddtrace-openai-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-ddtrace-openai-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 99,
+   "output": 47,
+   "reasoning": 34,
+   "success": 1,
+   "usage": true
+  },
   "lr-ddtrace-openai-stream": {
    "cache_read": 0,
    "cache_write": 0,
@@ -3965,6 +4605,32 @@
    "output": 0,
    "reasoning": 0,
    "success": 0,
+   "usage": true
+  },
+  "lr-langfuse-openai-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-langfuse-openai-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 99,
+   "output": 54,
+   "reasoning": 26,
+   "success": 1,
    "usage": true
   },
   "lr-langfuse-openai-stream": {
@@ -4052,6 +4718,34 @@
    "success": 0,
    "usage": true
   },
+  "lr-lmnr-anthropic-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "error": "sdk-retry-one-call",
+    "reasoning": "laminar-anthropic-no-reasoning"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-lmnr-anthropic-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "error": "sdk-retry-one-call",
+    "reasoning": "laminar-anthropic-no-reasoning"
+   },
+   "input": 29,
+   "output": 69,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true
+  },
   "lr-lmnr-anthropic-stream": {
    "cache_read": 0,
    "cache_write": 0,
@@ -4116,6 +4810,32 @@
    "output": 0,
    "reasoning": 0,
    "success": 0,
+   "usage": true
+  },
+  "lr-lmnr-openai-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-lmnr-openai-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 99,
+   "output": 58,
+   "reasoning": 34,
+   "success": 1,
    "usage": true
   },
   "lr-lmnr-openai-stream": {
@@ -4188,6 +4908,32 @@
    "success": 0,
    "usage": true
   },
+  "lr-logfire-anthropic-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-logfire-anthropic-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 29,
+   "output": 73,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true
+  },
   "lr-logfire-anthropic-stream": {
    "cache_read": 0,
    "cache_write": 0,
@@ -4246,6 +4992,32 @@
    "output": 0,
    "reasoning": 0,
    "success": 0,
+   "usage": true
+  },
+  "lr-logfire-openai-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-logfire-openai-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 99,
+   "output": 31,
+   "reasoning": 28,
+   "success": 1,
    "usage": true
   },
   "lr-logfire-openai-stream": {
@@ -4318,6 +5090,32 @@
    "success": 0,
    "usage": true
   },
+  "lr-mlflow-anthropic-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-mlflow-anthropic-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 29,
+   "output": 75,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true
+  },
   "lr-mlflow-anthropic-stream": {
    "cache_read": 0,
    "cache_write": 0,
@@ -4385,6 +5183,32 @@
    "output": 0,
    "reasoning": 0,
    "success": 0,
+   "usage": true
+  },
+  "lr-mlflow-openai-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-mlflow-openai-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 99,
+   "output": 61,
+   "reasoning": 29,
+   "success": 1,
    "usage": true
   },
   "lr-mlflow-openai-stream": {
@@ -4457,6 +5281,32 @@
    "success": 0,
    "usage": true
   },
+  "lr-native-anthropic-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-native-anthropic-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 29,
+   "output": 68,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true
+  },
   "lr-native-anthropic-stream": {
    "cache_read": 0,
    "cache_write": 0,
@@ -4527,6 +5377,32 @@
    "success": 0,
    "usage": true
   },
+  "lr-openinference-anthropic-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-openinference-anthropic-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 29,
+   "output": 76,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true
+  },
   "lr-openinference-anthropic-stream": {
    "cache_read": 0,
    "cache_write": 0,
@@ -4585,6 +5461,32 @@
    "output": 0,
    "reasoning": 0,
    "success": 0,
+   "usage": true
+  },
+  "lr-openinference-openai-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-openinference-openai-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 99,
+   "output": 54,
+   "reasoning": 40,
+   "success": 1,
    "usage": true
   },
   "lr-openinference-openai-stream": {
@@ -4672,6 +5574,34 @@
    "success": 0,
    "usage": true
   },
+  "lr-openlit-anthropic-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "error": "sdk-retry-one-call",
+    "reasoning": "openlit-no-reasoning"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-openlit-anthropic-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "error": "sdk-retry-one-call",
+    "reasoning": "openlit-no-reasoning"
+   },
+   "input": 29,
+   "output": 85,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true
+  },
   "lr-openlit-anthropic-stream": {
    "cache_read": 0,
    "cache_write": 0,
@@ -4750,6 +5680,34 @@
    "success": 0,
    "usage": true
   },
+  "lr-openlit-openai-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "error": "sdk-retry-one-call",
+    "reasoning": "openlit-no-reasoning"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-openlit-openai-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "error": "sdk-retry-one-call",
+    "reasoning": "openlit-no-reasoning"
+   },
+   "input": 99,
+   "output": 68,
+   "reasoning": 55,
+   "success": 1,
+   "usage": true
+  },
   "lr-openlit-openai-stream": {
    "cache_read": 0,
    "cache_write": 0,
@@ -4826,6 +5784,32 @@
    "success": 0,
    "usage": true
   },
+  "lr-openllmetry-anthropic-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-openllmetry-anthropic-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 29,
+   "output": 68,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true
+  },
   "lr-openllmetry-anthropic-stream": {
    "cache_read": 0,
    "cache_write": 0,
@@ -4884,6 +5868,32 @@
    "output": 0,
    "reasoning": 0,
    "success": 0,
+   "usage": true
+  },
+  "lr-openllmetry-openai-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-openllmetry-openai-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 99,
+   "output": 102,
+   "reasoning": 65,
+   "success": 1,
    "usage": true
   },
   "lr-openllmetry-openai-stream": {
@@ -4959,6 +5969,32 @@
    "success": 0,
    "usage": true
   },
+  "lr-otelgenai-anthropic-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-otelgenai-anthropic-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 29,
+   "output": 71,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true
+  },
   "lr-otelgenai-anthropic-stream": {
    "cache_read": 0,
    "cache_write": 0,
@@ -5017,6 +6053,32 @@
    "output": 0,
    "reasoning": 0,
    "success": 0,
+   "usage": true
+  },
+  "lr-otelgenai-openai-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-otelgenai-openai-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "error": "sdk-retry-one-call"
+   },
+   "input": 99,
+   "output": 64,
+   "reasoning": 51,
+   "success": 1,
    "usage": true
   },
   "lr-otelgenai-openai-stream": {
@@ -5093,6 +6155,36 @@
    "output": 0,
    "reasoning": 0,
    "success": 0,
+   "usage": true
+  },
+  "lr-otelv2-openai-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "cache_read": "otel-openai-no-cache-reasoning",
+    "error": "sdk-retry-one-call",
+    "reasoning": "otel-openai-no-cache-reasoning"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-otelv2-openai-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "cache_read": "otel-openai-no-cache-reasoning",
+    "error": "sdk-retry-one-call",
+    "reasoning": "otel-openai-no-cache-reasoning"
+   },
+   "input": 99,
+   "output": 66,
+   "reasoning": 42,
+   "success": 1,
    "usage": true
   },
   "lr-otelv2-openai-stream": {
@@ -5177,6 +6269,36 @@
    "output": 0,
    "reasoning": 0,
    "success": 0,
+   "usage": true
+  },
+  "lr-otelv2latest-openai-ratelimit": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "cache_read": "otel-openai-no-cache-reasoning",
+    "error": "sdk-retry-one-call",
+    "reasoning": "otel-openai-no-cache-reasoning"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-otelv2latest-openai-retry": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "cache_read": "otel-openai-no-cache-reasoning",
+    "error": "sdk-retry-one-call",
+    "reasoning": "otel-openai-no-cache-reasoning"
+   },
+   "input": 99,
+   "output": 30,
+   "reasoning": 17,
+   "success": 1,
    "usage": true
   },
   "lr-otelv2latest-openai-stream": {
