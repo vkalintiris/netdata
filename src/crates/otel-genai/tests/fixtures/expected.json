@@ -7041,7 +7041,7 @@
    ]
   ],
   "output": 214,
-  "reasoning": 0,
+  "reasoning": 92,
   "success": 1
  },
  "lr-mlflow-anthropic-cache": {
@@ -7060,7 +7060,7 @@
    ]
   ],
   "output": 193,
-  "reasoning": 0,
+  "reasoning": 185,
   "success": 2
  },
  "lr-mlflow-anthropic-cache1h": {
@@ -7079,7 +7079,7 @@
    ]
   ],
   "output": 89,
-  "reasoning": 0,
+  "reasoning": 81,
   "success": 2
  },
  "lr-mlflow-anthropic-chat": {
@@ -7167,7 +7167,7 @@
    ]
   ],
   "output": 33,
-  "reasoning": 0,
+  "reasoning": 20,
   "success": 1
  },
  "lr-mlflow-openai-cache": {
@@ -7186,7 +7186,7 @@
    ]
   ],
   "output": 203,
-  "reasoning": 0,
+  "reasoning": 148,
   "success": 2
  },
  "lr-mlflow-openai-chat": {
@@ -7205,7 +7205,7 @@
    ]
   ],
   "output": 32,
-  "reasoning": 0,
+  "reasoning": 19,
   "success": 1
  },
  "lr-mlflow-openai-error": {
@@ -7243,7 +7243,7 @@
    ]
   ],
   "output": 50,
-  "reasoning": 0,
+  "reasoning": 29,
   "success": 1
  },
  "lr-mlflow-openai-tool": {
@@ -7262,7 +7262,7 @@
    ]
   ],
   "output": 92,
-  "reasoning": 0,
+  "reasoning": 29,
   "success": 2
  },
  "lr-native-anthropic-async": {
