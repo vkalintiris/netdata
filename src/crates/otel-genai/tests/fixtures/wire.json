@@ -1,0 +1,5328 @@
+{
+ "reasons": {
+  "adk-output-overcount": "Google ADK adds the reasoning count to an output count that already includes it",
+  "agno-openinference-no-reasoning": "OpenInference's Agno instrumentation sends no reasoning count",
+  "claude-code-retries": "Claude Code logs one event per failed query, not one per failed request",
+  "claude-code-side-call": "Claude Code logs no event for an internal side call (Python Agent SDK run)",
+  "crewai-no-call-span": "CrewAI with OpenInference or OpenLLMetry emits no model-call span (run totals only)",
+  "datadog-anthropic-no-reasoning": "Datadog's tracers send no reasoning count on the Anthropic path",
+  "laminar-anthropic-no-reasoning": "Laminar sends no reasoning count on the Anthropic path",
+  "langchain-separate-traces": "A LangChain instrumentation span and a provider-level span of one call land in separate traces without a shared answer id: the call counts twice",
+  "langsmith-failure-as-ok": "LangSmith's OTLP mode exports a failed call with status OK (the error is a span event)",
+  "langsmith-js-no-call-span": "LangSmith's OTLP mode exports no model-call spans in JavaScript",
+  "llamaindex-openllmetry-error-no-span": "LlamaIndex with OpenLLMetry leaves no span for a failed call",
+  "mlflow-stream-not-traced": "MLflow does not trace Anthropic's messages.stream()",
+  "openai-agents-anthropic-stream-no-usage": "The OpenAI Agents SDK's spans carry no usage for a streamed call on the Anthropic path",
+  "openai-agents-js-separate-roots": "OpenAI Agents SDK (JavaScript) with a provider instrumentation: the provider span is a separate root, the call counts twice",
+  "openai-agents-openinference-no-cache-reasoning": "OpenInference's OpenAI Agents instrumentation sends no cache-read or reasoning count",
+  "openai-agents-openllmetry-no-tokens": "OpenLLMetry's OpenAI Agents instrumentation sends no token counts",
+  "openlit-no-reasoning": "OpenLIT sends no reasoning count",
+  "openllmetry-js-error-no-span": "OpenLLMetry (JavaScript) sends no span for a failed OpenAI call",
+  "openllmetry-js-no-cache-reasoning": "OpenLLMetry (JavaScript) sends no cache-read or reasoning count",
+  "openllmetry-js-stream-no-usage": "OpenLLMetry (JavaScript) sends no usage for an OpenAI stream",
+  "openllmetry-langchain-no-cache-reasoning": "OpenLLMetry's LangChain instrumentation sends no reasoning count (JavaScript: no cache-read count either)",
+  "openllmetry-py-stream-no-reasoning": "OpenLLMetry (Python) sends no reasoning count on OpenAI streams",
+  "otel-openai-no-cache-reasoning": "OpenTelemetry's OpenAI instrumentation (openai-v2, JavaScript, EDOT) sends no cache-read or reasoning count",
+  "pydantic-ai-rejected-attempts": "OpenTelemetry's Anthropic instrumentation emits failed call spans for attempts rejected before any request",
+  "strands-no-reasoning": "Strands sends no reasoning count",
+  "vercel-no-reasoning": "The Vercel AI SDK sends no reasoning count"
+ },
+ "runs": {
+  "fj-claude-agent-sdk-native-anthropic-agent": {
+   "cache_read": 9470,
+   "cache_write": 401,
+   "error": 0,
+   "input": 11070,
+   "output": 91,
+   "reasoning": 0,
+   "success": 3,
+   "usage": true
+  },
+  "fj-claude-agent-sdk-native-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 4,
+   "except": [
+    "error"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "claude-code-retries"
+  },
+  "fj-langchain-langsmith-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 974,
+   "output": 67,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "langsmith-js-no-call-span"
+  },
+  "fj-langchain-langsmith-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "langsmith-js-no-call-span"
+  },
+  "fj-langchain-langsmith-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 974,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "langsmith-js-no-call-span"
+  },
+  "fj-langchain-langsmith-openai-agent": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 894,
+   "output": 101,
+   "reasoning": 35,
+   "success": 2,
+   "usage": true,
+   "why": "langsmith-js-no-call-span"
+  },
+  "fj-langchain-langsmith-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "langsmith-js-no-call-span"
+  },
+  "fj-langchain-langsmith-openai-stream": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 894,
+   "output": 92,
+   "reasoning": 29,
+   "success": 2,
+   "usage": true,
+   "why": "langsmith-js-no-call-span"
+  },
+  "fj-langchain-openinference-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 974,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "langchain-separate-traces"
+  },
+  "fj-langchain-openinference-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fj-langchain-openinference-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 974,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "langchain-separate-traces"
+  },
+  "fj-langchain-openinference-openai-agent": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 894,
+   "output": 105,
+   "reasoning": 39,
+   "success": 2,
+   "usage": true
+  },
+  "fj-langchain-openinference-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fj-langchain-openinference-openai-stream": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 894,
+   "output": 96,
+   "reasoning": 35,
+   "success": 2,
+   "usage": true
+  },
+  "fj-langchain-openllmetry-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 974,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fj-langchain-openllmetry-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fj-langchain-openllmetry-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 974,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fj-langchain-openllmetry-openai-agent": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 894,
+   "output": 89,
+   "reasoning": 26,
+   "success": 2,
+   "usage": true,
+   "why": "openllmetry-langchain-no-cache-reasoning"
+  },
+  "fj-langchain-openllmetry-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "openllmetry-langchain-no-cache-reasoning"
+  },
+  "fj-langchain-openllmetry-openai-stream": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 894,
+   "output": 84,
+   "reasoning": 21,
+   "success": 2,
+   "usage": true,
+   "why": "openllmetry-langchain-no-cache-reasoning"
+  },
+  "fj-langchain-stacked-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 974,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "langchain-separate-traces"
+  },
+  "fj-langchain-stacked-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "langchain-separate-traces"
+  },
+  "fj-langchain-stacked-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 974,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "langchain-separate-traces"
+  },
+  "fj-langchain-stacked-openai-agent": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 894,
+   "output": 92,
+   "reasoning": 30,
+   "success": 2,
+   "usage": true,
+   "why": "langchain-separate-traces"
+  },
+  "fj-langchain-stacked-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "langchain-separate-traces"
+  },
+  "fj-langchain-stacked-openai-stream": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 894,
+   "output": 85,
+   "reasoning": 22,
+   "success": 2,
+   "usage": true,
+   "why": "langchain-separate-traces"
+  },
+  "fj-mastra-native-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 966,
+   "output": 67,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fj-mastra-native-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fj-mastra-native-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 2,
+   "usage": false
+  },
+  "fj-mastra-native-openai-agent": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 921,
+   "output": 96,
+   "reasoning": 33,
+   "success": 2,
+   "usage": true
+  },
+  "fj-mastra-native-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fj-mastra-native-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 2,
+   "usage": false
+  },
+  "fj-mastra-stacked-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 966,
+   "output": 67,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fj-mastra-stacked-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fj-mastra-stacked-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 2,
+   "usage": false
+  },
+  "fj-mastra-stacked-openai-agent": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 905,
+   "output": 79,
+   "reasoning": 17,
+   "success": 2,
+   "usage": true
+  },
+  "fj-mastra-stacked-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fj-mastra-stacked-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 2,
+   "usage": false
+  },
+  "fj-openai-agents-openinference-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 970,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fj-openai-agents-openinference-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fj-openai-agents-openinference-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 970,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fj-openai-agents-openinference-openai-agent": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 890,
+   "output": 94,
+   "reasoning": 31,
+   "success": 2,
+   "usage": true
+  },
+  "fj-openai-agents-openinference-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fj-openai-agents-openinference-openai-stream": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 890,
+   "output": 80,
+   "reasoning": 17,
+   "success": 2,
+   "usage": true
+  },
+  "fj-openai-agents-stacked-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 970,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fj-openai-agents-stacked-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fj-openai-agents-stacked-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 970,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fj-openai-agents-stacked-openai-agent": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 890,
+   "output": 85,
+   "reasoning": 22,
+   "success": 2,
+   "usage": true,
+   "why": "openai-agents-js-separate-roots"
+  },
+  "fj-openai-agents-stacked-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "openai-agents-js-separate-roots"
+  },
+  "fj-openai-agents-stacked-openai-stream": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 890,
+   "output": 93,
+   "reasoning": 31,
+   "success": 2,
+   "usage": true,
+   "why": "openai-agents-js-separate-roots"
+  },
+  "fj-vercel-native-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 966,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "fj-vercel-native-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "fj-vercel-native-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 966,
+   "output": 67,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "fj-vercel-native-openai-agent": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 910,
+   "output": 88,
+   "reasoning": 22,
+   "success": 2,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "fj-vercel-native-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "fj-vercel-native-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 2,
+   "usage": false,
+   "why": "vercel-no-reasoning"
+  },
+  "fj-vercel-stacked-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 966,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "fj-vercel-stacked-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "fj-vercel-stacked-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 966,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "fj-vercel-stacked-openai-agent": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 905,
+   "output": 80,
+   "reasoning": 17,
+   "success": 2,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "fj-vercel-stacked-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "fj-vercel-stacked-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 2,
+   "usage": false,
+   "why": "vercel-no-reasoning"
+  },
+  "fp-agno-openinference-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 972,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-agno-openinference-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-agno-openinference-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 972,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-agno-openinference-openai-agent": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 852,
+   "output": 92,
+   "reasoning": 29,
+   "success": 2,
+   "usage": true,
+   "why": "agno-openinference-no-reasoning"
+  },
+  "fp-agno-openinference-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "agno-openinference-no-reasoning"
+  },
+  "fp-agno-openinference-openai-stream": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 852,
+   "output": 90,
+   "reasoning": 27,
+   "success": 2,
+   "usage": true,
+   "why": "agno-openinference-no-reasoning"
+  },
+  "fp-agno-stacked-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 972,
+   "output": 67,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-agno-stacked-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-agno-stacked-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 972,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-agno-stacked-openai-agent": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 852,
+   "output": 98,
+   "reasoning": 35,
+   "success": 2,
+   "usage": true
+  },
+  "fp-agno-stacked-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-agno-stacked-openai-stream": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 852,
+   "output": 85,
+   "reasoning": 23,
+   "success": 2,
+   "usage": true
+  },
+  "fp-claude-agent-sdk-native-anthropic-agent": {
+   "cache_read": 4873,
+   "cache_write": 4947,
+   "error": 0,
+   "except": [
+    "success",
+    "input",
+    "output"
+   ],
+   "input": 11019,
+   "output": 94,
+   "reasoning": 0,
+   "success": 3,
+   "usage": true,
+   "why": "claude-code-side-call"
+  },
+  "fp-claude-agent-sdk-native-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 4,
+   "except": [
+    "error"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "claude-code-retries"
+  },
+  "fp-crewai-openinference-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 1078,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "crewai-no-call-span"
+  },
+  "fp-crewai-openinference-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "crewai-no-call-span"
+  },
+  "fp-crewai-openinference-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 1078,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "crewai-no-call-span"
+  },
+  "fp-crewai-openinference-openai-agent": {
+   "cache_read": 768,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 954,
+   "output": 91,
+   "reasoning": 29,
+   "success": 2,
+   "usage": true,
+   "why": "crewai-no-call-span"
+  },
+  "fp-crewai-openinference-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "crewai-no-call-span"
+  },
+  "fp-crewai-openinference-openai-stream": {
+   "cache_read": 768,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 954,
+   "output": 87,
+   "reasoning": 25,
+   "success": 2,
+   "usage": true,
+   "why": "crewai-no-call-span"
+  },
+  "fp-crewai-openllmetry-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 1078,
+   "output": 76,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "crewai-no-call-span"
+  },
+  "fp-crewai-openllmetry-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "crewai-no-call-span"
+  },
+  "fp-crewai-openllmetry-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 1078,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "crewai-no-call-span"
+  },
+  "fp-crewai-openllmetry-openai-agent": {
+   "cache_read": 768,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 954,
+   "output": 84,
+   "reasoning": 21,
+   "success": 2,
+   "usage": true,
+   "why": "crewai-no-call-span"
+  },
+  "fp-crewai-openllmetry-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "crewai-no-call-span"
+  },
+  "fp-crewai-openllmetry-openai-stream": {
+   "cache_read": 768,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 954,
+   "output": 82,
+   "reasoning": 19,
+   "success": 2,
+   "usage": true,
+   "why": "crewai-no-call-span"
+  },
+  "fp-crewai-stacked-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 1078,
+   "output": 72,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-crewai-stacked-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-crewai-stacked-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 1078,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-crewai-stacked-openai-agent": {
+   "cache_read": 768,
+   "cache_write": 0,
+   "error": 0,
+   "input": 954,
+   "output": 86,
+   "reasoning": 23,
+   "success": 2,
+   "usage": true
+  },
+  "fp-crewai-stacked-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-crewai-stacked-openai-stream": {
+   "cache_read": 768,
+   "cache_write": 0,
+   "error": 0,
+   "input": 954,
+   "output": 82,
+   "reasoning": 19,
+   "success": 2,
+   "usage": true
+  },
+  "fp-dspy-openinference-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 1584,
+   "output": 165,
+   "reasoning": 51,
+   "success": 2,
+   "usage": true
+  },
+  "fp-dspy-openinference-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-dspy-openinference-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 1584,
+   "output": 151,
+   "reasoning": 37,
+   "success": 2,
+   "usage": true
+  },
+  "fp-dspy-openinference-openai-agent": {
+   "cache_read": 1792,
+   "cache_write": 0,
+   "error": 0,
+   "input": 2034,
+   "output": 206,
+   "reasoning": 71,
+   "success": 2,
+   "usage": true
+  },
+  "fp-dspy-openinference-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-dspy-openinference-openai-stream": {
+   "cache_read": 1536,
+   "cache_write": 0,
+   "error": 0,
+   "input": 2034,
+   "output": 176,
+   "reasoning": 39,
+   "success": 2,
+   "usage": true
+  },
+  "fp-dspy-stacked-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 1584,
+   "output": 146,
+   "reasoning": 32,
+   "success": 2,
+   "usage": true
+  },
+  "fp-dspy-stacked-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-dspy-stacked-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 1584,
+   "output": 159,
+   "reasoning": 45,
+   "success": 2,
+   "usage": true
+  },
+  "fp-dspy-stacked-openai-agent": {
+   "cache_read": 1536,
+   "cache_write": 0,
+   "error": 0,
+   "input": 2035,
+   "output": 237,
+   "reasoning": 99,
+   "success": 2,
+   "usage": true
+  },
+  "fp-dspy-stacked-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-dspy-stacked-openai-stream": {
+   "cache_read": 1536,
+   "cache_write": 0,
+   "error": 0,
+   "input": 2048,
+   "output": 225,
+   "reasoning": 72,
+   "success": 2,
+   "usage": true
+  },
+  "fp-google-adk-native-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 955,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-google-adk-native-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-google-adk-native-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 955,
+   "output": 67,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-google-adk-native-openai-agent": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "output"
+   ],
+   "input": 926,
+   "output": 78,
+   "reasoning": 15,
+   "success": 2,
+   "usage": true,
+   "why": "adk-output-overcount"
+  },
+  "fp-google-adk-native-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "output"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "adk-output-overcount"
+  },
+  "fp-google-adk-native-openai-stream": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "output"
+   ],
+   "input": 927,
+   "output": 79,
+   "reasoning": 16,
+   "success": 2,
+   "usage": true,
+   "why": "adk-output-overcount"
+  },
+  "fp-google-adk-openinference-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 955,
+   "output": 67,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-google-adk-openinference-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-google-adk-openinference-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 955,
+   "output": 67,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-google-adk-openinference-openai-agent": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 930,
+   "output": 91,
+   "reasoning": 29,
+   "success": 2,
+   "usage": true
+  },
+  "fp-google-adk-openinference-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-google-adk-openinference-openai-stream": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 928,
+   "output": 95,
+   "reasoning": 29,
+   "success": 2,
+   "usage": true
+  },
+  "fp-google-adk-stacked-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 955,
+   "output": 67,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-google-adk-stacked-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-google-adk-stacked-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 955,
+   "output": 67,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-google-adk-stacked-openai-agent": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "output"
+   ],
+   "input": 933,
+   "output": 85,
+   "reasoning": 22,
+   "success": 2,
+   "usage": true,
+   "why": "adk-output-overcount"
+  },
+  "fp-google-adk-stacked-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "output"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "adk-output-overcount"
+  },
+  "fp-google-adk-stacked-openai-stream": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "output"
+   ],
+   "input": 928,
+   "output": 83,
+   "reasoning": 17,
+   "success": 2,
+   "usage": true,
+   "why": "adk-output-overcount"
+  },
+  "fp-langchain-langsmith-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 902,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "langchain-separate-traces"
+  },
+  "fp-langchain-langsmith-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "success",
+    "error"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "langsmith-failure-as-ok"
+  },
+  "fp-langchain-langsmith-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 902,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "langchain-separate-traces"
+  },
+  "fp-langchain-langsmith-openai-agent": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 852,
+   "output": 88,
+   "reasoning": 26,
+   "success": 2,
+   "usage": true
+  },
+  "fp-langchain-langsmith-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "success",
+    "error"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "langsmith-failure-as-ok"
+  },
+  "fp-langchain-langsmith-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 2,
+   "usage": false
+  },
+  "fp-langchain-openinference-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 902,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "langchain-separate-traces"
+  },
+  "fp-langchain-openinference-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-langchain-openinference-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 902,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "langchain-separate-traces"
+  },
+  "fp-langchain-openinference-openai-agent": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 852,
+   "output": 100,
+   "reasoning": 38,
+   "success": 2,
+   "usage": true
+  },
+  "fp-langchain-openinference-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-langchain-openinference-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 2,
+   "usage": false
+  },
+  "fp-langchain-openllmetry-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 902,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-langchain-openllmetry-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-langchain-openllmetry-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 902,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "langchain-separate-traces"
+  },
+  "fp-langchain-openllmetry-openai-agent": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 852,
+   "output": 87,
+   "reasoning": 24,
+   "success": 2,
+   "usage": true,
+   "why": "openllmetry-langchain-no-cache-reasoning"
+  },
+  "fp-langchain-openllmetry-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "openllmetry-langchain-no-cache-reasoning"
+  },
+  "fp-langchain-openllmetry-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 2,
+   "usage": false,
+   "why": "openllmetry-langchain-no-cache-reasoning"
+  },
+  "fp-langchain-stacked-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 902,
+   "output": 67,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "langchain-separate-traces"
+  },
+  "fp-langchain-stacked-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "langchain-separate-traces"
+  },
+  "fp-langchain-stacked-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 902,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "langchain-separate-traces"
+  },
+  "fp-langchain-stacked-openai-agent": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 852,
+   "output": 79,
+   "reasoning": 16,
+   "success": 2,
+   "usage": true,
+   "why": "langchain-separate-traces"
+  },
+  "fp-langchain-stacked-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "langchain-separate-traces"
+  },
+  "fp-langchain-stacked-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 2,
+   "usage": false,
+   "why": "langchain-separate-traces"
+  },
+  "fp-llama-index-openinference-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 942,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-llama-index-openinference-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-llama-index-openinference-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 942,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-llama-index-openinference-openai-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 2,
+   "usage": false
+  },
+  "fp-llama-index-openinference-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-llama-index-openinference-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 2,
+   "usage": false
+  },
+  "fp-llama-index-openllmetry-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 942,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-llama-index-openllmetry-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-llama-index-openllmetry-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 942,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-llama-index-openllmetry-openai-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 2,
+   "usage": false
+  },
+  "fp-llama-index-openllmetry-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "error"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "llamaindex-openllmetry-error-no-span"
+  },
+  "fp-llama-index-openllmetry-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 2,
+   "usage": false
+  },
+  "fp-llama-index-stacked-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 942,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-llama-index-stacked-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-llama-index-stacked-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 942,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-llama-index-stacked-openai-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 2,
+   "usage": false
+  },
+  "fp-llama-index-stacked-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-llama-index-stacked-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 2,
+   "usage": false
+  },
+  "fp-openai-agents-logfire-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 934,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-openai-agents-logfire-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-openai-agents-logfire-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 934,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "openai-agents-anthropic-stream-no-usage"
+  },
+  "fp-openai-agents-logfire-openai-agent": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 909,
+   "output": 104,
+   "reasoning": 42,
+   "success": 2,
+   "usage": true
+  },
+  "fp-openai-agents-logfire-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-openai-agents-logfire-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 2,
+   "usage": false
+  },
+  "fp-openai-agents-openinference-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 934,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-openai-agents-openinference-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-openai-agents-openinference-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 934,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "openai-agents-anthropic-stream-no-usage"
+  },
+  "fp-openai-agents-openinference-openai-agent": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 907,
+   "output": 102,
+   "reasoning": 40,
+   "success": 2,
+   "usage": true,
+   "why": "openai-agents-openinference-no-cache-reasoning"
+  },
+  "fp-openai-agents-openinference-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "openai-agents-openinference-no-cache-reasoning"
+  },
+  "fp-openai-agents-openinference-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 2,
+   "usage": false,
+   "why": "openai-agents-openinference-no-cache-reasoning"
+  },
+  "fp-openai-agents-openllmetry-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 934,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "openai-agents-openllmetry-no-tokens"
+  },
+  "fp-openai-agents-openllmetry-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "openai-agents-openllmetry-no-tokens"
+  },
+  "fp-openai-agents-openllmetry-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 934,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "openai-agents-openllmetry-no-tokens"
+  },
+  "fp-openai-agents-openllmetry-openai-agent": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 894,
+   "output": 74,
+   "reasoning": 12,
+   "success": 2,
+   "usage": true,
+   "why": "openai-agents-openllmetry-no-tokens"
+  },
+  "fp-openai-agents-openllmetry-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "openai-agents-openllmetry-no-tokens"
+  },
+  "fp-openai-agents-openllmetry-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 2,
+   "usage": false,
+   "why": "openai-agents-openllmetry-no-tokens"
+  },
+  "fp-openai-agents-stacked-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 934,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-openai-agents-stacked-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-openai-agents-stacked-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 934,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "openai-agents-anthropic-stream-no-usage"
+  },
+  "fp-openai-agents-stacked-openai-agent": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 897,
+   "output": 78,
+   "reasoning": 15,
+   "success": 2,
+   "usage": true
+  },
+  "fp-openai-agents-stacked-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-openai-agents-stacked-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 2,
+   "usage": false
+  },
+  "fp-pydantic-ai-native-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 922,
+   "output": 67,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-pydantic-ai-native-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-pydantic-ai-native-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 922,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-pydantic-ai-native-openai-agent": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 882,
+   "output": 108,
+   "reasoning": 45,
+   "success": 2,
+   "usage": true
+  },
+  "fp-pydantic-ai-native-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-pydantic-ai-native-openai-stream": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 882,
+   "output": 92,
+   "reasoning": 30,
+   "success": 2,
+   "usage": true
+  },
+  "fp-pydantic-ai-openinference-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 922,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-pydantic-ai-openinference-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-pydantic-ai-openinference-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 922,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-pydantic-ai-openinference-openai-agent": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 869,
+   "output": 80,
+   "reasoning": 17,
+   "success": 2,
+   "usage": true
+  },
+  "fp-pydantic-ai-openinference-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-pydantic-ai-openinference-openai-stream": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 887,
+   "output": 97,
+   "reasoning": 35,
+   "success": 2,
+   "usage": true
+  },
+  "fp-pydantic-ai-stacked-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "error"
+   ],
+   "input": 922,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "pydantic-ai-rejected-attempts"
+  },
+  "fp-pydantic-ai-stacked-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-pydantic-ai-stacked-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 922,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-pydantic-ai-stacked-openai-agent": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 886,
+   "output": 112,
+   "reasoning": 49,
+   "success": 2,
+   "usage": true
+  },
+  "fp-pydantic-ai-stacked-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-pydantic-ai-stacked-openai-stream": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 879,
+   "output": 90,
+   "reasoning": 27,
+   "success": 2,
+   "usage": true
+  },
+  "fp-strands-native-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 922,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-strands-native-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-strands-native-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 922,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-strands-native-openai-agent": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 866,
+   "output": 91,
+   "reasoning": 29,
+   "success": 2,
+   "usage": true,
+   "why": "strands-no-reasoning"
+  },
+  "fp-strands-native-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "strands-no-reasoning"
+  },
+  "fp-strands-native-openai-stream": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 866,
+   "output": 97,
+   "reasoning": 34,
+   "success": 2,
+   "usage": true,
+   "why": "strands-no-reasoning"
+  },
+  "fp-strands-stacked-anthropic-agent": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 922,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-strands-stacked-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-strands-stacked-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 922,
+   "output": 69,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "fp-strands-stacked-openai-agent": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 866,
+   "output": 74,
+   "reasoning": 11,
+   "success": 2,
+   "usage": true
+  },
+  "fp-strands-stacked-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "fp-strands-stacked-openai-stream": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 866,
+   "output": 100,
+   "reasoning": 37,
+   "success": 2,
+   "usage": true
+  },
+  "lj-ddtrace-anthropic-cache": {
+   "cache_read": 3862,
+   "cache_write": 3862,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 7754,
+   "output": 8,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "datadog-anthropic-no-reasoning"
+  },
+  "lj-ddtrace-anthropic-cache1h": {
+   "cache_read": 3864,
+   "cache_write": 3864,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 7758,
+   "output": 8,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "datadog-anthropic-no-reasoning"
+  },
+  "lj-ddtrace-anthropic-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 29,
+   "output": 75,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true,
+   "why": "datadog-anthropic-no-reasoning"
+  },
+  "lj-ddtrace-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "datadog-anthropic-no-reasoning"
+  },
+  "lj-ddtrace-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 19,
+   "output": 205,
+   "reasoning": 70,
+   "success": 1,
+   "usage": true,
+   "why": "datadog-anthropic-no-reasoning"
+  },
+  "lj-ddtrace-anthropic-tool": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 813,
+   "output": 77,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "datadog-anthropic-no-reasoning"
+  },
+  "lj-ddtrace-openai-cache": {
+   "cache_read": 2304,
+   "cache_write": 0,
+   "error": 0,
+   "input": 4682,
+   "output": 43,
+   "reasoning": 39,
+   "success": 2,
+   "usage": true
+  },
+  "lj-ddtrace-openai-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 99,
+   "output": 60,
+   "reasoning": 51,
+   "success": 1,
+   "usage": true
+  },
+  "lj-ddtrace-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lj-ddtrace-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 99,
+   "output": 67,
+   "reasoning": 32,
+   "success": 1,
+   "usage": true
+  },
+  "lj-ddtrace-openai-tool": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 819,
+   "output": 79,
+   "reasoning": 17,
+   "success": 2,
+   "usage": true
+  },
+  "lj-edot-openai-cache": {
+   "cache_read": 2304,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 4680,
+   "output": 84,
+   "reasoning": 80,
+   "success": 2,
+   "usage": true,
+   "why": "otel-openai-no-cache-reasoning"
+  },
+  "lj-edot-openai-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 99,
+   "output": 68,
+   "reasoning": 43,
+   "success": 1,
+   "usage": true,
+   "why": "otel-openai-no-cache-reasoning"
+  },
+  "lj-edot-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "otel-openai-no-cache-reasoning"
+  },
+  "lj-edot-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 99,
+   "output": 53,
+   "reasoning": 25,
+   "success": 1,
+   "usage": true,
+   "why": "otel-openai-no-cache-reasoning"
+  },
+  "lj-edot-openai-tool": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 847,
+   "output": 119,
+   "reasoning": 56,
+   "success": 2,
+   "usage": true,
+   "why": "otel-openai-no-cache-reasoning"
+  },
+  "lj-langfuse-openai-cache": {
+   "cache_read": 2304,
+   "cache_write": 0,
+   "error": 0,
+   "input": 4684,
+   "output": 27,
+   "reasoning": 23,
+   "success": 2,
+   "usage": true
+  },
+  "lj-langfuse-openai-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 99,
+   "output": 111,
+   "reasoning": 93,
+   "success": 1,
+   "usage": true
+  },
+  "lj-langfuse-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lj-langfuse-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 99,
+   "output": 50,
+   "reasoning": 27,
+   "success": 1,
+   "usage": true
+  },
+  "lj-langfuse-openai-tool": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 825,
+   "output": 100,
+   "reasoning": 38,
+   "success": 2,
+   "usage": true
+  },
+  "lj-native-anthropic-cache": {
+   "cache_read": 3858,
+   "cache_write": 3858,
+   "error": 0,
+   "input": 7746,
+   "output": 8,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "lj-native-anthropic-cache1h": {
+   "cache_read": 3860,
+   "cache_write": 3860,
+   "error": 0,
+   "input": 7750,
+   "output": 8,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "lj-native-anthropic-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 29,
+   "output": 66,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true
+  },
+  "lj-native-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lj-native-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 19,
+   "output": 180,
+   "reasoning": 54,
+   "success": 1,
+   "usage": true
+  },
+  "lj-native-anthropic-tool": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 813,
+   "output": 77,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "lj-oivercel-anthropic-cache": {
+   "cache_read": 3861,
+   "cache_write": 3861,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 7752,
+   "output": 8,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "lj-oivercel-anthropic-cache1h": {
+   "cache_read": 3863,
+   "cache_write": 3863,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 7756,
+   "output": 8,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "lj-oivercel-anthropic-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 29,
+   "output": 68,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "lj-oivercel-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "lj-oivercel-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 19,
+   "output": 225,
+   "reasoning": 82,
+   "success": 1,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "lj-oivercel-anthropic-tool": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 881,
+   "output": 77,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "lj-oivercel-openai-cache": {
+   "cache_read": 2304,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 4682,
+   "output": 84,
+   "reasoning": 80,
+   "success": 2,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "lj-oivercel-openai-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 99,
+   "output": 64,
+   "reasoning": 21,
+   "success": 1,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "lj-oivercel-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "lj-oivercel-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 92,
+   "output": 93,
+   "reasoning": 45,
+   "success": 1,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "lj-oivercel-openai-tool": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 870,
+   "output": 110,
+   "reasoning": 44,
+   "success": 2,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "lj-openinference-anthropic-cache": {
+   "cache_read": 3860,
+   "cache_write": 3860,
+   "error": 0,
+   "input": 7750,
+   "output": 91,
+   "reasoning": 83,
+   "success": 2,
+   "usage": true
+  },
+  "lj-openinference-anthropic-cache1h": {
+   "cache_read": 3862,
+   "cache_write": 3862,
+   "error": 0,
+   "input": 7754,
+   "output": 84,
+   "reasoning": 76,
+   "success": 2,
+   "usage": true
+  },
+  "lj-openinference-anthropic-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 29,
+   "output": 63,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true
+  },
+  "lj-openinference-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lj-openinference-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 19,
+   "output": 233,
+   "reasoning": 90,
+   "success": 1,
+   "usage": true
+  },
+  "lj-openinference-anthropic-tool": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 813,
+   "output": 75,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "lj-openinference-openai-cache": {
+   "cache_read": 2304,
+   "cache_write": 0,
+   "error": 0,
+   "input": 4682,
+   "output": 27,
+   "reasoning": 23,
+   "success": 2,
+   "usage": true
+  },
+  "lj-openinference-openai-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 99,
+   "output": 102,
+   "reasoning": 72,
+   "success": 1,
+   "usage": true
+  },
+  "lj-openinference-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lj-openinference-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 99,
+   "output": 65,
+   "reasoning": 30,
+   "success": 1,
+   "usage": true
+  },
+  "lj-openinference-openai-tool": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 818,
+   "output": 95,
+   "reasoning": 32,
+   "success": 2,
+   "usage": true
+  },
+  "lj-openllmetry-anthropic-cache": {
+   "cache_read": 3862,
+   "cache_write": 3862,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 7754,
+   "output": 188,
+   "reasoning": 180,
+   "success": 2,
+   "usage": true,
+   "why": "openllmetry-js-no-cache-reasoning"
+  },
+  "lj-openllmetry-anthropic-cache1h": {
+   "cache_read": 3864,
+   "cache_write": 3864,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 7758,
+   "output": 64,
+   "reasoning": 56,
+   "success": 2,
+   "usage": true,
+   "why": "openllmetry-js-no-cache-reasoning"
+  },
+  "lj-openllmetry-anthropic-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 29,
+   "output": 67,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true,
+   "why": "openllmetry-js-no-cache-reasoning"
+  },
+  "lj-openllmetry-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "openllmetry-js-no-cache-reasoning"
+  },
+  "lj-openllmetry-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 19,
+   "output": 205,
+   "reasoning": 90,
+   "success": 1,
+   "usage": true,
+   "why": "openllmetry-js-no-cache-reasoning"
+  },
+  "lj-openllmetry-anthropic-tool": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 813,
+   "output": 77,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "openllmetry-js-no-cache-reasoning"
+  },
+  "lj-openllmetry-openai-cache": {
+   "cache_read": 2304,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 4682,
+   "output": 26,
+   "reasoning": 22,
+   "success": 2,
+   "usage": true,
+   "why": "openllmetry-js-no-cache-reasoning"
+  },
+  "lj-openllmetry-openai-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 99,
+   "output": 93,
+   "reasoning": 81,
+   "success": 1,
+   "usage": true,
+   "why": "openllmetry-js-no-cache-reasoning"
+  },
+  "lj-openllmetry-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "error"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "openllmetry-js-error-no-span"
+  },
+  "lj-openllmetry-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 99,
+   "output": 51,
+   "reasoning": 38,
+   "success": 1,
+   "usage": true,
+   "why": "openllmetry-js-stream-no-usage"
+  },
+  "lj-openllmetry-openai-tool": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 832,
+   "output": 96,
+   "reasoning": 30,
+   "success": 2,
+   "usage": true,
+   "why": "openllmetry-js-no-cache-reasoning"
+  },
+  "lj-otel-openai-cache": {
+   "cache_read": 2304,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 4680,
+   "output": 28,
+   "reasoning": 24,
+   "success": 2,
+   "usage": true,
+   "why": "otel-openai-no-cache-reasoning"
+  },
+  "lj-otel-openai-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 99,
+   "output": 110,
+   "reasoning": 67,
+   "success": 1,
+   "usage": true,
+   "why": "otel-openai-no-cache-reasoning"
+  },
+  "lj-otel-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "otel-openai-no-cache-reasoning"
+  },
+  "lj-otel-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 99,
+   "output": 52,
+   "reasoning": 26,
+   "success": 1,
+   "usage": true,
+   "why": "otel-openai-no-cache-reasoning"
+  },
+  "lj-otel-openai-tool": {
+   "cache_read": 256,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 852,
+   "output": 134,
+   "reasoning": 71,
+   "success": 2,
+   "usage": true,
+   "why": "otel-openai-no-cache-reasoning"
+  },
+  "lj-vercel-anthropic-cache": {
+   "cache_read": 3860,
+   "cache_write": 3860,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 7750,
+   "output": 8,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "lj-vercel-anthropic-cache1h": {
+   "cache_read": 3862,
+   "cache_write": 3862,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 7754,
+   "output": 8,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "lj-vercel-anthropic-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 29,
+   "output": 63,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "lj-vercel-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "lj-vercel-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 19,
+   "output": 228,
+   "reasoning": 79,
+   "success": 1,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "lj-vercel-anthropic-tool": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 881,
+   "output": 77,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "lj-vercel-openai-cache": {
+   "cache_read": 2304,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 4682,
+   "output": 40,
+   "reasoning": 36,
+   "success": 2,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "lj-vercel-openai-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 99,
+   "output": 41,
+   "reasoning": 24,
+   "success": 1,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "lj-vercel-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "lj-vercel-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 92,
+   "output": 78,
+   "reasoning": 30,
+   "success": 1,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "lj-vercel-openai-tool": {
+   "cache_read": 256,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 845,
+   "output": 88,
+   "reasoning": 19,
+   "success": 2,
+   "usage": true,
+   "why": "vercel-no-reasoning"
+  },
+  "lr-ddtrace-anthropic-async": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 19,
+   "output": 288,
+   "reasoning": 100,
+   "success": 1,
+   "usage": true,
+   "why": "datadog-anthropic-no-reasoning"
+  },
+  "lr-ddtrace-anthropic-cache": {
+   "cache_read": 3862,
+   "cache_write": 3862,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 7754,
+   "output": 113,
+   "reasoning": 105,
+   "success": 2,
+   "usage": true,
+   "why": "datadog-anthropic-no-reasoning"
+  },
+  "lr-ddtrace-anthropic-cache1h": {
+   "cache_read": 7728,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 7758,
+   "output": 178,
+   "reasoning": 170,
+   "success": 2,
+   "usage": true,
+   "why": "datadog-anthropic-no-reasoning"
+  },
+  "lr-ddtrace-anthropic-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 29,
+   "output": 60,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true,
+   "why": "datadog-anthropic-no-reasoning"
+  },
+  "lr-ddtrace-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "datadog-anthropic-no-reasoning"
+  },
+  "lr-ddtrace-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 19,
+   "output": 273,
+   "reasoning": 65,
+   "success": 1,
+   "usage": true,
+   "why": "datadog-anthropic-no-reasoning"
+  },
+  "lr-ddtrace-anthropic-tool": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 813,
+   "output": 77,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "datadog-anthropic-no-reasoning"
+  },
+  "lr-ddtrace-openai-async": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 99,
+   "output": 66,
+   "reasoning": 41,
+   "success": 1,
+   "usage": true
+  },
+  "lr-ddtrace-openai-cache": {
+   "cache_read": 4608,
+   "cache_write": 0,
+   "error": 0,
+   "input": 4682,
+   "output": 32,
+   "reasoning": 28,
+   "success": 2,
+   "usage": true
+  },
+  "lr-ddtrace-openai-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 99,
+   "output": 41,
+   "reasoning": 22,
+   "success": 1,
+   "usage": true
+  },
+  "lr-ddtrace-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-ddtrace-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 99,
+   "output": 52,
+   "reasoning": 29,
+   "success": 1,
+   "usage": true
+  },
+  "lr-ddtrace-openai-tool": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 837,
+   "output": 98,
+   "reasoning": 35,
+   "success": 2,
+   "usage": true
+  },
+  "lr-langfuse-openai-async": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 99,
+   "output": 44,
+   "reasoning": 20,
+   "success": 1,
+   "usage": true
+  },
+  "lr-langfuse-openai-cache": {
+   "cache_read": 2304,
+   "cache_write": 0,
+   "error": 0,
+   "input": 4684,
+   "output": 25,
+   "reasoning": 21,
+   "success": 2,
+   "usage": true
+  },
+  "lr-langfuse-openai-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 99,
+   "output": 70,
+   "reasoning": 35,
+   "success": 1,
+   "usage": true
+  },
+  "lr-langfuse-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-langfuse-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 99,
+   "output": 70,
+   "reasoning": 58,
+   "success": 1,
+   "usage": true
+  },
+  "lr-langfuse-openai-tool": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 825,
+   "output": 100,
+   "reasoning": 37,
+   "success": 2,
+   "usage": true
+  },
+  "lr-lmnr-anthropic-async": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 19,
+   "output": 211,
+   "reasoning": 70,
+   "success": 1,
+   "usage": true,
+   "why": "laminar-anthropic-no-reasoning"
+  },
+  "lr-lmnr-anthropic-cache": {
+   "cache_read": 3861,
+   "cache_write": 3861,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 7752,
+   "output": 8,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "laminar-anthropic-no-reasoning"
+  },
+  "lr-lmnr-anthropic-cache1h": {
+   "cache_read": 3863,
+   "cache_write": 3863,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 7756,
+   "output": 8,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "laminar-anthropic-no-reasoning"
+  },
+  "lr-lmnr-anthropic-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 29,
+   "output": 65,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true,
+   "why": "laminar-anthropic-no-reasoning"
+  },
+  "lr-lmnr-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "laminar-anthropic-no-reasoning"
+  },
+  "lr-lmnr-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 19,
+   "output": 202,
+   "reasoning": 86,
+   "success": 1,
+   "usage": true,
+   "why": "laminar-anthropic-no-reasoning"
+  },
+  "lr-lmnr-anthropic-tool": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 813,
+   "output": 77,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "laminar-anthropic-no-reasoning"
+  },
+  "lr-lmnr-openai-async": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 99,
+   "output": 59,
+   "reasoning": 19,
+   "success": 1,
+   "usage": true
+  },
+  "lr-lmnr-openai-cache": {
+   "cache_read": 2304,
+   "cache_write": 0,
+   "error": 0,
+   "input": 4682,
+   "output": 39,
+   "reasoning": 35,
+   "success": 2,
+   "usage": true
+  },
+  "lr-lmnr-openai-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 99,
+   "output": 73,
+   "reasoning": 49,
+   "success": 1,
+   "usage": true
+  },
+  "lr-lmnr-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-lmnr-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 99,
+   "output": 39,
+   "reasoning": 25,
+   "success": 1,
+   "usage": true
+  },
+  "lr-lmnr-openai-tool": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 833,
+   "output": 111,
+   "reasoning": 48,
+   "success": 2,
+   "usage": true
+  },
+  "lr-logfire-anthropic-async": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 19,
+   "output": 184,
+   "reasoning": 92,
+   "success": 1,
+   "usage": true
+  },
+  "lr-logfire-anthropic-cache": {
+   "cache_read": 3860,
+   "cache_write": 3860,
+   "error": 0,
+   "input": 7750,
+   "output": 8,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "lr-logfire-anthropic-cache1h": {
+   "cache_read": 3862,
+   "cache_write": 3862,
+   "error": 0,
+   "input": 7754,
+   "output": 8,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "lr-logfire-anthropic-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 29,
+   "output": 68,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true
+  },
+  "lr-logfire-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-logfire-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 19,
+   "output": 208,
+   "reasoning": 87,
+   "success": 1,
+   "usage": true
+  },
+  "lr-logfire-anthropic-tool": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 813,
+   "output": 77,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "lr-logfire-openai-async": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 99,
+   "output": 53,
+   "reasoning": 29,
+   "success": 1,
+   "usage": true
+  },
+  "lr-logfire-openai-cache": {
+   "cache_read": 2304,
+   "cache_write": 0,
+   "error": 0,
+   "input": 4680,
+   "output": 40,
+   "reasoning": 36,
+   "success": 2,
+   "usage": true
+  },
+  "lr-logfire-openai-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 99,
+   "output": 69,
+   "reasoning": 28,
+   "success": 1,
+   "usage": true
+  },
+  "lr-logfire-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-logfire-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 99,
+   "output": 83,
+   "reasoning": 48,
+   "success": 1,
+   "usage": true
+  },
+  "lr-logfire-openai-tool": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 831,
+   "output": 92,
+   "reasoning": 29,
+   "success": 2,
+   "usage": true
+  },
+  "lr-mlflow-anthropic-async": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 19,
+   "output": 214,
+   "reasoning": 92,
+   "success": 1,
+   "usage": true
+  },
+  "lr-mlflow-anthropic-cache": {
+   "cache_read": 3861,
+   "cache_write": 3861,
+   "error": 0,
+   "input": 7752,
+   "output": 193,
+   "reasoning": 185,
+   "success": 2,
+   "usage": true
+  },
+  "lr-mlflow-anthropic-cache1h": {
+   "cache_read": 3863,
+   "cache_write": 3863,
+   "error": 0,
+   "input": 7756,
+   "output": 89,
+   "reasoning": 81,
+   "success": 2,
+   "usage": true
+  },
+  "lr-mlflow-anthropic-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 29,
+   "output": 67,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true
+  },
+  "lr-mlflow-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-mlflow-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "success",
+    "error",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "reasoning"
+   ],
+   "input": 19,
+   "output": 243,
+   "reasoning": 90,
+   "success": 1,
+   "usage": true,
+   "why": "mlflow-stream-not-traced"
+  },
+  "lr-mlflow-anthropic-tool": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 813,
+   "output": 77,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "lr-mlflow-openai-async": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 99,
+   "output": 33,
+   "reasoning": 20,
+   "success": 1,
+   "usage": true
+  },
+  "lr-mlflow-openai-cache": {
+   "cache_read": 2304,
+   "cache_write": 0,
+   "error": 0,
+   "input": 4682,
+   "output": 203,
+   "reasoning": 148,
+   "success": 2,
+   "usage": true
+  },
+  "lr-mlflow-openai-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 99,
+   "output": 32,
+   "reasoning": 19,
+   "success": 1,
+   "usage": true
+  },
+  "lr-mlflow-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-mlflow-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 99,
+   "output": 50,
+   "reasoning": 29,
+   "success": 1,
+   "usage": true
+  },
+  "lr-mlflow-openai-tool": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 831,
+   "output": 92,
+   "reasoning": 29,
+   "success": 2,
+   "usage": true
+  },
+  "lr-native-anthropic-async": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 19,
+   "output": 216,
+   "reasoning": 82,
+   "success": 1,
+   "usage": true
+  },
+  "lr-native-anthropic-cache": {
+   "cache_read": 3858,
+   "cache_write": 3858,
+   "error": 0,
+   "input": 7746,
+   "output": 8,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "lr-native-anthropic-cache1h": {
+   "cache_read": 3860,
+   "cache_write": 3860,
+   "error": 0,
+   "input": 7750,
+   "output": 8,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "lr-native-anthropic-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 29,
+   "output": 73,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true
+  },
+  "lr-native-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-native-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 19,
+   "output": 191,
+   "reasoning": 59,
+   "success": 1,
+   "usage": true
+  },
+  "lr-native-anthropic-tool": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 813,
+   "output": 77,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "lr-openinference-anthropic-async": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 19,
+   "output": 232,
+   "reasoning": 86,
+   "success": 1,
+   "usage": true
+  },
+  "lr-openinference-anthropic-cache": {
+   "cache_read": 3860,
+   "cache_write": 3860,
+   "error": 0,
+   "input": 7750,
+   "output": 232,
+   "reasoning": 224,
+   "success": 2,
+   "usage": true
+  },
+  "lr-openinference-anthropic-cache1h": {
+   "cache_read": 3862,
+   "cache_write": 3862,
+   "error": 0,
+   "input": 7754,
+   "output": 8,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "lr-openinference-anthropic-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 29,
+   "output": 66,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true
+  },
+  "lr-openinference-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-openinference-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 19,
+   "output": 221,
+   "reasoning": 84,
+   "success": 1,
+   "usage": true
+  },
+  "lr-openinference-anthropic-tool": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 813,
+   "output": 77,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "lr-openinference-openai-async": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 99,
+   "output": 68,
+   "reasoning": 34,
+   "success": 1,
+   "usage": true
+  },
+  "lr-openinference-openai-cache": {
+   "cache_read": 2304,
+   "cache_write": 0,
+   "error": 0,
+   "input": 4682,
+   "output": 27,
+   "reasoning": 23,
+   "success": 2,
+   "usage": true
+  },
+  "lr-openinference-openai-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 99,
+   "output": 57,
+   "reasoning": 44,
+   "success": 1,
+   "usage": true
+  },
+  "lr-openinference-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-openinference-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 99,
+   "output": 64,
+   "reasoning": 39,
+   "success": 1,
+   "usage": true
+  },
+  "lr-openinference-openai-tool": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 835,
+   "output": 96,
+   "reasoning": 33,
+   "success": 2,
+   "usage": true
+  },
+  "lr-openlit-anthropic-async": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 19,
+   "output": 185,
+   "reasoning": 75,
+   "success": 1,
+   "usage": true,
+   "why": "openlit-no-reasoning"
+  },
+  "lr-openlit-anthropic-cache": {
+   "cache_read": 3860,
+   "cache_write": 3860,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 7750,
+   "output": 171,
+   "reasoning": 163,
+   "success": 2,
+   "usage": true,
+   "why": "openlit-no-reasoning"
+  },
+  "lr-openlit-anthropic-cache1h": {
+   "cache_read": 3862,
+   "cache_write": 3862,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 7754,
+   "output": 326,
+   "reasoning": 318,
+   "success": 2,
+   "usage": true,
+   "why": "openlit-no-reasoning"
+  },
+  "lr-openlit-anthropic-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 29,
+   "output": 62,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true,
+   "why": "openlit-no-reasoning"
+  },
+  "lr-openlit-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "openlit-no-reasoning"
+  },
+  "lr-openlit-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 19,
+   "output": 218,
+   "reasoning": 83,
+   "success": 1,
+   "usage": true,
+   "why": "openlit-no-reasoning"
+  },
+  "lr-openlit-anthropic-tool": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 813,
+   "output": 77,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true,
+   "why": "openlit-no-reasoning"
+  },
+  "lr-openlit-openai-async": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 99,
+   "output": 58,
+   "reasoning": 29,
+   "success": 1,
+   "usage": true,
+   "why": "openlit-no-reasoning"
+  },
+  "lr-openlit-openai-cache": {
+   "cache_read": 2304,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 4680,
+   "output": 37,
+   "reasoning": 33,
+   "success": 2,
+   "usage": true,
+   "why": "openlit-no-reasoning"
+  },
+  "lr-openlit-openai-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 99,
+   "output": 127,
+   "reasoning": 98,
+   "success": 1,
+   "usage": true,
+   "why": "openlit-no-reasoning"
+  },
+  "lr-openlit-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "openlit-no-reasoning"
+  },
+  "lr-openlit-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 99,
+   "output": 48,
+   "reasoning": 27,
+   "success": 1,
+   "usage": true,
+   "why": "openlit-no-reasoning"
+  },
+  "lr-openlit-openai-tool": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 832,
+   "output": 93,
+   "reasoning": 30,
+   "success": 2,
+   "usage": true,
+   "why": "openlit-no-reasoning"
+  },
+  "lr-openllmetry-anthropic-async": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 19,
+   "output": 223,
+   "reasoning": 87,
+   "success": 1,
+   "usage": true
+  },
+  "lr-openllmetry-anthropic-cache": {
+   "cache_read": 3862,
+   "cache_write": 3862,
+   "error": 0,
+   "input": 7754,
+   "output": 159,
+   "reasoning": 151,
+   "success": 2,
+   "usage": true
+  },
+  "lr-openllmetry-anthropic-cache1h": {
+   "cache_read": 3864,
+   "cache_write": 3864,
+   "error": 0,
+   "input": 7758,
+   "output": 8,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "lr-openllmetry-anthropic-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 29,
+   "output": 76,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true
+  },
+  "lr-openllmetry-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-openllmetry-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 19,
+   "output": 242,
+   "reasoning": 97,
+   "success": 1,
+   "usage": true
+  },
+  "lr-openllmetry-anthropic-tool": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 813,
+   "output": 77,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "lr-openllmetry-openai-async": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 99,
+   "output": 62,
+   "reasoning": 29,
+   "success": 1,
+   "usage": true
+  },
+  "lr-openllmetry-openai-cache": {
+   "cache_read": 2304,
+   "cache_write": 0,
+   "error": 0,
+   "input": 4682,
+   "output": 63,
+   "reasoning": 59,
+   "success": 2,
+   "usage": true
+  },
+  "lr-openllmetry-openai-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 99,
+   "output": 75,
+   "reasoning": 39,
+   "success": 1,
+   "usage": true
+  },
+  "lr-openllmetry-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-openllmetry-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "reasoning"
+   ],
+   "input": 99,
+   "output": 69,
+   "reasoning": 35,
+   "success": 1,
+   "usage": true,
+   "why": "openllmetry-py-stream-no-reasoning"
+  },
+  "lr-openllmetry-openai-tool": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 825,
+   "output": 106,
+   "reasoning": 43,
+   "success": 2,
+   "usage": true
+  },
+  "lr-otelgenai-anthropic-async": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 19,
+   "output": 203,
+   "reasoning": 81,
+   "success": 1,
+   "usage": true
+  },
+  "lr-otelgenai-anthropic-cache": {
+   "cache_read": 3862,
+   "cache_write": 3862,
+   "error": 0,
+   "input": 7754,
+   "output": 144,
+   "reasoning": 136,
+   "success": 2,
+   "usage": true
+  },
+  "lr-otelgenai-anthropic-cache1h": {
+   "cache_read": 3864,
+   "cache_write": 3864,
+   "error": 0,
+   "input": 7758,
+   "output": 74,
+   "reasoning": 66,
+   "success": 2,
+   "usage": true
+  },
+  "lr-otelgenai-anthropic-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 29,
+   "output": 65,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true
+  },
+  "lr-otelgenai-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-otelgenai-anthropic-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 19,
+   "output": 198,
+   "reasoning": 93,
+   "success": 1,
+   "usage": true
+  },
+  "lr-otelgenai-anthropic-tool": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 813,
+   "output": 77,
+   "reasoning": 0,
+   "success": 2,
+   "usage": true
+  },
+  "lr-otelgenai-openai-async": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 99,
+   "output": 88,
+   "reasoning": 42,
+   "success": 1,
+   "usage": true
+  },
+  "lr-otelgenai-openai-cache": {
+   "cache_read": 2304,
+   "cache_write": 0,
+   "error": 0,
+   "input": 4684,
+   "output": 26,
+   "reasoning": 22,
+   "success": 2,
+   "usage": true
+  },
+  "lr-otelgenai-openai-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 99,
+   "output": 42,
+   "reasoning": 27,
+   "success": 1,
+   "usage": true
+  },
+  "lr-otelgenai-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "lr-otelgenai-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 99,
+   "output": 65,
+   "reasoning": 51,
+   "success": 1,
+   "usage": true
+  },
+  "lr-otelgenai-openai-tool": {
+   "cache_read": 256,
+   "cache_write": 0,
+   "error": 0,
+   "input": 842,
+   "output": 103,
+   "reasoning": 40,
+   "success": 2,
+   "usage": true
+  },
+  "lr-otelv2-openai-async": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 99,
+   "output": 37,
+   "reasoning": 24,
+   "success": 1,
+   "usage": true,
+   "why": "otel-openai-no-cache-reasoning"
+  },
+  "lr-otelv2-openai-cache": {
+   "cache_read": 2304,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 4684,
+   "output": 89,
+   "reasoning": 85,
+   "success": 2,
+   "usage": true,
+   "why": "otel-openai-no-cache-reasoning"
+  },
+  "lr-otelv2-openai-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 99,
+   "output": 30,
+   "reasoning": 17,
+   "success": 1,
+   "usage": true,
+   "why": "otel-openai-no-cache-reasoning"
+  },
+  "lr-otelv2-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "otel-openai-no-cache-reasoning"
+  },
+  "lr-otelv2-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 99,
+   "output": 106,
+   "reasoning": 73,
+   "success": 1,
+   "usage": true,
+   "why": "otel-openai-no-cache-reasoning"
+  },
+  "lr-otelv2-openai-tool": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 819,
+   "output": 93,
+   "reasoning": 30,
+   "success": 2,
+   "usage": true,
+   "why": "otel-openai-no-cache-reasoning"
+  },
+  "lr-otelv2latest-openai-async": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 99,
+   "output": 84,
+   "reasoning": 65,
+   "success": 1,
+   "usage": true,
+   "why": "otel-openai-no-cache-reasoning"
+  },
+  "lr-otelv2latest-openai-cache": {
+   "cache_read": 2304,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 4686,
+   "output": 47,
+   "reasoning": 43,
+   "success": 2,
+   "usage": true,
+   "why": "otel-openai-no-cache-reasoning"
+  },
+  "lr-otelv2latest-openai-chat": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 99,
+   "output": 72,
+   "reasoning": 39,
+   "success": 1,
+   "usage": true,
+   "why": "otel-openai-no-cache-reasoning"
+  },
+  "lr-otelv2latest-openai-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 1,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true,
+   "why": "otel-openai-no-cache-reasoning"
+  },
+  "lr-otelv2latest-openai-stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 99,
+   "output": 59,
+   "reasoning": 46,
+   "success": 1,
+   "usage": true,
+   "why": "otel-openai-no-cache-reasoning"
+  },
+  "lr-otelv2latest-openai-tool": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": [
+    "cache_read",
+    "reasoning"
+   ],
+   "input": 825,
+   "output": 86,
+   "reasoning": 23,
+   "success": 2,
+   "usage": true,
+   "why": "otel-openai-no-cache-reasoning"
+  }
+ }
+}
