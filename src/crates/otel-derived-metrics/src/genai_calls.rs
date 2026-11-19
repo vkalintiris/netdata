@@ -71,6 +71,17 @@ pub(crate) struct GenAiCalls {
     token_details: Counter<TokenDetails>,
     duration: Histogram,
     rule_error_logged_at: AtomicU64,
+    duplicates: AtomicU64,
+    failed_rules: AtomicU64,
+}
+
+/// What the GenAI charts did not count as it arrived, since the start.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Uncounted {
+    /// Call spans dropped as the second span of a call already counted.
+    pub(crate) duplicates: u64,
+    /// Records a rule matched and then failed on.
+    pub(crate) failed_rules: u64,
 }
 
 impl GenAiCalls {
@@ -127,6 +138,8 @@ impl GenAiCalls {
             token_details,
             duration,
             rule_error_logged_at: AtomicU64::new(0),
+            duplicates: AtomicU64::new(0),
+            failed_rules: AtomicU64::new(0),
         })
     }
 
@@ -216,10 +229,21 @@ impl GenAiCalls {
             return;
         }
         let mut batch = Batch::new(&self.metric_set);
-        for candidate in self.pairs.retain(now, pending) {
+        let candidates = pending.len();
+        let counted = self.pairs.retain(now, pending);
+        self.duplicates
+            .fetch_add((candidates - counted.len()) as u64, Ordering::Relaxed);
+        for candidate in counted {
             self.count(&mut batch, candidate.group, &candidate.call, candidate.data);
         }
         self.aggregator.merge(batch, now);
+    }
+
+    pub(crate) fn uncounted(&self) -> Uncounted {
+        Uncounted {
+            duplicates: self.duplicates.load(Ordering::Relaxed),
+            failed_rules: self.failed_rules.load(Ordering::Relaxed),
+        }
     }
 
     /// Add to `chunks` every window whose allowed lateness has passed by `now` (Unix seconds).
@@ -271,6 +295,7 @@ impl GenAiCalls {
     }
 
     fn log_rule_error(&self, error: &otel_genai::RuleError) {
+        self.failed_rules.fetch_add(1, Ordering::Relaxed);
         let now = crate::unix_now();
         let last = self.rule_error_logged_at.load(Ordering::Relaxed);
         if now.saturating_sub(last) >= RULE_ERROR_LOG_SECONDS
@@ -405,6 +430,39 @@ mod tests {
         ] {
             assert!(out.contains(label), "{label} missing:\n{out}");
         }
+    }
+
+    #[test]
+    fn reports_what_it_did_not_count() {
+        let genai = GenAiCalls::new(10).unwrap();
+        let negative = vec![
+            text("gen_ai.operation.name", "chat"),
+            int("gen_ai.usage.input_tokens", -1),
+        ];
+        let export = ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                scope_spans: vec![ScopeSpans {
+                    // A nested pair, and a call whose rule fails on a negative count.
+                    spans: vec![
+                        call(1, 0, chat_attributes()),
+                        call(2, 1, chat_attributes()),
+                        call(3, 0, negative),
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        let mut pending = Pending::new();
+        genai.record(&mut pending, "default", &export);
+        genai.commit(pending, 100);
+        assert_eq!(
+            genai.uncounted(),
+            Uncounted {
+                duplicates: 1,
+                failed_rules: 1
+            }
+        );
     }
 
     #[test]
