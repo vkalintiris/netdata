@@ -245,21 +245,20 @@ fn real_call_runs_match_the_api() {
         } else {
             2
         };
-        let excepted: Vec<&str> = api["except"]
-            .as_array()
-            .map(|fields| fields.iter().map(|field| field.as_str().unwrap()).collect())
-            .unwrap_or_default();
+        // The fields in which this run is known to differ, each with its reason.
+        let excepted = api["except"].as_object();
         for (field, ours) in &fields[..comparable] {
             let theirs = api[*field].as_u64().unwrap();
             if *ours == theirs {
                 continue;
             }
-            if excepted.contains(field) {
-                needed.insert(api["why"].as_str().unwrap());
-            } else {
-                wrong.push(format!(
+            match excepted.and_then(|excepted| excepted.get(*field)) {
+                Some(reason) => {
+                    needed.insert(reason.as_str().unwrap());
+                }
+                None => wrong.push(format!(
                     "{run}: {field} is {ours}, the API returned {theirs}"
-                ));
+                )),
             }
         }
     }
