@@ -1,9 +1,11 @@
-# Langfuse SDK spans: a generation's tokens sit in one JSON object, `langfuse.observation.usage_details`, in one of two
-# shapes. The JavaScript SDK sends Langfuse's own keys, which are disjoint parts (`total` is their sum): `input` leaves
-# out `input_cached_tokens` and `output` leaves out `output_reasoning_tokens`, so the parts are added back. The Python
-# SDK passes on the OpenAI usage block as it came (`prompt_tokens`, `completion_tokens` and their `_details`), whose
-# totals already include cache and reasoning. Langfuse reports one model name, the answering model when known, and no
-# provider; a failure has level ERROR.
+# Langfuse SDK spans: a generation's tokens sit in one JSON object, `langfuse.observation.usage_details`. The Python
+# OpenAI wrapper passes on the OpenAI usage block as it came (`prompt_tokens`, `completion_tokens` and their
+# `_details`), whose totals already include cache and reasoning. Every other source sends disjoint parts: `input`
+# leaves out the cache counts and `output` the reasoning count, so the parts are added back. The part names differ:
+# the JavaScript SDK `input_cached_tokens`, `output_reasoning_tokens`; the LangChain callback handler
+# `input_cache_read`, `input_cache_creation`, `output_reasoning`, or, for an unstreamed Anthropic call, Anthropic's own
+# `cache_read_input_tokens`, `cache_creation_input_tokens`. Langfuse reports one model name, the answering model when
+# known, and no provider; a failure has level ERROR.
 a = .attributes
 kind = a."langfuse.observation.type"
 operation = if kind == "generation" {
@@ -22,16 +24,19 @@ if .scope.name == "langfuse-sdk" && operation != null {
   input = usage.prompt_tokens
   output = null
   cache_read = null
+  cache_write = null
   reasoning = null
   if exists(usage.prompt_tokens) {
     output = usage.completion_tokens
     cache_read = usage.prompt_tokens_details.cached_tokens
     reasoning = usage.completion_tokens_details.reasoning_tokens
   } else {
-    cache_read = usage.input_cached_tokens
-    reasoning = usage.output_reasoning_tokens
+    cache_read = usage.input_cached_tokens || usage.input_cache_read || usage.cache_read_input_tokens
+    cache_write = usage.input_cache_creation || usage.cache_creation_input_tokens
+    reasoning = usage.output_reasoning_tokens || usage.output_reasoning
     input = usage.input
     if is_integer(input) && is_integer(cache_read) { input = to_int!(input) + to_int!(cache_read) }
+    if is_integer(input) && is_integer(cache_write) { input = to_int!(input) + to_int!(cache_write) }
     output = usage.output
     if is_integer(output) && is_integer(reasoning) { output = to_int!(output) + to_int!(reasoning) }
   }
@@ -41,6 +46,7 @@ if .scope.name == "langfuse-sdk" && operation != null {
     "input_tokens": input,
     "output_tokens": output,
     "cache_read_tokens": cache_read,
+    "cache_write_tokens": cache_write,
     "reasoning_tokens": reasoning,
     "error": .status_code == 2 || a."langfuse.observation.level" == "ERROR"
   }
