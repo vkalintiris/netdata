@@ -251,6 +251,342 @@
   "reasoning": 5,
   "success": 1
  },
+ "cc-native-anthropic-parallel": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 12,
+  "duration_sum": 12.82978091,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 228,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 480,
+  "reasoning": 480,
+  "success": 12
+ },
+ "cc-native-anthropic-parallel_async": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 12,
+  "duration_sum": 13.808993015,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 228,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 480,
+  "reasoning": 479,
+  "success": 12
+ },
+ "cc-native-anthropic-parallel_error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 12,
+  "duration_sum": 0.571193394,
+  "error": 12,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "cc-native-anthropic-parallel_stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 6,
+  "duration_sum": 5.603011756,
+  "error": 0,
+  "first_chunk_count": 6,
+  "first_chunk_sum": 5.593221398,
+  "input": 114,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 240,
+  "reasoning": 240,
+  "success": 6
+ },
+ "cc-openllmetry-anthropic-parallel": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 12,
+  "duration_sum": 14.157934718,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 228,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 480,
+  "reasoning": 480,
+  "success": 12
+ },
+ "cc-openllmetry-anthropic-parallel_async": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 12,
+  "duration_sum": 15.759469321,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 228,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 480,
+  "reasoning": 479,
+  "success": 12
+ },
+ "cc-openllmetry-anthropic-parallel_error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 13,
+  "duration_sum": 0.494191537,
+  "error": 13,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "cc-openllmetry-anthropic-parallel_stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 6,
+  "duration_sum": 6.028987575,
+  "error": 0,
+  "first_chunk_count": 6,
+  "first_chunk_sum": 6.019761017,
+  "input": 114,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 240,
+  "reasoning": 240,
+  "success": 6
+ },
+ "cc-openllmetry-openai-parallel": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 12,
+  "duration_sum": 35.863554822,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 1188,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 474,
+  "reasoning": 397,
+  "success": 12
+ },
+ "cc-openllmetry-openai-parallel_async": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 12,
+  "duration_sum": 27.358432851,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 1188,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 464,
+  "reasoning": 313,
+  "success": 12
+ },
+ "cc-openllmetry-openai-parallel_error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 12,
+  "duration_sum": 0.529211045,
+  "error": 12,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "cc-openllmetry-openai-parallel_stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 6,
+  "duration_sum": 12.966295878,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 594,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 239,
+  "reasoning": 0,
+  "success": 6
+ },
+ "cc-otelgenai-anthropic-parallel": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 12,
+  "duration_sum": 12.581257914,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 228,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 480,
+  "reasoning": 480,
+  "success": 12
+ },
+ "cc-otelgenai-anthropic-parallel_async": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 12,
+  "duration_sum": 15.138498109,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 228,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 480,
+  "reasoning": 480,
+  "success": 12
+ },
+ "cc-otelgenai-anthropic-parallel_error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 12,
+  "duration_sum": 0.205261314,
+  "error": 12,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "cc-otelgenai-anthropic-parallel_stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 6,
+  "duration_sum": 5.779416604,
+  "error": 0,
+  "first_chunk_count": 6,
+  "first_chunk_sum": 5.759681087,
+  "input": 114,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 240,
+  "reasoning": 240,
+  "success": 6
+ },
  "claude-plain": {
   "cache_read": 13177,
   "cache_write": 46800,
