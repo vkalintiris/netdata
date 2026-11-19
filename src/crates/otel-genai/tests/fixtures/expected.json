@@ -5371,8 +5371,8 @@
   "duration_count": 2,
   "duration_sum": 4.308345429,
   "error": 0,
-  "first_chunk_count": 0,
-  "first_chunk_sum": 0.0,
+  "first_chunk_count": 2,
+  "first_chunk_sum": 3.577,
   "input": 866,
   "labels": [
    [
@@ -5413,8 +5413,8 @@
   "duration_count": 2,
   "duration_sum": 4.429176919,
   "error": 0,
-  "first_chunk_count": 0,
-  "first_chunk_sum": 0.0,
+  "first_chunk_count": 2,
+  "first_chunk_sum": 3.747,
   "input": 866,
   "labels": [
    [

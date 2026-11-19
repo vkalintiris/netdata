@@ -681,6 +681,33 @@ mod tests {
     }
 
     #[test]
+    fn strands_time_to_first_chunk_is_in_milliseconds() {
+        let normalizer = Normalizer::new().unwrap();
+        let call = span(vec![
+            string("gen_ai.operation.name", "chat"),
+            int("gen_ai.server.time_to_first_token", 1353),
+        ]);
+        let strands = scope("strands.telemetry.tracer");
+        assert_eq!(
+            normalizer
+                .span(Some(&strands), &call)
+                .unwrap()
+                .unwrap()
+                .time_to_first_chunk_seconds,
+            Some(1.353)
+        );
+        // The same attribute from any other producer is not read.
+        assert_eq!(
+            normalizer
+                .span(None, &call)
+                .unwrap()
+                .unwrap()
+                .time_to_first_chunk_seconds,
+            None
+        );
+    }
+
+    #[test]
     fn non_call_spans_are_not_calls() {
         let normalizer = Normalizer::new().unwrap();
         for operation in ["invoke_agent", "execute_tool", "create_agent"] {
