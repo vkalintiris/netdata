@@ -2734,6 +2734,120 @@
   "reasoning": 17,
   "success": 2
  },
+ "fp-langchain-langfuse-anthropic-agent": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 2.562391132,
+  "error": 0,
+  "input": 902,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 69,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-langchain-langfuse-anthropic-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.312116118,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-no-such-model",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-langchain-langfuse-anthropic-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 3.827872776,
+  "error": 0,
+  "input": 902,
+  "labels": [
+   [
+    "anthropic",
+    "chat",
+    "claude-haiku-5-5",
+    "claude-haiku-5-5"
+   ]
+  ],
+  "output": 67,
+  "reasoning": 0,
+  "success": 2
+ },
+ "fp-langchain-langfuse-openai-agent": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 3.639702885,
+  "error": 0,
+  "input": 852,
+  "labels": [
+   [
+    "-",
+    "chat",
+    "-",
+    "deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 78,
+  "reasoning": 16,
+  "success": 2
+ },
+ "fp-langchain-langfuse-openai-error": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 0.19440099,
+  "error": 1,
+  "input": 0,
+  "labels": [
+   [
+    "-",
+    "chat",
+    "-",
+    "no-such-model"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
+ "fp-langchain-langfuse-openai-stream": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 4.433489124,
+  "error": 0,
+  "input": 0,
+  "labels": [
+   [
+    "-",
+    "chat",
+    "-",
+    "deepseek-v4-flash"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 2
+ },
  "fp-langchain-langsmith-anthropic-agent": {
   "cache_read": 0,
   "cache_write": 0,
