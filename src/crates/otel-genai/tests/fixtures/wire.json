@@ -24,12 +24,179 @@
   "openllmetry-langchain-no-cache-reasoning": "OpenLLMetry's LangChain instrumentation sends no reasoning count (JavaScript: no cache-read count either)",
   "openllmetry-py-stream-no-reasoning": "OpenLLMetry (Python) sends no reasoning count on OpenAI streams",
   "otel-openai-no-cache-reasoning": "OpenTelemetry's OpenAI instrumentation (openai-v2, JavaScript, EDOT) sends no cache-read or reasoning count",
+  "parallel-failures-paired-by-time": "A failed call seen by the Anthropic SDK's own span and by a wrapper's span in two traces is paired by time; among parallel failures some pairs are missed and count twice",
   "pydantic-ai-rejected-attempts": "OpenTelemetry's Anthropic instrumentation emits failed call spans for attempts rejected before any request",
   "sdk-retry-one-call": "An SDK retries a failed request inside one call: Netdata counts the call once, as it ended, while the API saw every attempt",
   "strands-no-reasoning": "Strands sends no reasoning count",
   "vercel-no-reasoning": "The Vercel AI SDK sends no reasoning count"
  },
  "runs": {
+  "cc-native-anthropic-parallel": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 228,
+   "output": 480,
+   "reasoning": 480,
+   "success": 12,
+   "usage": true
+  },
+  "cc-native-anthropic-parallel_async": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 228,
+   "output": 480,
+   "reasoning": 479,
+   "success": 12,
+   "usage": true
+  },
+  "cc-native-anthropic-parallel_error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 12,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "cc-native-anthropic-parallel_stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 114,
+   "output": 240,
+   "reasoning": 240,
+   "success": 6,
+   "usage": true
+  },
+  "cc-openllmetry-anthropic-parallel": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 228,
+   "output": 480,
+   "reasoning": 480,
+   "success": 12,
+   "usage": true
+  },
+  "cc-openllmetry-anthropic-parallel_async": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 228,
+   "output": 480,
+   "reasoning": 479,
+   "success": 12,
+   "usage": true
+  },
+  "cc-openllmetry-anthropic-parallel_error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 12,
+   "except": {
+    "error": "parallel-failures-paired-by-time"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "cc-openllmetry-anthropic-parallel_stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 114,
+   "output": 240,
+   "reasoning": 240,
+   "success": 6,
+   "usage": true
+  },
+  "cc-openllmetry-openai-parallel": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 1188,
+   "output": 474,
+   "reasoning": 397,
+   "success": 12,
+   "usage": true
+  },
+  "cc-openllmetry-openai-parallel_async": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 1188,
+   "output": 464,
+   "reasoning": 313,
+   "success": 12,
+   "usage": true
+  },
+  "cc-openllmetry-openai-parallel_error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 12,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "cc-openllmetry-openai-parallel_stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "except": {
+    "reasoning": "openllmetry-py-stream-no-reasoning"
+   },
+   "input": 594,
+   "output": 239,
+   "reasoning": 171,
+   "success": 6,
+   "usage": true
+  },
+  "cc-otelgenai-anthropic-parallel": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 228,
+   "output": 480,
+   "reasoning": 480,
+   "success": 12,
+   "usage": true
+  },
+  "cc-otelgenai-anthropic-parallel_async": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 228,
+   "output": 480,
+   "reasoning": 480,
+   "success": 12,
+   "usage": true
+  },
+  "cc-otelgenai-anthropic-parallel_error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 12,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "cc-otelgenai-anthropic-parallel_stream": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 114,
+   "output": 240,
+   "reasoning": 240,
+   "success": 6,
+   "usage": true
+  },
   "fj-claude-agent-sdk-native-anthropic-agent": {
    "cache_read": 9470,
    "cache_write": 401,
