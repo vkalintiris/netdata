@@ -1,9 +1,10 @@
 //! Pair detection: one model call can reach us as two call spans, and only one may count.
 //!
-//! - Nested: a wrapper library's span around the SDK's own span for the same call. The inner span counts, so a call
-//!   span that another call span names as its parent is dropped. A child ends first and so is exported no later than
-//!   its parent: within one export request the pair is seen together, and across requests the parent finds its
-//!   child in a short-lived cache. A parent exported before its child counts twice.
+//! - Nested: a wrapper library's span around the SDK's own span for the same call. Within one export request the
+//!   inner span counts: a call span that another call span names as its parent is dropped. Across requests the first
+//!   to arrive counts and finds the other in a short-lived cache. That is the child as a rule, because it ends first;
+//!   a relay that sends its batches at once, or retries one, can deliver the parent first, and then the parent's
+//!   values are the ones charted.
 //! - Same answer: two call spans in different traces that carry the same response id (`gen_ai.response.id`) for the
 //!   same service. The one that ended first counts.
 //! - Same failure: the Anthropic SDK's own span does not join a wrapper library's trace (seen with OpenLLMetry), and a
@@ -54,6 +55,8 @@ struct State<G> {
 struct Memory<G> {
     /// `(trace id, parent span id)` of every call span seen: their parents must not count.
     parents: HashSet<(Vec<u8>, Vec<u8>)>,
+    /// `(trace id, span id)` of every call span counted: their children must not count.
+    counted: HashSet<(Vec<u8>, Vec<u8>)>,
     response_ids: HashSet<(G, String)>,
     /// Counted failures without a response id, by service and requested model.
     failures: HashMap<(G, Option<String>), Failures>,
@@ -87,6 +90,7 @@ impl<G> Default for Memory<G> {
     fn default() -> Self {
         Self {
             parents: HashSet::new(),
+            counted: HashSet::new(),
             response_ids: HashSet::new(),
             failures: HashMap::new(),
         }
@@ -137,6 +141,7 @@ impl<G: Hash + Eq + Clone> Pairs<G> {
                 let key = (candidate.trace_id.as_slice(), candidate.span_id.as_slice());
                 !parents.contains(&key)
                     && !state.remembers_parent(&candidate.trace_id, &candidate.span_id)
+                    && !state.remembers_counted(&candidate.trace_id, &candidate.parent_span_id)
             })
             .collect();
 
@@ -190,12 +195,18 @@ impl<G: Hash + Eq + Clone> Pairs<G> {
             }
         }
 
-        for candidate in &candidates {
+        for (candidate, keep) in candidates.iter().zip(&keep) {
             if !candidate.parent_span_id.is_empty() {
                 state
                     .current
                     .parents
                     .insert((candidate.trace_id.clone(), candidate.parent_span_id.clone()));
+            }
+            if *keep {
+                state
+                    .current
+                    .counted
+                    .insert((candidate.trace_id.clone(), candidate.span_id.clone()));
             }
         }
         drop(state);
@@ -212,6 +223,15 @@ impl<G: Hash + Eq> State<G> {
     fn remembers_parent(&self, trace_id: &[u8], span_id: &[u8]) -> bool {
         let key = (trace_id.to_vec(), span_id.to_vec());
         self.current.parents.contains(&key) || self.previous.parents.contains(&key)
+    }
+
+    /// Whether the span `parent_span_id` names was counted; a root span names none.
+    fn remembers_counted(&self, trace_id: &[u8], parent_span_id: &[u8]) -> bool {
+        if parent_span_id.is_empty() {
+            return false;
+        }
+        let key = (trace_id.to_vec(), parent_span_id.to_vec());
+        self.current.counted.contains(&key) || self.previous.counted.contains(&key)
     }
 
     fn remembers_response(&self, key: &(G, String)) -> bool {
@@ -307,6 +327,45 @@ mod tests {
         assert_eq!(
             kept(&pairs.retain(130, vec![candidate(1, 0, 9, None, 20)])),
             Vec::<u8>::new()
+        );
+    }
+
+    #[test]
+    fn a_child_in_a_later_request_does_not_count() {
+        // A relay that sends its batches at once can deliver the outer span first.
+        let pairs = Pairs::new();
+        assert_eq!(
+            kept(&pairs.retain(100, vec![candidate(1, 0, 9, None, 20)])),
+            vec![1]
+        );
+        assert_eq!(
+            kept(&pairs.retain(130, vec![candidate(2, 1, 9, None, 10)])),
+            Vec::<u8>::new()
+        );
+        // Forgotten after two rotations, like the rest of the memory.
+        pairs.retain(190, vec![candidate(4, 0, 8, None, 40)]);
+        assert_eq!(
+            kept(&pairs.retain(250, vec![candidate(3, 1, 9, None, 15)])),
+            vec![3]
+        );
+    }
+
+    #[test]
+    fn a_dropped_parent_does_not_cover_its_other_children() {
+        // An outer span around two calls: both inner spans count, the outer one never does.
+        let pairs = Pairs::new();
+        assert_eq!(
+            kept(&pairs.retain(100, vec![candidate(2, 1, 9, None, 10)])),
+            vec![2]
+        );
+        assert!(
+            pairs
+                .retain(100, vec![candidate(1, 0, 9, None, 30)])
+                .is_empty()
+        );
+        assert_eq!(
+            kept(&pairs.retain(100, vec![candidate(3, 1, 9, None, 20)])),
+            vec![3]
         );
     }
 
