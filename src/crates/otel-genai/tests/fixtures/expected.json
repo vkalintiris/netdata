@@ -3269,8 +3269,8 @@
   "duration_count": 2,
   "duration_sum": 4.433489124,
   "error": 0,
-  "first_chunk_count": 0,
-  "first_chunk_sum": 0.0,
+  "first_chunk_count": 2,
+  "first_chunk_sum": 3.872203079,
   "input": 0,
   "labels": [
    [
@@ -3290,8 +3290,8 @@
   "duration_count": 2,
   "duration_sum": 4.843429333,
   "error": 0,
-  "first_chunk_count": 0,
-  "first_chunk_sum": 0.0,
+  "first_chunk_count": 2,
+  "first_chunk_sum": 4.176306197,
   "input": 852,
   "labels": [
    [
@@ -6295,8 +6295,8 @@
   "duration_count": 1,
   "duration_sum": 2.879182093,
   "error": 0,
-  "first_chunk_count": 0,
-  "first_chunk_sum": 0.0,
+  "first_chunk_count": 1,
+  "first_chunk_sum": 2.421,
   "input": 99,
   "labels": [
    [
@@ -8381,8 +8381,8 @@
   "duration_count": 1,
   "duration_sum": 2.543239052,
   "error": 0,
-  "first_chunk_count": 0,
-  "first_chunk_sum": 0.0,
+  "first_chunk_count": 1,
+  "first_chunk_sum": 1.956033426,
   "input": 99,
   "labels": [
    [

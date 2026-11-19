@@ -5,7 +5,8 @@
 # the JavaScript SDK `input_cached_tokens`, `output_reasoning_tokens`; the LangChain callback handler
 # `input_cache_read`, `input_cache_creation`, `output_reasoning`, or, for an unstreamed Anthropic call, Anthropic's own
 # `cache_read_input_tokens`, `cache_creation_input_tokens`. Langfuse reports one model name, the answering model when
-# known, and no provider; a failure has level ERROR.
+# known, and no provider; a failure has level ERROR. A streamed generation carries the instant of its first stream
+# event, `langfuse.observation.completion_start_time`, as a JSON-quoted ISO 8601 string.
 a = .attributes
 kind = a."langfuse.observation.type"
 operation = if kind == "generation" {
@@ -40,6 +41,11 @@ if .scope.name == "langfuse-sdk" && operation != null {
     output = usage.output
     if is_integer(output) && is_integer(reasoning) { output = to_int!(output) + to_int!(reasoning) }
   }
+  first_chunk_time = null
+  if is_string(a."langfuse.observation.completion_start_time") {
+    text = parse_json(string!(a."langfuse.observation.completion_start_time")) ?? null
+    if is_string(text) { first_chunk_time = parse_timestamp(text, "%+") ?? null }
+  }
   {
     "operation": operation,
     "response_model": a."langfuse.observation.model.name",
@@ -48,7 +54,8 @@ if .scope.name == "langfuse-sdk" && operation != null {
     "cache_read_tokens": cache_read,
     "cache_write_tokens": cache_write,
     "reasoning_tokens": reasoning,
-    "error": .status_code == 2 || a."langfuse.observation.level" == "ERROR"
+    "error": .status_code == 2 || a."langfuse.observation.level" == "ERROR",
+    "first_chunk_time": first_chunk_time
   }
 } else {
   null

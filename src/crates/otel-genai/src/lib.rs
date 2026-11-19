@@ -7,7 +7,8 @@
 //! producer's records that is not a call, so no later rule counts it. A rule only maps the producer's
 //! vocabulary: the host supplies the call's end time, and a span's duration, from the record itself. A log rule
 //! supplies the duration, when the record has one. A rule also passes on the producer's time to the first chunk of a
-//! streamed answer, when the producer reports one.
+//! streamed answer, when the producer reports one: in seconds, or as the instant of the first chunk, which the host
+//! measures from the span's start.
 //!
 //! A producer whose rule counts from its log records may also emit spans for the same calls; its span scopes are
 //! claimed, so no span rule ever counts them, even if a later version of the producer makes them look like calls.
@@ -209,6 +210,14 @@ pub enum RuleError {
     },
 }
 
+/// The times of a call that the host reads from the record itself.
+#[derive(Debug, Clone, Copy)]
+struct Times {
+    /// A span's start; a log record has none.
+    start_unix_nano: Option<u64>,
+    end_unix_nano: u64,
+}
+
 struct Rule {
     name: &'static str,
     signal: Signal,
@@ -308,17 +317,18 @@ impl Normalizer {
             return Ok(None);
         }
         let start = span.start_time_unix_nano;
-        // A span that ends before it starts has no duration.
-        let end = span.end_time_unix_nano.max(start);
-        let duration = Some((end - start) as f64 / 1e9);
+        let times = Times {
+            start_unix_nano: Some(start),
+            // A span that ends before it starts has no duration.
+            end_unix_nano: span.end_time_unix_nano.max(start),
+        };
         self.resolve(
             Signal::Span,
             scope,
             &span.attributes,
             || value::span(scope, span),
             gated,
-            end,
-            duration,
+            times,
         )
     }
 
@@ -328,11 +338,14 @@ impl Normalizer {
         record: &LogRecord,
         gated: bool,
     ) -> Result<Option<Call>, RuleError> {
-        // Some producers set only the observed time.
-        let end = if record.time_unix_nano != 0 {
-            record.time_unix_nano
-        } else {
-            record.observed_time_unix_nano
+        let times = Times {
+            start_unix_nano: None,
+            // Some producers set only the observed time.
+            end_unix_nano: if record.time_unix_nano != 0 {
+                record.time_unix_nano
+            } else {
+                record.observed_time_unix_nano
+            },
         };
         self.resolve(
             Signal::Log,
@@ -340,14 +353,11 @@ impl Normalizer {
             &record.attributes,
             || value::log(scope, record),
             gated,
-            end,
-            None,
+            times,
         )
     }
 
-    /// The first matching rule of `signal`, applied; `duration_seconds` is the record's own unless the rule supplies
-    /// one.
-    #[allow(clippy::too_many_arguments)]
+    /// The first matching rule of `signal`, applied; the duration is the record's own unless the rule supplies one.
     fn resolve(
         &self,
         signal: Signal,
@@ -355,8 +365,7 @@ impl Normalizer {
         attributes: &[KeyValue],
         event: impl Fn() -> Value,
         gated: bool,
-        end_time_unix_nano: u64,
-        duration_seconds: Option<f64>,
+        times: Times,
     ) -> Result<Option<Call>, RuleError> {
         let timezone = TimeZone::default();
         let mut converted = None;
@@ -381,8 +390,7 @@ impl Normalizer {
                     })?;
             match output {
                 Value::Object(fields) => {
-                    return call(rule.name, &fields, end_time_unix_nano, duration_seconds)
-                        .map(Some);
+                    return call(rule.name, &fields, times).map(Some);
                 }
                 Value::Boolean(false) => return Ok(None),
                 _ => continue,
@@ -431,17 +439,13 @@ fn functions() -> Vec<Box<dyn Function>> {
         Box::new(vrl::stdlib::ToFloat),
         Box::new(vrl::stdlib::ParseInt),
         Box::new(vrl::stdlib::ParseJson),
+        Box::new(vrl::stdlib::ParseTimestamp),
         Box::new(vrl::stdlib::MapValues),
         Box::new(vrl::stdlib::Merge),
     ]
 }
 
-fn call(
-    rule: &'static str,
-    fields: &ObjectMap,
-    end_time_unix_nano: u64,
-    duration_seconds: Option<f64>,
-) -> Result<Call, RuleError> {
+fn call(rule: &'static str, fields: &ObjectMap, times: Times) -> Result<Call, RuleError> {
     let operation = string(rule, fields, "operation")?;
     let Some(operation) =
         operation.filter(|operation| CALL_OPERATIONS.contains(&operation.as_str()))
@@ -453,7 +457,14 @@ fn call(
         Some(Value::Boolean(error)) => *error,
         other => return Err(bad(rule, "error", other)),
     };
-    let duration_seconds = seconds(rule, fields, "duration_seconds")?.or(duration_seconds);
+    let own_duration = times
+        .start_unix_nano
+        .map(|start| (times.end_unix_nano - start) as f64 / 1e9);
+    let duration_seconds = seconds(rule, fields, "duration_seconds")?.or(own_duration);
+    let time_to_first_chunk_seconds = match seconds(rule, fields, "time_to_first_chunk_seconds")? {
+        Some(seconds) => Some(seconds),
+        None => seconds_from_start(rule, fields, "first_chunk_time", times.start_unix_nano)?,
+    };
     Ok(Call {
         operation,
         provider: string(rule, fields, "provider")?,
@@ -467,9 +478,9 @@ fn call(
             reasoning: count(rule, fields, "reasoning_tokens")?,
         },
         error,
-        end_time_unix_nano,
+        end_time_unix_nano: times.end_unix_nano,
         duration_seconds,
-        time_to_first_chunk_seconds: seconds(rule, fields, "time_to_first_chunk_seconds")?,
+        time_to_first_chunk_seconds,
         response_id: string(rule, fields, "response_id")?,
     })
 }
@@ -487,6 +498,30 @@ fn seconds(
             Ok(Some(seconds.into_inner()))
         }
         other => Err(bad(rule, field, other)),
+    }
+}
+
+/// The seconds from `start_unix_nano` to the instant in `field`: a timestamp at or after the start. A record
+/// without a start (a log record) has none.
+fn seconds_from_start(
+    rule: &'static str,
+    fields: &ObjectMap,
+    field: &'static str,
+    start_unix_nano: Option<u64>,
+) -> Result<Option<f64>, RuleError> {
+    let instant = match fields.get(field) {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::Timestamp(instant)) => instant,
+        other => return Err(bad(rule, field, other)),
+    };
+    let Some(start) = start_unix_nano else {
+        return Ok(None);
+    };
+    match instant.timestamp_nanos_opt() {
+        Some(nanos) if i128::from(nanos) >= i128::from(start) => {
+            Ok(Some((i128::from(nanos) - i128::from(start)) as f64 / 1e9))
+        }
+        _ => Err(bad(rule, field, fields.get(field))),
     }
 }
 
@@ -705,6 +740,44 @@ mod tests {
                 .time_to_first_chunk_seconds,
             None
         );
+    }
+
+    #[test]
+    fn langfuse_time_to_first_chunk_from_the_instant_of_the_first_chunk() {
+        let normalizer = Normalizer::new().unwrap();
+        let langfuse = scope("langfuse-sdk");
+        // The span starts at second 1 and ends at second 2.5.
+        let generation = |completion_start: &str| {
+            normalizer.span(
+                Some(&langfuse),
+                &span(vec![
+                    string("langfuse.observation.type", "generation"),
+                    string(
+                        "langfuse.observation.completion_start_time",
+                        completion_start,
+                    ),
+                ]),
+            )
+        };
+        let first_chunk = |completion_start: &str| {
+            generation(completion_start)
+                .unwrap()
+                .unwrap()
+                .time_to_first_chunk_seconds
+        };
+        // The JavaScript SDK writes milliseconds, the Python SDK microseconds.
+        assert_eq!(first_chunk("\"1970-01-01T00:00:01.750Z\""), Some(0.75));
+        assert_eq!(first_chunk("\"1970-01-01T00:00:02.250000Z\""), Some(1.25));
+        assert_eq!(first_chunk("\"not a time\""), None);
+        // A first chunk before the call started is a producer defect: the record is not counted.
+        assert!(matches!(
+            generation("\"1970-01-01T00:00:00.500Z\""),
+            Err(RuleError::Output {
+                rule: "langfuse",
+                field: "first_chunk_time",
+                ..
+            })
+        ));
     }
 
     #[test]
