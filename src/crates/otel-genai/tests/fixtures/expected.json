@@ -380,9 +380,9 @@
  "cc-openllmetry-anthropic-parallel_error": {
   "cache_read": 0,
   "cache_write": 0,
-  "duration_count": 13,
-  "duration_sum": 0.494191537,
-  "error": 13,
+  "duration_count": 12,
+  "duration_sum": 0.438722322,
+  "error": 12,
   "first_chunk_count": 0,
   "first_chunk_sum": 0.0,
   "input": 0,
