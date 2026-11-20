@@ -79,3 +79,15 @@ def test_declare_pins_port_and_re_declare_without_it_unpins():
 def test_declare_rejects_out_of_range_port(port):
     with pytest.raises(ValueError):
         AgentRegistry().declare("a", "/wt", "debug", port=port)
+
+
+def test_declare_sets_db_mode_and_re_declare_without_it_returns_to_ram():
+    reg = AgentRegistry()
+    assert reg.declare("a", "/wt", "debug").db_mode == "ram"
+    assert reg.declare("a", "/wt", "debug", db_mode="dbengine").db_mode == "dbengine"
+    assert reg.declare("a", "/wt", "debug").db_mode == "ram"
+
+
+def test_declare_rejects_unknown_db_mode():
+    with pytest.raises(ValueError):
+        AgentRegistry().declare("a", "/wt", "debug", db_mode="alloc")

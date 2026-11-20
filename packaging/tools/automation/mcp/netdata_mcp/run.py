@@ -55,6 +55,7 @@ class Run:
     otlp_endpoint: str = ""  # where the otel plugin listens for OTLP/gRPC data; "" = disabled
     otlp_http_endpoint: str = ""  # where it listens for OTLP/HTTP data; "" = disabled
     port_pinned: bool = False  # port came from the agent's declaration, not free_port()
+    db_mode: str = "ram"  # the [db] mode this run was launched with
     buffer: LogBuffer = field(default_factory=LogBuffer)
     state: RunState = "building"
     error: str | None = None
@@ -136,7 +137,7 @@ class RunRegistry:
     async def start(
         self, agent_id: str, worktree: str, profile: str,
         *, otel: runtime.OtelConfig | None = None, port: int | None = None,
-        restart: bool = False, probe: Probe | None = None,
+        db_mode: str = "ram", restart: bool = False, probe: Probe | None = None,
     ) -> tuple[Run, str]:
         """Launch a run for an agent (fire-and-poll); return ``(run, outcome)``.
 
@@ -170,12 +171,13 @@ class RunRegistry:
 
             web_port = port if port is not None else runtime.free_port_except(runtime.pinned_ports(otel))
             rd, conf, otlp_endpoint, otlp_http_endpoint = runtime.generate_runtime(
-                agent_id, otel=otel, reserved_ports=(web_port,)
+                agent_id, overrides={"db": {"mode": db_mode}}, otel=otel, reserved_ports=(web_port,)
             )
             run = Run(
                 agent_id=agent_id, worktree=worktree, profile=profile,
                 port=web_port,
                 port_pinned=port is not None,
+                db_mode=db_mode,
                 run_dir=rd, conf_path=conf, otlp_endpoint=otlp_endpoint or "",
                 otlp_http_endpoint=otlp_http_endpoint or "",
             )

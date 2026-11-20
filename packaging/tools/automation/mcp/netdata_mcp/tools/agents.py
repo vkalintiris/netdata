@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from mcp.server.fastmcp import Context, FastMCP
 from pydantic import Field
@@ -26,6 +26,16 @@ _Port = Annotated[
         ),
     ),
 ]
+_DbMode = Annotated[
+    Literal["ram", "dbengine"],
+    Field(
+        description=(
+            "netdata's [db] mode. 'ram' (default) keeps about an hour of metrics in memory, lost on restart; "
+            "'dbengine' keeps them on disk under the run dir, so queries can cover longer windows and the metrics "
+            "survive restarts. Applies at the next start/restart; re-declaring without it returns to 'ram'."
+        ),
+    ),
+]
 
 
 def register(mcp: FastMCP) -> None:
@@ -38,11 +48,16 @@ def register(mcp: FastMCP) -> None:
             "build/ (the profile sets its build type); the agent is its own isolated "
             "run instance. Pass port to pin its web port across restarts (re-declaring "
             "without port returns it to auto-assigned ports; a change applies at the next "
-            "start/restart)."
+            "start/restart). Pass db_mode='dbengine' to keep metrics on disk beyond the ram db's hour."
         ),
     )
     async def netdata_agent_declare(
-        ctx: Context, agent_id: _AgentId, worktree: _Worktree, profile: _Profile, port: _Port = None
+        ctx: Context,
+        agent_id: _AgentId,
+        worktree: _Worktree,
+        profile: _Profile,
+        port: _Port = None,
+        db_mode: _DbMode = "ram",
     ) -> RunInfo:
         if not buildcfg.is_worktree(worktree):
             return agent_error(agent_id, f"Not a Netdata worktree (no CMakeLists.txt): {worktree}")
@@ -57,19 +72,20 @@ def register(mcp: FastMCP) -> None:
         if (clash := runtime.web_port_clash(known.otel if known else None, port)) is not None:
             return agent_error(agent_id, clash)
         try:
-            spec = get_agents(ctx).declare(agent_id, worktree, profile, port=port)
+            spec = get_agents(ctx).declare(agent_id, worktree, profile, port=port, db_mode=db_mode)
         except ValueError as exc:
             return agent_error(agent_id, str(exc))
         if live is not None and not live.done:
             # same (worktree, profile), still running — reflect the live state
             # rather than misreporting "declared".
-            pending = (
-                f" It keeps port {live.port} until netdata_run_start(restart=true)."
-                if (port is not None and port != live.port) or (port is None and live.port_pinned)
-                else ""
-            )
+            kept = []
+            if (port is not None and port != live.port) or (port is None and live.port_pinned):
+                kept.append(f"port {live.port}")
+            if db_mode != live.db_mode:
+                kept.append(f"db mode {live.db_mode}")
+            pending = f" It keeps {' and '.join(kept)} until netdata_run_start(restart=true)." if kept else ""
             return run_info(live, message=f"Agent {agent_id!r} already running; state preserved.{pending}")
-        where = f" on port {port}" if port is not None else ""
+        where = (f" on port {port}" if port is not None else "") + (f" with a {db_mode} db" if db_mode != "ram" else "")
         return agent_declared(
             spec, message=f"Agent {agent_id!r} declared ({profile} @ {worktree}){where}. Start it with netdata_run_start."
         )

@@ -20,3 +20,11 @@ async def test_declare_takes_an_optional_bounded_port():
     assert "port" not in tool.inputSchema.get("required", [])
     bounds = next(v for v in props["port"]["anyOf"] if v.get("type") == "integer")
     assert (bounds["minimum"], bounds["maximum"]) == (1, 65535)
+
+
+async def test_declare_takes_an_optional_db_mode():
+    tool = await _declare_tool()
+    props = tool.inputSchema["properties"]
+    assert props["db_mode"]["enum"] == ["ram", "dbengine"]
+    assert props["db_mode"]["default"] == "ram"
+    assert "db_mode" not in tool.inputSchema.get("required", [])

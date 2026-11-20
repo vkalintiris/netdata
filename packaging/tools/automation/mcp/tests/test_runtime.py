@@ -56,6 +56,14 @@ def test_launch_command_shape():
     assert cmd == ["/i/usr/sbin/netdata", "-D", "-p", "41000", "-c", "/r/etc/netdata.conf"]
 
 
+def test_generate_runtime_db_mode_override(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(journal, "journald_socket_present", lambda: True)
+    _, conf, _otlp, _http = runtime.generate_runtime("agent-db", overrides={"db": {"mode": "dbengine"}})
+    text = conf.read_text()
+    assert "mode = dbengine" in text and "mode = ram" not in text
+
+
 def test_generate_runtime_writes_isolated_conf(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime.Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setattr(journal, "journald_socket_present", lambda: True)

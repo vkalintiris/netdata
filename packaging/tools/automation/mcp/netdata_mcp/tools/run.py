@@ -41,7 +41,8 @@ def register(mcp: FastMCP) -> None:
         if spec is None:
             return unknown_agent(agent_id)
         run, outcome = await get_runs(ctx).start(
-            agent_id, spec.worktree, spec.profile, otel=spec.otel, port=spec.port, restart=restart
+            agent_id, spec.worktree, spec.profile, otel=spec.otel, port=spec.port, db_mode=spec.db_mode,
+            restart=restart,
         )
         poll = f"Poll netdata_run_status({agent_id!r}) until 'ready'."
         # "already-running" covers any live state; say "running" only when ready.

@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from . import buildcfg, runtime
 from .runtime import OtelConfig
 
+DB_MODES = ("ram", "dbengine")
+
 
 @dataclass
 class AgentSpec:
@@ -26,6 +28,9 @@ class AgentSpec:
     # A stable port keeps browser URLs (and a local UI's ?agent=) valid across
     # restarts.
     port: int | None = None
+    # netdata's [db] mode: "ram" keeps about an hour of metrics in memory; "dbengine" keeps them on disk under the
+    # run dir, so they survive restarts and cover longer windows.
+    db_mode: str = "ram"
     # otel-plugin tuning applied at the next launch/restart (set via
     # netdata_agent_otel_config). Preserved across idempotent re-declare.
     otel: OtelConfig = field(default_factory=OtelConfig)
@@ -35,24 +40,29 @@ class AgentRegistry:
     def __init__(self) -> None:
         self._agents: dict[str, AgentSpec] = {}
 
-    def declare(self, agent_id: str, worktree: str, profile: str, port: int | None = None) -> AgentSpec:
-        """Register (or idempotently update) an agent. Validates id, profile and port.
+    def declare(
+        self, agent_id: str, worktree: str, profile: str, port: int | None = None, db_mode: str = "ram"
+    ) -> AgentSpec:
+        """Register (or idempotently update) an agent. Validates id, profile, port and db mode.
 
-        Like worktree and profile, ``port`` is replaced on every declare: omitting
-        it returns the agent to auto-assigned ports.
+        Like worktree and profile, ``port`` and ``db_mode`` are replaced on every
+        declare: omitting them returns the agent to auto-assigned ports and a ram db.
         """
         runtime.sanitize_agent_id(agent_id)
         runtime.check_runtime_socket_paths(agent_id)
         buildcfg.validate_profile(profile)
         if port is not None and not 1 <= port <= 65535:
             raise ValueError(f"port must be within 1-65535, got {port}")
+        if db_mode not in DB_MODES:
+            raise ValueError(f"db_mode must be one of {', '.join(DB_MODES)}, got {db_mode!r}")
         existing = self._agents.get(agent_id)
         if existing is not None:
             existing.worktree = worktree
             existing.profile = profile
             existing.port = port
+            existing.db_mode = db_mode
             return existing
-        spec = AgentSpec(agent_id=agent_id, worktree=worktree, profile=profile, port=port)
+        spec = AgentSpec(agent_id=agent_id, worktree=worktree, profile=profile, port=port, db_mode=db_mode)
         self._agents[agent_id] = spec
         return spec
 
