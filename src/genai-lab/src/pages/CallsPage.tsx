@@ -12,7 +12,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import type { Series } from '@/lib/agent'
 import { formatCount, formatInterval, formatSeconds } from '@/lib/format'
-import { absolute, usePageState } from '@/lib/page-state'
+import { absolute, resetWindow, usePageState } from '@/lib/page-state'
 import { exploreCalls, field, K, unappliedFilters, type ExploreAnswer, type SpanRow } from '@/lib/traces'
 import { cn } from '@/lib/utils'
 
@@ -20,6 +20,13 @@ const PALETTE = ['--chart-1', '--chart-2', '--chart-3', '--chart-4', '--chart-5'
 const STACK_LIMIT = 7
 
 const timeFmt = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+const dayTimeFmt = new Intl.DateTimeFormat(undefined, {
+  month: 'short',
+  day: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+})
 
 // The Function's histogram as a chart series: the busiest models keep their own layer, the rest add up to "other".
 function histogramSeries(a: ExploreAnswer | undefined): { series: Series; styles: SeriesStyle[] } | undefined {
@@ -69,7 +76,8 @@ function StatusBadge({ row }: { row: SpanRow }) {
       </Badge>
     )
   }
-  return <span className="text-xs text-muted-foreground">{status === 'OK' ? 'ok' : 'unset'}</span>
+  // Instrumentations differ on marking success (OK or left unset); both mean the call did not fail.
+  return <span className="text-xs text-muted-foreground">ok</span>
 }
 
 const fmtCount = (v: number | null) => formatCount(v)
@@ -112,7 +120,9 @@ export function CallsPage() {
     },
     [window, setWindow],
   )
-  const onReset = useCallback(() => setWindow({ after: -3600, before: 0 }), [setWindow])
+  const onReset = useCallback(() => setWindow(resetWindow()), [setWindow])
+  const range = absolute(window)
+  const withDay = range.before - range.after > 12 * 3600 || new Date(range.after * 1000).getDate() !== new Date().getDate()
 
   return (
     <div className="flex flex-col gap-4">
@@ -131,6 +141,7 @@ export function CallsPage() {
             data={chart.series}
             styles={chart.styles}
             stacked
+            integer
             format={fmtCount}
             height={150}
             onZoom={onZoom}
@@ -169,7 +180,7 @@ export function CallsPage() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="w-24">Time</TableHead>
+                    <TableHead className={withDay ? 'w-36' : 'w-24'}>Time</TableHead>
                     <TableHead>Service</TableHead>
                     <TableHead>Model</TableHead>
                     <TableHead>Provider</TableHead>
@@ -192,8 +203,8 @@ export function CallsPage() {
                         data-state={active ? 'selected' : undefined}
                         className="cursor-pointer"
                       >
-                        <TableCell className="font-mono text-xs text-muted-foreground">
-                          {timeFmt.format(row.start_ns / 1e6)}
+                        <TableCell className="font-mono text-xs whitespace-nowrap text-muted-foreground">
+                          {(withDay ? dayTimeFmt : timeFmt).format(row.start_ns / 1e6)}
                         </TableCell>
                         <TableCell className="max-w-56 truncate">{field(row.fields, K.service)}</TableCell>
                         <TableCell className="max-w-56 truncate font-medium">
@@ -205,7 +216,7 @@ export function CallsPage() {
                         <TableCell>
                           <StatusBadge row={row} />
                         </TableCell>
-                        <TableCell className="text-right font-mono text-xs tabular-nums">
+                        <TableCell className="text-right font-mono text-xs whitespace-nowrap tabular-nums">
                           {formatSeconds(row.duration_ns / 1e9)}
                         </TableCell>
                         <TableCell className="text-right font-mono text-xs tabular-nums">

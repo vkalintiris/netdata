@@ -67,6 +67,8 @@ export type ExploreAnswer = {
 
 export type TraceSpan = {
   span_id: string
+  // Nesting level in the trace tree; spans come in tree order (parent, then its children).
+  depth?: number
   start_ns: number
   duration_ns: number
   fields: Fields
@@ -127,6 +129,8 @@ export function exploreCalls(
 
 type RawTrace = {
   trace_id: string
+  roots?: number[]
+  children?: number[][]
   resources?: { attributes?: Fields }[]
   spans?: (TraceSpan & { resource?: number })[]
 }
@@ -135,11 +139,22 @@ export async function fetchTrace(id: string, aroundNs: number, signal?: AbortSig
   const at = Math.floor(aroundNs / 1e9)
   const raw = await post<RawTrace>({ trace: { id, after: at - 3600, before: at + 3600 } }, signal)
   const resources = raw.resources ?? []
-  return {
-    trace_id: raw.trace_id,
-    spans: (raw.spans ?? []).map((s) => {
-      const res = typeof s.resource === 'number' ? (resources[s.resource]?.attributes ?? []) : []
-      return { ...s, fields: [...res, ...(s.fields ?? [])] }
-    }),
+  const spans = (raw.spans ?? []).map((s) => {
+    const res = typeof s.resource === 'number' ? (resources[s.resource]?.attributes ?? []) : []
+    return { ...s, fields: [...res, ...(s.fields ?? [])] }
+  })
+  const children = raw.children ?? []
+  const ordered: TraceSpan[] = []
+  const seen = new Set<number>()
+  const walk = (i: number, depth: number) => {
+    if (seen.has(i) || !spans[i]) return
+    seen.add(i)
+    ordered.push({ ...spans[i], depth })
+    const kids = [...(children[i] ?? [])].sort((a, b) => spans[a].start_ns - spans[b].start_ns)
+    for (const k of kids) walk(k, depth + 1)
   }
+  for (const r of raw.roots ?? []) walk(r, 0)
+  // Spans whose parent is missing from the answer still show, at the top level.
+  spans.forEach((_, i) => walk(i, 0))
+  return { trace_id: raw.trace_id, spans: ordered }
 }

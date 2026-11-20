@@ -7,7 +7,7 @@ import { StatTile } from '@/components/StatTile'
 import { TimeChart, type SeriesStyle } from '@/components/TimeChart'
 import { totals, type DataQuery, type Series } from '@/lib/agent'
 import { formatCount, formatInterval, formatNumber, formatPercent, formatSeconds } from '@/lib/format'
-import { absolute, LABELS, usePageState, type FilterName } from '@/lib/page-state'
+import { absolute, LABELS, POINTS, resetWindow, usePageState, type FilterName } from '@/lib/page-state'
 import { quantile } from '@/lib/quantile'
 import { useSeries } from '@/lib/queries'
 
@@ -19,7 +19,6 @@ const C = {
   ttfc: 'otel.derived_metrics.genai.time_to_first_chunk',
 }
 
-const POINTS = 120
 
 const CALL_STYLES: SeriesStyle[] = [
   { label: 'success', name: 'Success', color: '--success' },
@@ -27,12 +26,12 @@ const CALL_STYLES: SeriesStyle[] = [
 ]
 const TOKEN_STYLES: SeriesStyle[] = [
   { label: 'input', name: 'Input', color: '--chart-1' },
-  { label: 'output', name: 'Output', color: '--chart-2' },
+  { label: 'output', name: 'Output', color: '--chart-2', right: true },
 ]
 const DETAIL_STYLES: SeriesStyle[] = [
   { label: 'cache_read', name: 'Cache read', color: '--chart-3' },
-  { label: 'cache_write', name: 'Cache write', color: '--chart-4' },
-  { label: 'reasoning', name: 'Reasoning', color: '--chart-5' },
+  { label: 'cache_write', name: 'Cache write', color: '--chart-4', right: true },
+  { label: 'reasoning', name: 'Reasoning', color: '--chart-6', right: true },
 ]
 
 const fmtCount = (v: number | null) => formatCount(v)
@@ -77,9 +76,9 @@ export function OverviewPage() {
   const callsTrend = useSeries(trend(C.calls))
   const tokensTrend = useSeries(trend(C.tokens))
   const detailsTrend = useSeries(trend(C.details))
-  const durationAvg = useSeries(trend(`${C.duration}_avg`, { timeGroup: 'average', aggregation: 'average' }))
+  const durationTrendH = useSeries(trend(`${C.duration}_histogram`))
   const durationMax = useSeries(trend(`${C.duration}_max`, { timeGroup: 'max', aggregation: 'max' }))
-  const ttfcAvg = useSeries(trend(`${C.ttfc}_avg`, { timeGroup: 'average', aggregation: 'average' }))
+  const ttfcTrendH = useSeries(trend(`${C.ttfc}_histogram`))
   const ttfcMax = useSeries(trend(`${C.ttfc}_max`, { timeGroup: 'max', aggregation: 'max' }))
 
   const by = (context: string, labels: string[]) => total(context, { groupByLabels: labels })
@@ -90,8 +89,8 @@ export function OverviewPage() {
   const callsByService = useSeries(by(C.calls, [LABELS.service]))
   const tokensByService = useSeries(by(C.tokens, [LABELS.service]))
 
-  const durationLines = useMemo(() => merge(durationAvg.data, durationMax.data), [durationAvg.data, durationMax.data])
-  const ttfcLines = useMemo(() => merge(ttfcAvg.data, ttfcMax.data), [ttfcAvg.data, ttfcMax.data])
+  const durationLines = useMemo(() => latencyLines(durationTrendH.data, durationMax.data), [durationTrendH.data, durationMax.data])
+  const ttfcLines = useMemo(() => latencyLines(ttfcTrendH.data, ttfcMax.data), [ttfcTrendH.data, ttfcMax.data])
 
   const callTotals = calls.data ? totals(calls.data) : undefined
   const tokenTotals = tokens.data ? totals(tokens.data) : undefined
@@ -99,7 +98,8 @@ export function OverviewPage() {
   const ttfcBuckets = ttfcH.data ? totals(ttfcH.data) : undefined
 
   const callCount = callTotals ? (callTotals.success ?? 0) + (callTotals.error ?? 0) : undefined
-  const errorRate = callTotals && callCount ? (callTotals.error ?? 0) / callCount : callCount === 0 ? 0 : undefined
+  const errorRate = callTotals && callCount ? (callTotals.error ?? 0) / callCount : undefined
+  const successCount = callTotals?.success ?? 0
   const q = (b: Record<string, number> | undefined, p: number) => (b ? quantile(p, b) : null)
 
   const onZoom = useCallback((after: number, before: number) => setWindow({ after, before }), [setWindow])
@@ -113,11 +113,26 @@ export function OverviewPage() {
     },
     [window, setWindow],
   )
-  const onReset = useCallback(() => setWindow({ after: -3600, before: 0 }), [setWindow])
+  const onReset = useCallback(() => setWindow(resetWindow()), [setWindow])
   const nav = { onZoom, onPan, onReset }
 
   const per = (s: Series | undefined) => (s?.pointSeconds ? `per ${formatInterval(s.pointSeconds)}` : undefined)
-  const rank = (name: FilterName) => ({ selected: selected(name), onSelect: (v: string) => toggleFilter(name, v) })
+  // A model row is a model and its provider; its click filters by both, so the page shows exactly that row.
+  const rank = (name: FilterName, groupName?: FilterName) => ({
+    selected: selected(name),
+    groupSelected: groupName ? selected(groupName) : undefined,
+    onSelect: (v: string, group?: string) => {
+      const withGroup = groupName != null && group != null
+      const active = selected(name).includes(v) && (!withGroup || selected(groupName).includes(group))
+      if (active) {
+        toggleFilter(name, v)
+        if (withGroup) toggleFilter(groupName, group)
+        return
+      }
+      if (!selected(name).includes(v)) toggleFilter(name, v)
+      if (withGroup && !selected(groupName).includes(group)) toggleFilter(groupName, group)
+    },
+  })
 
   return (
     <div className="flex flex-col">
@@ -136,13 +151,13 @@ export function OverviewPage() {
           label="Input tokens"
           value={formatCount(tokenTotals?.input)}
           loading={!tokens.data}
-          detail={callCount ? `${formatCount((tokenTotals?.input ?? 0) / callCount)} per call` : undefined}
+          detail={successCount ? `${formatCount((tokenTotals?.input ?? 0) / successCount)} per successful call` : undefined}
         />
         <StatTile
           label="Output tokens"
           value={formatCount(tokenTotals?.output)}
           loading={!tokens.data}
-          detail={callCount ? `${formatCount((tokenTotals?.output ?? 0) / callCount)} per call` : undefined}
+          detail={successCount ? `${formatCount((tokenTotals?.output ?? 0) / successCount)} per successful call` : undefined}
         />
         <StatTile
           label="Call duration p50"
@@ -165,7 +180,7 @@ export function OverviewPage() {
       <SectionTitle>Trends</SectionTitle>
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
         <Panel title="Calls by outcome" subtitle={per(callsTrend.data)}>
-          <TimeChart data={callsTrend.data} styles={CALL_STYLES} stacked format={fmtCount} {...nav} />
+          <TimeChart data={callsTrend.data} styles={CALL_STYLES} stacked integer format={fmtCount} {...nav} />
         </Panel>
         <Panel title="Tokens" subtitle={per(tokensTrend.data)}>
           <TimeChart data={tokensTrend.data} styles={TOKEN_STYLES} format={fmtNumber} {...nav} />
@@ -177,13 +192,13 @@ export function OverviewPage() {
 
       <SectionTitle>Latency</SectionTitle>
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-        <Panel title="Call duration" subtitle="average and maximum">
+        <Panel title="Call duration" subtitle="p50, p95 and maximum">
           <TimeChart data={durationLines} styles={LATENCY_STYLES} format={fmtSeconds} {...nav} />
         </Panel>
-        <Panel title="Call duration distribution" subtitle="calls in this window">
+        <Panel title="Call duration distribution" subtitle="calls with a recorded duration">
           <Distribution buckets={durationBuckets} />
         </Panel>
-        <Panel title="Time to first chunk" subtitle="average and maximum, streamed calls">
+        <Panel title="Time to first chunk" subtitle="p50, p95 and maximum, streamed calls">
           <TimeChart data={ttfcLines} styles={LATENCY_STYLES} format={fmtSeconds} {...nav} />
         </Panel>
       </div>
@@ -191,7 +206,7 @@ export function OverviewPage() {
       <SectionTitle>Breakdown</SectionTitle>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
         <Panel title="By model" subtitle="calls">
-          <Ranking rows={rankRows(callsByModel.data)} format={formatCount} empty="No calls" {...rank('model')} />
+          <Ranking rows={rankRows(callsByModel.data)} format={formatCount} empty="No calls" {...rank('model', 'provider')} />
         </Panel>
         <Panel title="By provider" subtitle="calls">
           <Ranking rows={rankRows(callsByProvider.data)} format={formatCount} empty="No calls" {...rank('provider')} />
@@ -200,10 +215,10 @@ export function OverviewPage() {
           <Ranking rows={rankRows(callsByService.data)} format={formatCount} empty="No calls" {...rank('service')} />
         </Panel>
         <Panel title="By model" subtitle="tokens, input and output">
-          <Ranking rows={rankRows(tokensByModel.data)} format={formatCount} empty="No tokens reported" {...rank('model')} />
+          <Ranking rows={rankRows(tokensByModel.data)} format={formatCount} empty="No tokens reported" {...rank('model', 'provider')} />
         </Panel>
         <Panel title="Failures by model" subtitle="calls that ended in an error">
-          <Ranking rows={rankRows(failuresByModel.data)} format={formatCount} empty="No failed calls" {...rank('model')} />
+          <Ranking rows={rankRows(failuresByModel.data)} format={formatCount} empty="No failed calls" {...rank('model', 'provider')} />
         </Panel>
         <Panel title="By service" subtitle="tokens, input and output">
           <Ranking rows={rankRows(tokensByService.data)} format={formatCount} empty="No tokens reported" {...rank('service')} />
@@ -214,17 +229,30 @@ export function OverviewPage() {
 }
 
 const LATENCY_STYLES: SeriesStyle[] = [
-  { label: 'average', name: 'Average', color: '--chart-1' },
-  { label: 'maximum', name: 'Maximum', color: '--chart-5' },
+  { label: 'p50', name: 'p50', color: '--chart-1' },
+  { label: 'p95', name: 'p95', color: '--chart-3' },
+  { label: 'maximum', name: 'Maximum', color: '--chart-4' },
 ]
 
-// The average and maximum charts are separate contexts with one dimension each; draw them on one chart.
-function merge(avg: Series | undefined, max: Series | undefined): Series | undefined {
-  if (!avg || !max) return undefined
-  const byTime = new Map(max.times.map((t, i) => [t, max.values[0]?.[i] ?? null]))
+// Percentiles per point from the histogram's bucket counts, which add up across series; the maximum comes from its
+// own chart. (A mean of per-series averages would weigh a rarely used model like a busy one.)
+function latencyLines(hist: Series | undefined, max: Series | undefined): Series | undefined {
+  if (!hist || !max) return undefined
+  const maxAt = new Map(max.times.map((t, i) => [t, max.values[0]?.[i] ?? null]))
+  const p50: (number | null)[] = []
+  const p95: (number | null)[] = []
+  // Interpolation inside a wide bucket can land above the slowest call seen; the maximum bounds it.
+  const bounded = (q: number | null, m: number | null | undefined) => (q != null && m != null ? Math.min(q, m) : q)
+  hist.times.forEach((t, j) => {
+    const buckets: Record<string, number> = {}
+    hist.labels.forEach((le, i) => (buckets[le] = hist.values[i][j] ?? 0))
+    p50.push(bounded(quantile(0.5, buckets), maxAt.get(t)))
+    p95.push(bounded(quantile(0.95, buckets), maxAt.get(t)))
+  })
   return {
-    ...avg,
-    labels: ['average', 'maximum'],
-    values: [avg.values[0] ?? avg.times.map(() => null), avg.times.map((t) => byTime.get(t) ?? null)],
+    ...hist,
+    labels: ['p50', 'p95', 'maximum'],
+    values: [p50, p95, hist.times.map((t) => maxAt.get(t) ?? null)],
+    units: 'seconds',
   }
 }

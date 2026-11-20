@@ -19,6 +19,24 @@ export const PRESETS = [
 
 const DEFAULT_AFTER = -3600
 
+// Points per trend chart. A fixed window is stretched to points × a whole step, which the Agent answers as asked;
+// any other length it widens to whole steps, and the charts would then cover more time than the tiles.
+export const POINTS = 120
+
+export function snap(w: TimeWindow): TimeWindow {
+  if (w.after <= 0) return w
+  const step = Math.max(1, Math.ceil((w.before - w.after) / POINTS))
+  const before = Math.round(w.before)
+  return { after: before - step * POINTS, before }
+}
+
+// The relative window the page last showed, so a reset returns to it rather than to a fixed default.
+let lastRelative = DEFAULT_AFTER
+
+export function resetWindow(): TimeWindow {
+  return { after: lastRelative, before: 0 }
+}
+
 // The time window and the filters live in the URL, so a view can be reloaded and shared.
 export function usePageState() {
   const [params, setParams] = useSearchParams()
@@ -51,9 +69,12 @@ export function usePageState() {
     [setParams],
   )
 
+  if (window.after < 0 && window.before === 0) lastRelative = window.after
+
   const setWindow = useCallback(
-    (w: TimeWindow) =>
+    (requested: TimeWindow) =>
       update((p) => {
+        const w = snap(requested)
         p.set('after', String(Math.round(w.after)))
         if (w.before) p.set('before', String(Math.round(w.before)))
         else p.delete('before')

@@ -68,7 +68,9 @@ const ROLE_STYLE: Record<string, string> = {
 }
 
 function MessageView({ message }: { message: Message }) {
-  const role = message.role ?? (message.section === 'output' ? 'assistant' : 'input')
+  // Some instrumentations send a tool's result as a user message; it reads as the tool speaking.
+  const toolOnly = message.parts.length > 0 && message.parts.every((p) => p.kind === 'toolResult')
+  const role = toolOnly ? 'tool' : (message.role ?? (message.section === 'output' ? 'assistant' : 'input'))
   return (
     <div className={cn('flex flex-col gap-2 border-l-2 pl-3', ROLE_STYLE[role] ?? 'border-l-border')}>
       <div className="flex items-center gap-2 text-xs">
@@ -85,8 +87,8 @@ function MessageView({ message }: { message: Message }) {
 }
 
 function Waterfall({ spans, selected }: { spans: TraceSpan[]; selected: string }) {
-  const sorted = [...spans].sort((a, b) => a.start_ns - b.start_ns)
-  const start = sorted[0]?.start_ns ?? 0
+  const sorted = spans
+  const start = Math.min(...sorted.map((s) => s.start_ns))
   const end = Math.max(...sorted.map((s) => s.start_ns + s.duration_ns))
   const span = Math.max(1, end - start)
   return (
@@ -99,9 +101,16 @@ function Waterfall({ spans, selected }: { spans: TraceSpan[]; selected: string }
         return (
           <li
             key={s.span_id}
-            className={cn('grid grid-cols-[180px_1fr_64px] items-center gap-2 rounded px-1 text-xs', s.span_id === selected && 'bg-muted')}
+            className={cn(
+              'grid grid-cols-[200px_1fr_72px] items-center gap-2 rounded px-1 text-xs',
+              s.span_id === selected && 'bg-muted',
+            )}
           >
-            <span className="truncate" title={field(s.fields, K.name)}>
+            <span
+              className="truncate"
+              style={{ paddingLeft: `${Math.min(s.depth ?? 0, 8) * 10}px` }}
+              title={field(s.fields, K.name)}
+            >
               {field(s.fields, K.name) ?? s.span_id}
             </span>
             <span className="relative h-3">
@@ -113,7 +122,7 @@ function Waterfall({ spans, selected }: { spans: TraceSpan[]; selected: string }
                 style={{ left: `${left}%`, width: `${width}%` }}
               />
             </span>
-            <span className="text-right font-mono tabular-nums text-muted-foreground">
+            <span className="text-right font-mono whitespace-nowrap tabular-nums text-muted-foreground">
               {formatSeconds(s.duration_ns / 1e9)}
             </span>
           </li>
@@ -137,6 +146,13 @@ export function CallDetail({ id, onClose }: { id: string; onClose: () => void })
 
   const f = (...keys: string[]) => field(span?.fields, ...keys)
   const error = f(K.status) === 'ERROR'
+  const finishReasons =
+    f(K.finishReasons) ??
+    (conversation?.messages
+      .map((m) => (m.section === 'output' ? m.finishReason : undefined))
+      .filter(Boolean)
+      .join(', ') ||
+      undefined)
 
   return (
     <aside className="flex max-h-[calc(100vh-7rem)] min-w-0 flex-col self-start overflow-hidden rounded-lg border bg-card xl:sticky xl:top-16">
@@ -149,6 +165,15 @@ export function CallDetail({ id, onClose }: { id: string; onClose: () => void })
           <p className="truncate text-xs text-muted-foreground">
             {f(K.service)} · {span ? dateFmt.format(span.start_ns / 1e6) : ''}
           </p>
+          {span && (
+            <p className="mt-1 flex flex-wrap gap-x-3 font-mono text-xs tabular-nums">
+              <span>{formatSeconds(span.duration_ns / 1e9)}</span>
+              <span>
+                {count(f(K.inputTokens)) ?? '–'} in · {count(f(K.outputTokens)) ?? '–'} out
+              </span>
+              {finishReasons && <span className="text-muted-foreground">{finishReasons}</span>}
+            </p>
+          )}
         </div>
         <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="Close">
           <X />
@@ -209,7 +234,7 @@ export function CallDetail({ id, onClose }: { id: string; onClose: () => void })
               <Fact label="Provider">{f(K.provider, K.system)}</Fact>
               <Fact label="Requested model">{f(K.requestModel)}</Fact>
               <Fact label="Answering model">{f(K.responseModel)}</Fact>
-              <Fact label="Finish reasons">{f(K.finishReasons)}</Fact>
+              <Fact label="Finish reasons">{finishReasons}</Fact>
               <Fact label="Input tokens">{count(f(K.inputTokens))}</Fact>
               <Fact label="Output tokens">{count(f(K.outputTokens))}</Fact>
               <Fact label="Reasoning tokens">{count(f(K.reasoning))}</Fact>

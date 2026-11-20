@@ -4,18 +4,21 @@ import { cn } from '@/lib/utils'
 export type RankRow = { key: string; name: string; group?: string; value: number }
 
 const LIMIT = 8
+const UNSET = '[unset]'
 
 export function Ranking({
   rows,
   format,
   selected,
+  groupSelected,
   onSelect,
   empty,
 }: {
   rows: RankRow[]
   format: (v: number) => string
   selected: string[]
-  onSelect: (name: string) => void
+  groupSelected?: string[]
+  onSelect: (name: string, group?: string) => void
   empty: string
 }) {
   const sorted = [...rows].filter((r) => r.value > 0).sort((a, b) => b.value - a.value)
@@ -28,15 +31,19 @@ export function Ranking({
   return (
     <ul className="flex flex-col gap-0.5">
       {top.map((r) => {
-        const active = selected.includes(r.name)
+        const active =
+          selected.includes(r.name) && (!groupSelected || !r.group || groupSelected.includes(r.group))
+        // The Agent reports a missing label as "[unset]", which is not a value a filter can match.
+        const unset = r.name === UNSET || r.group === UNSET
         return (
           <li key={r.key}>
             <button
               type="button"
-              onClick={() => onSelect(r.name)}
-              title={active ? 'Remove this filter' : 'Filter the page by this value'}
+              disabled={unset}
+              onClick={() => onSelect(r.name, r.group)}
+              title={unset ? 'The label is missing on these calls' : active ? 'Remove this filter' : 'Filter the page by this value'}
               className={cn(
-                'group relative flex w-full items-center gap-2 overflow-hidden rounded px-2 py-1 text-left text-sm hover:bg-muted',
+                'group relative flex w-full items-center gap-2 overflow-hidden rounded px-2 py-1 text-left text-sm hover:bg-muted disabled:cursor-default disabled:hover:bg-transparent',
                 active && 'ring-1 ring-primary',
               )}
             >
