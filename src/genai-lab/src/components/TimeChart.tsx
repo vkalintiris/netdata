@@ -153,10 +153,14 @@ export function TimeChart({ data, styles, stacked, format, height = 180, onZoom,
   const shape = present.map((s) => s.label).join('|')
   const ready = data != null
 
+  // Stacked series are drawn as bars, highest layer first, so each lower layer paints over the part it owns.
+  const ordered = stacked ? [...present].reverse() : present
+
   const columns = (d: Series) => {
     const raw = present.map((s) => d.values[d.labels.indexOf(s.label)])
-    rawRef.current = raw
-    return [d.times, ...(stacked ? stack(raw) : raw)] as uPlot.AlignedData
+    const drawn = stacked ? stack(raw).reverse() : raw
+    rawRef.current = stacked ? [...raw].reverse() : raw
+    return [d.times, ...drawn] as uPlot.AlignedData
   }
 
   // The chart is built once per shape and theme; new data only replaces its columns.
@@ -167,7 +171,8 @@ export function TimeChart({ data, styles, stacked, format, height = 180, onZoom,
 
     const axis = cssVar('--chart-axis')
     const grid = cssVar('--chart-grid')
-    const colors = present.map((s) => resolveColor(s.color))
+    const colors = ordered.map((s) => resolveColor(s.color))
+    const bars = uPlot.paths.bars!({ size: [0.85, 48], gap: 1 })
     const initial = columns(d)
 
     const opts: uPlot.Options = {
@@ -206,31 +211,35 @@ export function TimeChart({ data, styles, stacked, format, height = 180, onZoom,
       ],
       series: [
         {},
-        ...present.map((s, i) => ({
-          label: s.name ?? s.label,
-          stroke: colors[i],
-          width: 1.5,
-          // Stacked layers fill the band down to the layer below (see bands), not down to zero.
-          fill: stacked && i > 0 ? undefined : withAlpha(colors[i], stacked ? 0.35 : 0.12),
-          points: {
-            show: (u: uPlot, si: number) => hasIsolated(u.data[si] as (number | null)[]),
-            size: 5,
-            fill: colors[i],
-          },
-          spanGaps: false,
-        })),
+        ...ordered.map((s, i) =>
+          stacked
+            ? {
+                label: s.name ?? s.label,
+                stroke: colors[i],
+                width: 0,
+                fill: withAlpha(colors[i], 0.8),
+                paths: bars,
+                points: { show: false },
+              }
+            : {
+                label: s.name ?? s.label,
+                stroke: colors[i],
+                width: 1.5,
+                fill: withAlpha(colors[i], 0.12),
+                points: {
+                  show: (u: uPlot, si: number) => hasIsolated(u.data[si] as (number | null)[]),
+                  size: 5,
+                  fill: colors[i],
+                },
+                spanGaps: false,
+              },
+        ),
       ],
-      bands: stacked
-        ? present.slice(1).map((_s, i) => ({
-            series: [i + 2, i + 1] as [number, number],
-            fill: withAlpha(colors[i + 1], 0.35),
-          }))
-        : undefined,
       plugins: [
         panPlugin((sec) => handlers.current.onPan(sec)),
         tooltipPlugin(
           rawRef,
-          present.map((s) => s.name ?? s.label),
+          ordered.map((s) => s.name ?? s.label),
           colors,
           format,
         ),

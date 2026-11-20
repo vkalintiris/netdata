@@ -86,7 +86,7 @@ export function OverviewPage() {
   const callsByModel = useSeries(by(C.calls, [LABELS.model, LABELS.provider]))
   const tokensByModel = useSeries(by(C.tokens, [LABELS.model, LABELS.provider]))
   const callsByProvider = useSeries(by(C.calls, [LABELS.provider]))
-  const tokensByProvider = useSeries(by(C.tokens, [LABELS.provider]))
+  const failuresByModel = useSeries(total(C.calls, { groupByLabels: [LABELS.model, LABELS.provider], dimensions: ['error'] }))
   const callsByService = useSeries(by(C.calls, [LABELS.service]))
   const tokensByService = useSeries(by(C.tokens, [LABELS.service]))
 
@@ -202,8 +202,8 @@ export function OverviewPage() {
         <Panel title="By model" subtitle="tokens, input and output">
           <Ranking rows={rankRows(tokensByModel.data)} format={formatCount} empty="No tokens reported" {...rank('model')} />
         </Panel>
-        <Panel title="By provider" subtitle="tokens, input and output">
-          <Ranking rows={rankRows(tokensByProvider.data)} format={formatCount} empty="No tokens reported" {...rank('provider')} />
+        <Panel title="Failures by model" subtitle="calls that ended in an error">
+          <Ranking rows={rankRows(failuresByModel.data)} format={formatCount} empty="No failed calls" {...rank('model')} />
         </Panel>
         <Panel title="By service" subtitle="tokens, input and output">
           <Ranking rows={rankRows(tokensByService.data)} format={formatCount} empty="No tokens reported" {...rank('service')} />
