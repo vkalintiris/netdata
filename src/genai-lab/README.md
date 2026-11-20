@@ -21,3 +21,5 @@ pnpm dev            # http://127.0.0.1:8094/
 - Overview: tiles, trends, latency and breakdowns from the `otel.derived_metrics.genai.*` charts. Drag on a chart
   to zoom the whole page, Shift + drag to pan, double-click to return to the last hour. The window and filters live
   in the URL.
+- Calls: model-call spans from the `otel-traces` Function, a chart by requested model and a table; a row opens
+  the call with its conversation, a summary and the trace.
