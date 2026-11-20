@@ -60,7 +60,13 @@ export type SpanRow = {
 
 export type ExploreAnswer = {
   window: { after: number; before: number; bucket_start_s: number; bucket_width_s: number; buckets: number }
-  histogram?: { stack: string; dimensions: string[]; buckets: { counts: number[]; other: number; unset: number }[] }
+  histogram?: {
+    stack: string
+    dimensions: string[]
+    buckets: { counts: number[]; other: number; unset: number; durations?: number[] }[]
+    // Upper bound of each duration row in ns; null for the open-ended last row.
+    duration_rows?: (number | null)[]
+  }
   rows: { matched: number; items: SpanRow[]; anchor?: { next?: string } }
   status?: { complete?: boolean }
 }
@@ -86,27 +92,58 @@ export function field(fields: Fields | undefined, ...keys: string[]): string | u
   return undefined
 }
 
-async function post<T>(body: unknown, signal?: AbortSignal): Promise<T> {
-  const res = await fetch('/api/v3/function?function=otel-traces', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal,
-  })
-  const json = await res.json().catch(() => ({}))
-  if (!res.ok || (json.status && json.status !== 200 && typeof json.status === 'number')) {
-    throw new Error(json.errorMessage ?? `The Agent answered HTTP ${res.status}`)
+export class BusyError extends Error {}
+
+// The Function answers an explore that overlaps another with `partial: ["busy"]` and no data, so this page sends its
+// requests one at a time; a busy answer that still slips through is an error the caller retries, never data.
+let queue: Promise<unknown> = Promise.resolve()
+
+function post<T>(body: unknown, signal?: AbortSignal): Promise<T> {
+  const run = async () => {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+    const res = await fetch('/api/v3/function?function=otel-traces', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    })
+    const json = await res.json().catch(() => ({}))
+    if (json?.status?.partial?.includes?.('busy') || res.status === 503) throw new BusyError('The Agent is busy')
+    if (!res.ok || (typeof json.status === 'number' && json.status !== 200)) {
+      throw new Error(json.errorMessage ?? `The Agent answered HTTP ${res.status}`)
+    }
+    return json as T
   }
-  return json as T
+  const next = queue.then(run, run)
+  queue = next.catch(() => undefined)
+  return next
 }
 
-function conditions(filters: Filters) {
-  const out: { key: string; op: string; values: string[] }[] = [
+// A heatmap cell the list is narrowed to: its time range in seconds and its duration range in seconds.
+export type CallCell = { after: number; before: number; min: number; max: number | null }
+
+export function parseCell(text: string | null): CallCell | null {
+  if (!text) return null
+  const [after, before, min, max] = text.split(':').map(Number)
+  if (![after, before, min].every(Number.isFinite)) return null
+  return { after, before, min, max: Number.isFinite(max) ? max : null }
+}
+
+export function cellParam(c: CallCell): string {
+  return [c.after, c.before, c.min, c.max ?? ''].join(':')
+}
+
+function conditions(filters: Filters, cell?: CallCell | null) {
+  const out: { key: string; op: string; values: (string | number)[] }[] = [
     { key: K.operation, op: '=', values: MODEL_CALL_OPERATIONS },
   ]
   for (const [label, values] of Object.entries(filters)) {
     const key = SPAN_KEYS[label]
     if (key && values.length) out.push({ key, op: '=', values })
+  }
+  if (cell) {
+    out.push({ key: 'duration', op: '>=', values: [Math.round(cell.min * 1e9)] })
+    if (cell.max != null) out.push({ key: 'duration', op: '<', values: [Math.round(cell.max * 1e9)] })
   }
   return out
 }
@@ -118,12 +155,15 @@ export function exploreCalls(
   filters: Filters,
   anchor: string | undefined,
   signal?: AbortSignal,
+  cell?: CallCell | null,
+  rowLimit = ROWS_PAGE,
 ): Promise<ExploreAnswer> {
-  const { after, before } = absolute(w)
-  const rows = { limit: ROWS_PAGE, columns: ROW_COLUMNS }
+  const { after, before } = cell ?? absolute(w)
+  const rows = { limit: rowLimit, columns: ROW_COLUMNS }
+  const where = conditions(filters, cell)
   const body = anchor
-    ? { explore: { conditions: conditions(filters), anchor, rows } }
-    : { explore: { after, before, conditions: conditions(filters), histogram: { stack: K.requestModel }, rows } }
+    ? { explore: { conditions: where, anchor, rows } }
+    : { explore: { after, before, conditions: where, histogram: { stack: K.requestModel }, rows } }
   return post<ExploreAnswer>(body, signal)
 }
 
@@ -158,3 +198,27 @@ export async function fetchTrace(id: string, aroundNs: number, signal?: AbortSig
   spans.forEach((_, i) => walk(i, 0))
   return { trace_id: raw.trace_id, spans: ordered }
 }
+
+// Values of one span attribute among model-call spans, with their counts: the Calls page's filter choices, which must
+// include services whose metrics are older than the Agent keeps.
+export async function spanValues(
+  w: TimeWindow,
+  filters: Filters,
+  key: string,
+  signal?: AbortSignal,
+): Promise<Record<string, number>> {
+  const { after, before } = absolute(w)
+  const a = await post<ExploreAnswer>(
+    { explore: { after, before, conditions: conditions(filters), histogram: { stack: key }, rows: { limit: 1, columns: [key] } } },
+    signal,
+  )
+  const out: Record<string, number> = {}
+  const h = a.histogram
+  h?.dimensions.forEach((d, i) => {
+    if (!d) return
+    out[d] = h.buckets.reduce((sum, b) => sum + (b.counts[i] ?? 0), 0)
+  })
+  return out
+}
+
+export const SPAN_KEY_OF: Record<string, string> = SPAN_KEYS

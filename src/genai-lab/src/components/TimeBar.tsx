@@ -49,7 +49,7 @@ export function TimeBar() {
             <ChevronLeft />
           </Button>
         </TooltipTrigger>
-        <TooltipContent>Earlier (or Shift + drag on a chart)</TooltipContent>
+        <TooltipContent>Earlier (or drag a chart)</TooltipContent>
       </Tooltip>
       <Tooltip>
         <TooltipTrigger asChild>
@@ -65,7 +65,7 @@ export function TimeBar() {
             <ZoomOut />
           </Button>
         </TooltipTrigger>
-        <TooltipContent>Zoom out (drag on a chart to zoom in)</TooltipContent>
+        <TooltipContent>Zoom out (Shift + drag on a chart to zoom in)</TooltipContent>
       </Tooltip>
       <ToggleGroup
         type="single"

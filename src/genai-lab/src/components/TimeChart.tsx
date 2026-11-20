@@ -67,29 +67,44 @@ function stack(values: (number | null)[][]): (number | null)[][] {
   return out
 }
 
-// Shift + drag pans; a plain drag selects a window to zoom to (uPlot's own selection).
-function panPlugin(onPan: (seconds: number) => void): uPlot.Plugin {
+// A plain drag pans: the chart follows the mouse, and the page window moves on release. Shift + drag is uPlot's own
+// selection, which zooms (see the setSelect hook).
+function panPlugin(offset: { current: number | null }, onPan: (seconds: number) => void): uPlot.Plugin {
   return {
     hooks: {
       init: (u) => {
         const over = u.over
+        over.style.cursor = 'grab'
         let startX: number | null = null
-        const down = (e: MouseEvent) => {
-          if (!e.shiftKey) return
-          e.stopPropagation()
-          e.preventDefault()
-          startX = e.clientX
-          over.style.cursor = 'grabbing'
-          window.addEventListener('mouseup', up, { once: true })
+        let span = 0
+        const shift = (e: MouseEvent) => (-(e.clientX - (startX ?? 0)) / (over.clientWidth || 1)) * span
+        const move = (e: MouseEvent) => {
+          if (startX == null) return
+          offset.current = shift(e)
+          u.setScale('x', { min: u.scales.x.min ?? 0, max: u.scales.x.max ?? 0 })
         }
         const up = (e: MouseEvent) => {
           if (startX == null) return
-          const dx = e.clientX - startX
+          const seconds = shift(e)
+          const moved = Math.abs(e.clientX - startX) > 3
           startX = null
-          over.style.cursor = ''
-          const span = (u.scales.x.max ?? 0) - (u.scales.x.min ?? 0)
-          const width = over.clientWidth || 1
-          if (Math.abs(dx) > 3) onPan((-dx / width) * span)
+          over.style.cursor = 'grab'
+          window.removeEventListener('mousemove', move)
+          if (moved) onPan(seconds)
+          else {
+            offset.current = null
+            u.setScale('x', { min: 0, max: 0 })
+          }
+        }
+        const down = (e: MouseEvent) => {
+          if (e.shiftKey || e.button !== 0 || !over.contains(e.target as Node)) return
+          e.stopPropagation()
+          e.preventDefault()
+          startX = e.clientX
+          span = (u.scales.x.max ?? 0) - (u.scales.x.min ?? 0)
+          over.style.cursor = 'grabbing'
+          window.addEventListener('mousemove', move)
+          window.addEventListener('mouseup', up, { once: true })
         }
         u.root.addEventListener('mousedown', down, true)
       },
@@ -154,6 +169,8 @@ export function TimeChart({ data, styles, stacked, format, height = 180, integer
   const dataRef = useRef(data)
   dataRef.current = data
   const rawRef = useRef<(number | null)[][]>([])
+  // Seconds the chart is shifted by an unfinished pan; cleared when the data for the new window arrives.
+  const panOffset = useRef<number | null>(null)
   const [theme] = useTheme()
 
   const present = data ? styles.filter((s) => data.labels.includes(s.label)) : []
@@ -207,7 +224,10 @@ export function TimeChart({ data, styles, stacked, format, height = 180, integer
       scales: {
         x: {
           time: true,
-          range: () => [dataRef.current?.after ?? 0, dataRef.current?.before ?? 0],
+          range: () => {
+            const off = panOffset.current ?? 0
+            return [(dataRef.current?.after ?? 0) + off, (dataRef.current?.before ?? 0) + off]
+          },
         },
         ...(hasRight ? { right: {} } : {}),
       },
@@ -252,7 +272,7 @@ export function TimeChart({ data, styles, stacked, format, height = 180, integer
         ),
       ],
       plugins: [
-        panPlugin((sec) => handlers.current.onPan(sec)),
+        panPlugin(panOffset, (sec) => handlers.current.onPan(sec)),
         tooltipPlugin(
           rawRef,
           ordered.map((s) => s.name ?? s.label),
@@ -290,6 +310,7 @@ export function TimeChart({ data, styles, stacked, format, height = 180, integer
   }, [ready, shape, stacked, format, height, integer, theme])
 
   useEffect(() => {
+    panOffset.current = null
     if (plot.current && data) plot.current.setData(columns(data))
   }, [data])
 

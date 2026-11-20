@@ -1,5 +1,5 @@
-import { useInfiniteQuery } from '@tanstack/react-query'
-import { Info } from 'lucide-react'
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
+import { Info, X } from 'lucide-react'
 import { useCallback, useMemo } from 'react'
 import { useSearchParams } from 'react-router'
 import { CallDetail } from '@/components/CallDetail'
@@ -13,7 +13,18 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import type { Series } from '@/lib/agent'
 import { formatCount, formatInterval, formatSeconds } from '@/lib/format'
 import { absolute, resetWindow, usePageState } from '@/lib/page-state'
-import { exploreCalls, field, K, unappliedFilters, type ExploreAnswer, type SpanRow } from '@/lib/traces'
+import { Heatmap, type HeatCell, type HeatmapData } from '@/components/Heatmap'
+import {
+  cellParam,
+  exploreCalls,
+  field,
+  K,
+  parseCell,
+  unappliedFilters,
+  type CallCell,
+  type ExploreAnswer,
+  type SpanRow,
+} from '@/lib/traces'
 import { cn } from '@/lib/utils'
 
 const PALETTE = ['--chart-1', '--chart-2', '--chart-3', '--chart-4', '--chart-5', '--chart-6', '--chart-7', '--chart-8']
@@ -82,23 +93,77 @@ function StatusBadge({ row }: { row: SpanRow }) {
 
 const fmtCount = (v: number | null) => formatCount(v)
 
+// The Function's per-bucket duration counts as heatmap rows (bounds in ns, converted to seconds).
+function spanHeatmap(a: ExploreAnswer | undefined): HeatmapData | undefined {
+  const h = a?.histogram
+  if (!a || !h?.duration_rows) return undefined
+  const bounds = h.duration_rows
+  const rows = bounds.map((upper, i) => ({
+    lower: i === 0 ? 0 : (bounds[i - 1] ?? 0) / 1e9,
+    upper: upper == null ? null : upper / 1e9,
+  }))
+  return {
+    times: h.buckets.map((_, j) => a.window.bucket_start_s + j * a.window.bucket_width_s),
+    step: a.window.bucket_width_s,
+    after: a.window.after,
+    before: a.window.before,
+    rows,
+    counts: rows.map((_, r) => h.buckets.map((b) => b.durations?.[r] ?? 0)),
+  }
+}
+
+export function cellOf(c: HeatCell, d: HeatmapData): CallCell {
+  const row = d.rows[c.row]
+  const after = d.times[c.col]
+  return { after, before: after + d.step, min: row.lower, max: row.upper }
+}
+
+const cellTime = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+
 export function CallsPage() {
   const { window, filters, setWindow } = usePageState()
   const [params, setParams] = useSearchParams()
   const selected = params.get('call')
+  const cell = parseCell(params.get('cell'))
+  const live = window.after < 0 && !selected && !cell
 
+  // The list follows the selected heatmap cell; the charts keep showing the whole window.
   const query = useInfiniteQuery({
-    queryKey: ['calls', window, filters],
-    queryFn: ({ pageParam, signal }) => exploreCalls(window, filters, pageParam, signal),
+    queryKey: ['calls', window, filters, cell],
+    queryFn: ({ pageParam, signal }) => exploreCalls(window, filters, pageParam, signal, cell),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last) => last.rows.anchor?.next,
+    refetchInterval: live ? 10_000 : false,
+    placeholderData: (prev) => prev,
+  })
+  const overview = useQuery({
+    queryKey: ['calls-overview', window, filters],
+    queryFn: ({ signal }) => exploreCalls(window, filters, undefined, signal, null, 1),
+    enabled: cell != null,
     refetchInterval: window.after < 0 && !selected ? 10_000 : false,
     placeholderData: (prev) => prev,
   })
 
   const first = query.data?.pages[0]
+  const whole = cell ? overview.data : first
   const rows = useMemo(() => query.data?.pages.flatMap((p) => p.rows.items) ?? [], [query.data])
-  const chart = useMemo(() => histogramSeries(first), [first])
+  const chart = useMemo(() => histogramSeries(whole), [whole])
+  const heat = useMemo(() => spanHeatmap(whole), [whole])
+  const selectedCell = useMemo(() => {
+    if (!cell || !heat) return null
+    const col = heat.times.findIndex((t) => t === cell.after)
+    const row = heat.rows.findIndex((r) => r.lower === cell.min)
+    return col >= 0 && row >= 0 ? { col, row } : null
+  }, [cell, heat])
+
+  const setCell = (c: CallCell | null) =>
+    setParams((prev) => {
+      const next = new URLSearchParams(prev)
+      if (c) next.set('cell', cellParam(c))
+      else next.delete('cell')
+      next.delete('call')
+      return next
+    })
   const unapplied = unappliedFilters(filters)
 
   const select = (row: SpanRow | null) =>
@@ -126,13 +191,14 @@ export function CallsPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <FilterBar />
+      <FilterBar fromSpans />
 
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
       <Panel
         title="Model calls"
         subtitle={
-          first
-            ? `${formatCount(first.rows.matched)} spans · per ${formatInterval(first.window.bucket_width_s)}, by requested model`
+          whole
+            ? `${formatCount(whole.rows.matched)} spans · per ${formatInterval(whole.window.bucket_width_s)}, by requested model`
             : undefined
         }
       >
@@ -152,6 +218,30 @@ export function CallsPage() {
           <Skeleton className="h-[170px] w-full" />
         )}
       </Panel>
+      <Panel title="Call duration heatmap" subtitle="spans per time and duration; click a cell to list its calls">
+        <Heatmap
+          data={heat}
+          height={174}
+          formatBound={formatSeconds}
+          selected={selectedCell}
+          onCell={(c, d) => setCell(cellOf(c, d))}
+          cellHint="Click to list these calls"
+        />
+      </Panel>
+      </div>
+
+      {cell && (
+        <div className="flex items-center gap-2 text-sm">
+          <span className="rounded-md border border-primary/60 px-2 py-1">
+            Listing {cellTime.format(cell.after * 1000)}–{cellTime.format(cell.before * 1000)}, duration{' '}
+            {formatSeconds(cell.min)}–{cell.max == null ? '∞' : formatSeconds(cell.max)}
+          </span>
+          <Button variant="ghost" size="sm" onClick={() => setCell(null)}>
+            <X />
+            Whole window
+          </Button>
+        </div>
+      )}
 
       <p className="flex items-start gap-2 text-xs text-muted-foreground">
         <Info className="mt-px size-3.5 shrink-0" />

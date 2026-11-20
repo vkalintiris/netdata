@@ -141,7 +141,25 @@ export function CallDetail({ id, onClose }: { id: string; onClose: () => void })
     queryFn: ({ signal }) => fetchTrace(traceId, Number(startNs), signal),
   })
   const span = trace.data?.spans.find((s) => s.span_id === spanId)
-  const conversation = useMemo(() => (span ? conversationOf(span.fields) : null), [span])
+  // A call recorded by two instrumentations is two spans, and often only one of them carries the messages; an
+  // overlapping span of the same trace that has them stands in.
+  const { conversation, source } = useMemo(() => {
+    if (!span || !trace.data) return { conversation: null, source: null }
+    const own = conversationOf(span.fields)
+    if (own) return { conversation: own, source: null }
+    const end = span.start_ns + span.duration_ns
+    let best: { c: ReturnType<typeof conversationOf>; s: TraceSpan } | null = null
+    for (const other of trace.data.spans) {
+      if (other.span_id === span.span_id) continue
+      if (other.start_ns > end || other.start_ns + other.duration_ns < span.start_ns) continue
+      const c = conversationOf(other.fields)
+      if (!c) continue
+      if (!best || Math.abs(other.start_ns - span.start_ns) < Math.abs(best.s.start_ns - span.start_ns)) {
+        best = { c, s: other }
+      }
+    }
+    return best ? { conversation: best.c, source: best.s } : { conversation: null, source: null }
+  }, [span, trace.data])
   const [showAll, setShowAll] = useState(false)
 
   const f = (...keys: string[]) => field(span?.fields, ...keys)
@@ -200,6 +218,13 @@ export function CallDetail({ id, onClose }: { id: string; onClose: () => void })
           <TabsContent value="conversation" className="min-h-0 overflow-y-auto p-3">
             {conversation ? (
               <div className="flex flex-col gap-4">
+                {source && (
+                  <p className="rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground">
+                    From the span “{field(source.fields, K.name) ?? source.span_id}”
+                    {field(source.fields, 'scope.name') ? ` (${field(source.fields, 'scope.name')})` : ''}: this span
+                    carries no messages, and another instrumentation recorded the same call with them.
+                  </p>
+                )}
                 {conversation.tools.length > 0 && (
                   <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
                     Tools offered:

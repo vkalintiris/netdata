@@ -1,5 +1,8 @@
 import { useCallback, useMemo } from 'react'
+import { useNavigate } from 'react-router'
 import { Distribution } from '@/components/Distribution'
+import { Heatmap, type HeatCell, type HeatmapData } from '@/components/Heatmap'
+import { cellParam } from '@/lib/traces'
 import { FilterBar } from '@/components/FilterBar'
 import { Panel, SectionTitle } from '@/components/Panel'
 import { Ranking, type RankRow } from '@/components/Ranking'
@@ -48,7 +51,8 @@ function rankRows(s: Series | undefined): RankRow[] {
 }
 
 export function OverviewPage() {
-  const { window, filters, setWindow, selected, toggleFilter } = usePageState()
+  const { window, filters, setWindow, selected, toggleFilter, search } = usePageState()
+  const navigate = useNavigate()
 
   const base = useMemo(() => ({ window, filters }), [window, filters])
   const total = (context: string, extra: Partial<DataQuery> = {}): DataQuery => ({
@@ -90,6 +94,15 @@ export function OverviewPage() {
   const tokensByService = useSeries(by(C.tokens, [LABELS.service]))
 
   const durationLines = useMemo(() => latencyLines(durationTrendH.data, durationMax.data), [durationTrendH.data, durationMax.data])
+  const durationHeat = useMemo(() => metricHeatmap(durationTrendH.data), [durationTrendH.data])
+  const ttfcHeat = useMemo(() => metricHeatmap(ttfcTrendH.data), [ttfcTrendH.data])
+  // A duration cell opens the Calls page on the same window, listing the spans of that cell.
+  const openCell = (c: HeatCell, d: HeatmapData) => {
+    const p = new URLSearchParams(search)
+    const row = d.rows[c.row]
+    p.set('cell', cellParam({ after: d.times[c.col], before: d.times[c.col] + d.step, min: row.lower, max: row.upper }))
+    navigate({ pathname: '/calls', search: `?${p}` })
+  }
   const ttfcLines = useMemo(() => latencyLines(ttfcTrendH.data, ttfcMax.data), [ttfcTrendH.data, ttfcMax.data])
 
   const callTotals = calls.data ? totals(calls.data) : undefined
@@ -192,14 +205,20 @@ export function OverviewPage() {
 
       <SectionTitle>Latency</SectionTitle>
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-        <Panel title="Call duration" subtitle="p50, p95 and maximum">
-          <TimeChart data={durationLines} styles={LATENCY_STYLES} format={fmtSeconds} {...nav} />
+        <Panel title="Call duration heatmap" subtitle="calls per time and duration; click a cell to list its calls" className="lg:col-span-2">
+          <Heatmap data={durationHeat} height={180} formatBound={formatSeconds} onCell={openCell} cellHint="Click to list these calls" />
         </Panel>
         <Panel title="Call duration distribution" subtitle="calls with a recorded duration">
           <Distribution buckets={durationBuckets} />
         </Panel>
+        <Panel title="Call duration" subtitle="p50, p95 and maximum">
+          <TimeChart data={durationLines} styles={LATENCY_STYLES} format={fmtSeconds} {...nav} />
+        </Panel>
         <Panel title="Time to first chunk" subtitle="p50, p95 and maximum, streamed calls">
           <TimeChart data={ttfcLines} styles={LATENCY_STYLES} format={fmtSeconds} {...nav} />
+        </Panel>
+        <Panel title="Time to first chunk heatmap" subtitle="streamed calls per time and wait">
+          <Heatmap data={ttfcHeat} height={180} formatBound={formatSeconds} />
         </Panel>
       </div>
 
@@ -233,6 +252,20 @@ const LATENCY_STYLES: SeriesStyle[] = [
   { label: 'p95', name: 'p95', color: '--chart-3' },
   { label: 'maximum', name: 'Maximum', color: '--chart-4' },
 ]
+
+// The histogram chart over time as heatmap rows; a point's timestamp is the end of its interval.
+function metricHeatmap(h: Series | undefined): HeatmapData | undefined {
+  if (!h || !h.pointSeconds) return undefined
+  const bounds = h.labels.map((le) => (le === '+Inf' ? null : Number(le)))
+  return {
+    times: h.times.map((t) => t - h.pointSeconds),
+    step: h.pointSeconds,
+    after: h.after,
+    before: h.before,
+    rows: bounds.map((upper, i) => ({ lower: i === 0 ? 0 : (bounds[i - 1] ?? 0), upper })),
+    counts: h.values.map((row) => row.map((v) => v ?? 0)),
+  }
+}
 
 // Percentiles per point from the histogram's bucket counts, which add up across series; the maximum comes from its
 // own chart. (A mean of per-series averages would weigh a rarely used model like a busy one.)

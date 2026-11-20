@@ -14,6 +14,7 @@ export function formatNumber(v: number | null | undefined): string {
 
 export function formatSeconds(v: number | null | undefined): string {
   if (v == null || Number.isNaN(v)) return '–'
+  if (v > 0 && v < 0.001) return `${plain.format(v * 1e6)} µs`
   if (v < 1) return `${plain.format(v * 1000)} ms`
   if (v < 60) return `${plain.format(v)} s`
   return `${plain.format(v / 60)} min`
