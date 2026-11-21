@@ -9,14 +9,16 @@ import { cn } from '@/lib/utils'
 const TABS = [
   { to: '/', label: 'Overview' },
   { to: '/calls', label: 'Calls' },
+  { to: '/sessions', label: 'Sessions' },
 ]
 
 export function AppShell({ children }: { children: ReactNode }) {
   const [theme, toggle] = useTheme()
   const { search } = useLocation()
-  // The open call belongs to the Calls page; other tabs keep only the window and filters.
+  // The open call and session belong to their pages; other tabs keep only the window and filters.
   const shared = new URLSearchParams(search)
   shared.delete('call')
+  shared.delete('session')
   const sharedSearch = shared.toString() ? `?${shared}` : ''
   return (
     <div className="min-h-screen">

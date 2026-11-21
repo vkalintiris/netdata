@@ -98,7 +98,7 @@ export class BusyError extends Error {}
 // requests one at a time; a busy answer that still slips through is an error the caller retries, never data.
 let queue: Promise<unknown> = Promise.resolve()
 
-function post<T>(body: unknown, signal?: AbortSignal): Promise<T> {
+export function postTraces<T>(body: unknown, signal?: AbortSignal): Promise<T> {
   const run = async () => {
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
     const res = await fetch('/api/v3/function?function=otel-traces', {
@@ -164,7 +164,7 @@ export function exploreCalls(
   const body = anchor
     ? { explore: { conditions: where, anchor, rows } }
     : { explore: { after, before, conditions: where, histogram: { stack: K.requestModel }, rows } }
-  return post<ExploreAnswer>(body, signal)
+  return postTraces<ExploreAnswer>(body, signal)
 }
 
 type RawTrace = {
@@ -177,7 +177,7 @@ type RawTrace = {
 
 export async function fetchTrace(id: string, aroundNs: number, signal?: AbortSignal): Promise<TraceAnswer> {
   const at = Math.floor(aroundNs / 1e9)
-  const raw = await post<RawTrace>({ trace: { id, after: at - 3600, before: at + 3600 } }, signal)
+  const raw = await postTraces<RawTrace>({ trace: { id, after: at - 3600, before: at + 3600 } }, signal)
   const resources = raw.resources ?? []
   const spans = (raw.spans ?? []).map((s) => {
     const res = typeof s.resource === 'number' ? (resources[s.resource]?.attributes ?? []) : []
@@ -208,7 +208,7 @@ export async function spanValues(
   signal?: AbortSignal,
 ): Promise<Record<string, number>> {
   const { after, before } = absolute(w)
-  const a = await post<ExploreAnswer>(
+  const a = await postTraces<ExploreAnswer>(
     { explore: { after, before, conditions: conditions(filters), histogram: { stack: key }, rows: { limit: 1, columns: [key] } } },
     signal,
   )
