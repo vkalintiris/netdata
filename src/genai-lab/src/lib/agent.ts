@@ -22,6 +22,8 @@ export type DataQuery = {
   timeGroup: 'sum' | 'average' | 'max'
   aggregation: 'sum' | 'average' | 'max'
   groupByLabels?: string[]
+  // With `groupByLabels`: one series per dimension and label value, labelled "<dimension>,<label values>".
+  groupByDimension?: boolean
   dimensions?: string[]
   filters?: Filters
 }
@@ -47,7 +49,7 @@ export function dataUrl(q: DataQuery): string {
   // Without it a one-point query is answered for a window aligned to its own length.
   p.set('options', 'unaligned')
   if (q.groupByLabels?.length) {
-    p.set('group_by', 'label')
+    p.set('group_by', q.groupByDimension ? 'label,dimension' : 'label')
     p.set('group_by_label', q.groupByLabels.join(','))
   }
   if (q.dimensions?.length) p.set('dimensions', q.dimensions.join('|'))

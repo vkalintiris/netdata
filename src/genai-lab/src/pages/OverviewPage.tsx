@@ -7,8 +7,10 @@ import { FilterBar } from '@/components/FilterBar'
 import { Panel, SectionTitle } from '@/components/Panel'
 import { Ranking, type RankRow } from '@/components/Ranking'
 import { StatTile } from '@/components/StatTile'
+import { ToolsSection } from '@/components/ToolsSection'
 import { TimeChart, type SeriesStyle } from '@/components/TimeChart'
 import { totals, type DataQuery, type Series } from '@/lib/agent'
+import { LATENCY_STYLES, latencyLines, OUTCOME_STYLES } from '@/lib/charts'
 import { formatCount, formatInterval, formatNumber, formatPercent, formatSeconds } from '@/lib/format'
 import { absolute, LABELS, POINTS, resetWindow, usePageState, type FilterName } from '@/lib/page-state'
 import { quantile } from '@/lib/quantile'
@@ -23,10 +25,6 @@ const C = {
 }
 
 
-const CALL_STYLES: SeriesStyle[] = [
-  { label: 'success', name: 'Success', color: '--success' },
-  { label: 'error', name: 'Error', color: '--error' },
-]
 const TOKEN_STYLES: SeriesStyle[] = [
   { label: 'input', name: 'Input', color: '--chart-1' },
   { label: 'output', name: 'Output', color: '--chart-2', right: true },
@@ -193,7 +191,7 @@ export function OverviewPage() {
       <SectionTitle>Trends</SectionTitle>
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
         <Panel title="Calls by outcome" subtitle={per(callsTrend.data)}>
-          <TimeChart data={callsTrend.data} styles={CALL_STYLES} stacked integer format={fmtCount} {...nav} />
+          <TimeChart data={callsTrend.data} styles={OUTCOME_STYLES} stacked integer format={fmtCount} {...nav} />
         </Panel>
         <Panel title="Tokens" subtitle={per(tokensTrend.data)}>
           <TimeChart data={tokensTrend.data} styles={TOKEN_STYLES} format={fmtNumber} {...nav} />
@@ -243,15 +241,11 @@ export function OverviewPage() {
           <Ranking rows={rankRows(tokensByService.data)} format={formatCount} empty="No tokens reported" {...rank('service')} />
         </Panel>
       </div>
+
+      <ToolsSection {...nav} />
     </div>
   )
 }
-
-const LATENCY_STYLES: SeriesStyle[] = [
-  { label: 'p50', name: 'p50', color: '--chart-1' },
-  { label: 'p95', name: 'p95', color: '--chart-3' },
-  { label: 'maximum', name: 'Maximum', color: '--chart-4' },
-]
 
 // The histogram chart over time as heatmap rows; a point's timestamp is the end of its interval.
 function metricHeatmap(h: Series | undefined): HeatmapData | undefined {
@@ -264,28 +258,5 @@ function metricHeatmap(h: Series | undefined): HeatmapData | undefined {
     before: h.before,
     rows: bounds.map((upper, i) => ({ lower: i === 0 ? 0 : (bounds[i - 1] ?? 0), upper })),
     counts: h.values.map((row) => row.map((v) => v ?? 0)),
-  }
-}
-
-// Percentiles per point from the histogram's bucket counts, which add up across series; the maximum comes from its
-// own chart. (A mean of per-series averages would weigh a rarely used model like a busy one.)
-function latencyLines(hist: Series | undefined, max: Series | undefined): Series | undefined {
-  if (!hist || !max) return undefined
-  const maxAt = new Map(max.times.map((t, i) => [t, max.values[0]?.[i] ?? null]))
-  const p50: (number | null)[] = []
-  const p95: (number | null)[] = []
-  // Interpolation inside a wide bucket can land above the slowest call seen; the maximum bounds it.
-  const bounded = (q: number | null, m: number | null | undefined) => (q != null && m != null ? Math.min(q, m) : q)
-  hist.times.forEach((t, j) => {
-    const buckets: Record<string, number> = {}
-    hist.labels.forEach((le, i) => (buckets[le] = hist.values[i][j] ?? 0))
-    p50.push(bounded(quantile(0.5, buckets), maxAt.get(t)))
-    p95.push(bounded(quantile(0.95, buckets), maxAt.get(t)))
-  })
-  return {
-    ...hist,
-    labels: ['p50', 'p95', 'maximum'],
-    values: [p50, p95, hist.times.map((t) => maxAt.get(t) ?? null)],
-    units: 'seconds',
   }
 }
