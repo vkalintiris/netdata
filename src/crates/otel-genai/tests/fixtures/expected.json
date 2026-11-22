@@ -333,7 +333,20 @@
   ],
   "output": 952,
   "reasoning": 0,
-  "success": 5
+  "success": 5,
+  "tools": {
+   "duration_sum": 0.076883675,
+   "names": {
+    "Bash": {
+     "error": 0,
+     "success": 1
+    },
+    "Read": {
+     "error": 0,
+     "success": 3
+    }
+   }
+  }
  },
  "ca1-claude-par-a": {
   "cache_read": 33220,
@@ -354,7 +367,16 @@
   ],
   "output": 101,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.048402913,
+   "names": {
+    "Bash": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "ca1-claude-par-b": {
   "cache_read": 74479,
@@ -375,7 +397,16 @@
   ],
   "output": 710,
   "reasoning": 0,
-  "success": 4
+  "success": 4,
+  "tools": {
+   "duration_sum": 0.033836824,
+   "names": {
+    "Read": {
+     "error": 0,
+     "success": 3
+    }
+   }
+  }
  },
  "ca1-claude-plain": {
   "cache_read": 12785,
@@ -438,7 +469,16 @@
   ],
   "output": 99,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.052258723,
+   "names": {
+    "Bash": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "ca1-claude-subagent": {
   "cache_read": 55854,
@@ -459,7 +499,20 @@
   ],
   "output": 959,
   "reasoning": 0,
-  "success": 5
+  "success": 5,
+  "tools": {
+   "duration_sum": 4.996522841,
+   "names": {
+    "Agent": {
+     "error": 0,
+     "success": 1
+    },
+    "Bash": {
+     "error": 0,
+     "success": 2
+    }
+   }
+  }
  },
  "ca1-claude-subagents2": {
   "cache_read": 94362,
@@ -480,7 +533,20 @@
   ],
   "output": 1245,
   "reasoning": 0,
-  "success": 8
+  "success": 8,
+  "tools": {
+   "duration_sum": 8.173445698,
+   "names": {
+    "Agent": {
+     "error": 0,
+     "success": 2
+    },
+    "Bash": {
+     "error": 0,
+     "success": 4
+    }
+   }
+  }
  },
  "ca1-claude-tool": {
   "cache_read": 53758,
@@ -501,7 +567,20 @@
   ],
   "output": 466,
   "reasoning": 0,
-  "success": 3
+  "success": 3,
+  "tools": {
+   "duration_sum": 0.068000096,
+   "names": {
+    "Bash": {
+     "error": 0,
+     "success": 1
+    },
+    "Read": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "ca1-codex-badmodel": {
   "cache_read": 0,
@@ -1103,7 +1182,20 @@
   ],
   "output": 439,
   "reasoning": 0,
-  "success": 4
+  "success": 4,
+  "tools": {
+   "duration_sum": 3.420286761,
+   "names": {
+    "Agent": {
+     "error": 0,
+     "success": 1
+    },
+    "Bash": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "claude-tool": {
   "cache_read": 73125,
@@ -1124,7 +1216,16 @@
   ],
   "output": 142,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.051430842,
+   "names": {
+    "Bash": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "codex-plain": {
   "cache_read": 12288,
@@ -1572,7 +1673,16 @@
   ],
   "output": 91,
   "reasoning": 0,
-  "success": 3
+  "success": 3,
+  "tools": {
+   "duration_sum": 0.010288579,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-claude-agent-sdk-native-anthropic-error": {
   "cache_read": 0,
@@ -1679,6 +1789,20 @@
   "reasoning": 0,
   "success": 0
  },
+ "fj-langchain-langsmith-openai-toolerror": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 0,
+  "labels": [],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
  "fj-langchain-openinference-anthropic-agent": {
   "cache_read": 0,
   "cache_write": 0,
@@ -1698,7 +1822,16 @@
   ],
   "output": 138,
   "reasoning": 0,
-  "success": 4
+  "success": 4,
+  "tools": {
+   "duration_sum": 0.000839388,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-langchain-openinference-anthropic-error": {
   "cache_read": 0,
@@ -1740,7 +1873,16 @@
   ],
   "output": 138,
   "reasoning": 0,
-  "success": 4
+  "success": 4,
+  "tools": {
+   "duration_sum": 0.000821268,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-langchain-openinference-openai-agent": {
   "cache_read": 512,
@@ -1761,7 +1903,16 @@
   ],
   "output": 105,
   "reasoning": 39,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000880779,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-langchain-openinference-openai-error": {
   "cache_read": 0,
@@ -1803,7 +1954,46 @@
   ],
   "output": 96,
   "reasoning": 35,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000819368,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
+ },
+ "fj-langchain-openinference-openai-toolerror": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 3.858732276,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 894,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash"
+   ]
+  ],
+  "output": 119,
+  "reasoning": 51,
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000929978,
+   "names": {
+    "get_weather": {
+     "error": 1,
+     "success": 0
+    }
+   }
+  }
  },
  "fj-langchain-openllmetry-anthropic-agent": {
   "cache_read": 0,
@@ -1824,7 +2014,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000641154,
+   "names": {
+    "-": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-langchain-openllmetry-anthropic-error": {
   "cache_read": 0,
@@ -1866,7 +2065,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000632384,
+   "names": {
+    "-": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-langchain-openllmetry-openai-agent": {
   "cache_read": 0,
@@ -1887,7 +2095,16 @@
   ],
   "output": 89,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000617114,
+   "names": {
+    "-": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-langchain-openllmetry-openai-error": {
   "cache_read": 0,
@@ -1929,7 +2146,46 @@
   ],
   "output": 84,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000624844,
+   "names": {
+    "-": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
+ },
+ "fj-langchain-openllmetry-openai-toolerror": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 3.890154471,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 894,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash"
+   ]
+  ],
+  "output": 119,
+  "reasoning": 0,
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000719204,
+   "names": {
+    "-": {
+     "error": 1,
+     "success": 0
+    }
+   }
+  }
  },
  "fj-langchain-stacked-anthropic-agent": {
   "cache_read": 0,
@@ -1950,7 +2206,16 @@
   ],
   "output": 138,
   "reasoning": 0,
-  "success": 4
+  "success": 4,
+  "tools": {
+   "duration_sum": 0.000829769,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-langchain-stacked-anthropic-error": {
   "cache_read": 0,
@@ -1992,7 +2257,16 @@
   ],
   "output": 138,
   "reasoning": 0,
-  "success": 4
+  "success": 4,
+  "tools": {
+   "duration_sum": 0.000834328,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-langchain-stacked-openai-agent": {
   "cache_read": 1024,
@@ -2019,7 +2293,16 @@
   ],
   "output": 184,
   "reasoning": 60,
-  "success": 4
+  "success": 4,
+  "tools": {
+   "duration_sum": 0.000877129,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-langchain-stacked-openai-error": {
   "cache_read": 0,
@@ -2067,7 +2350,16 @@
   ],
   "output": 170,
   "reasoning": 44,
-  "success": 4
+  "success": 4,
+  "tools": {
+   "duration_sum": 0.000875979,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-mastra-native-anthropic-agent": {
   "cache_read": 0,
@@ -2088,7 +2380,16 @@
   ],
   "output": 67,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.003,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-mastra-native-anthropic-error": {
   "cache_read": 0,
@@ -2130,7 +2431,16 @@
   ],
   "output": 0,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.006,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-mastra-native-anthropic-streamusage": {
   "cache_read": 0,
@@ -2151,7 +2461,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.007,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-mastra-native-openai-agent": {
   "cache_read": 512,
@@ -2172,7 +2491,16 @@
   ],
   "output": 96,
   "reasoning": 33,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.002,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-mastra-native-openai-error": {
   "cache_read": 0,
@@ -2214,7 +2542,16 @@
   ],
   "output": 0,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.006,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-mastra-native-openai-streamusage": {
   "cache_read": 512,
@@ -2235,7 +2572,46 @@
   ],
   "output": 94,
   "reasoning": 31,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.006,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
+ },
+ "fj-mastra-native-openai-toolerror": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 3.825,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 903,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 103,
+  "reasoning": 36,
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.004,
+   "names": {
+    "get_weather": {
+     "error": 1,
+     "success": 0
+    }
+   }
+  }
  },
  "fj-mastra-stacked-anthropic-agent": {
   "cache_read": 0,
@@ -2256,7 +2632,16 @@
   ],
   "output": 67,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.002,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-mastra-stacked-anthropic-error": {
   "cache_read": 0,
@@ -2298,7 +2683,16 @@
   ],
   "output": 0,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.006,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-mastra-stacked-anthropic-streamusage": {
   "cache_read": 0,
@@ -2319,7 +2713,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.006,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-mastra-stacked-openai-agent": {
   "cache_read": 512,
@@ -2340,7 +2743,16 @@
   ],
   "output": 79,
   "reasoning": 17,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.002,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-mastra-stacked-openai-error": {
   "cache_read": 0,
@@ -2382,7 +2794,16 @@
   ],
   "output": 0,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.008,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-mastra-stacked-openai-streamusage": {
   "cache_read": 512,
@@ -2403,7 +2824,16 @@
   ],
   "output": 83,
   "reasoning": 17,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.007,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-openai-agents-openinference-anthropic-agent": {
   "cache_read": 0,
@@ -2424,7 +2854,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.001,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-openai-agents-openinference-anthropic-error": {
   "cache_read": 0,
@@ -2466,7 +2905,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.002,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-openai-agents-openinference-openai-agent": {
   "cache_read": 512,
@@ -2487,7 +2935,16 @@
   ],
   "output": 94,
   "reasoning": 31,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.001,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-openai-agents-openinference-openai-error": {
   "cache_read": 0,
@@ -2529,7 +2986,46 @@
   ],
   "output": 80,
   "reasoning": 17,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.002,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
+ },
+ "fj-openai-agents-openinference-openai-toolerror": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 3.995,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 887,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "-",
+    "deepseek-v4-flash"
+   ]
+  ],
+  "output": 108,
+  "reasoning": 42,
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.002,
+   "names": {
+    "get_weather": {
+     "error": 1,
+     "success": 0
+    }
+   }
+  }
  },
  "fj-openai-agents-stacked-anthropic-agent": {
   "cache_read": 0,
@@ -2550,7 +3046,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.002,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-openai-agents-stacked-anthropic-error": {
   "cache_read": 0,
@@ -2592,7 +3097,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.001,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-openai-agents-stacked-openai-agent": {
   "cache_read": 1024,
@@ -2619,7 +3133,16 @@
   ],
   "output": 170,
   "reasoning": 44,
-  "success": 4
+  "success": 4,
+  "tools": {
+   "duration_sum": 0.002,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-openai-agents-stacked-openai-error": {
   "cache_read": 0,
@@ -2673,7 +3196,16 @@
   ],
   "output": 186,
   "reasoning": 62,
-  "success": 4
+  "success": 4,
+  "tools": {
+   "duration_sum": 0.002,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-vercel-native-anthropic-agent": {
   "cache_read": 0,
@@ -2694,7 +3226,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000394299,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-vercel-native-anthropic-error": {
   "cache_read": 0,
@@ -2736,7 +3277,16 @@
   ],
   "output": 67,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000382109,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-vercel-native-openai-agent": {
   "cache_read": 512,
@@ -2757,7 +3307,16 @@
   ],
   "output": 88,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000382208,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-vercel-native-openai-error": {
   "cache_read": 0,
@@ -2799,7 +3358,16 @@
   ],
   "output": 0,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.00042616,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-vercel-native-openai-streamusage": {
   "cache_read": 512,
@@ -2820,7 +3388,46 @@
   ],
   "output": 100,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000411998,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
+ },
+ "fj-vercel-native-openai-toolerror": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 4.407661205,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 916,
+  "labels": [
+   [
+    "litellm.chat",
+    "chat",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 120,
+  "reasoning": 0,
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.001621081,
+   "names": {
+    "get_weather": {
+     "error": 1,
+     "success": 0
+    }
+   }
+  }
  },
  "fj-vercel-stacked-anthropic-agent": {
   "cache_read": 0,
@@ -2841,7 +3448,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000439329,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-vercel-stacked-anthropic-error": {
   "cache_read": 0,
@@ -2883,7 +3499,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000385678,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-vercel-stacked-openai-agent": {
   "cache_read": 512,
@@ -2904,7 +3529,16 @@
   ],
   "output": 80,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.00043724,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-vercel-stacked-openai-error": {
   "cache_read": 0,
@@ -2946,7 +3580,16 @@
   ],
   "output": 0,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000587423,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fj-vercel-stacked-openai-streamusage": {
   "cache_read": 512,
@@ -2967,7 +3610,16 @@
   ],
   "output": 87,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000427378,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-agno-openinference-anthropic-agent": {
   "cache_read": 0,
@@ -2988,7 +3640,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000198494,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-agno-openinference-anthropic-error": {
   "cache_read": 0,
@@ -3030,7 +3691,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000200614,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-agno-openinference-openai-agent": {
   "cache_read": 512,
@@ -3051,7 +3721,16 @@
   ],
   "output": 92,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000210545,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-agno-openinference-openai-error": {
   "cache_read": 0,
@@ -3093,7 +3772,46 @@
   ],
   "output": 90,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000208785,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
+ },
+ "fp-agno-openinference-openai-toolerror": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 3.862989595,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 845,
+  "labels": [
+   [
+    "OpenAI",
+    "chat",
+    "-",
+    "deepseek-v4-flash"
+   ]
+  ],
+  "output": 94,
+  "reasoning": 0,
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.001067031,
+   "names": {
+    "get_weather": {
+     "error": 1,
+     "success": 0
+    }
+   }
+  }
  },
  "fp-agno-stacked-anthropic-agent": {
   "cache_read": 0,
@@ -3114,7 +3832,16 @@
   ],
   "output": 67,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000207575,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-agno-stacked-anthropic-error": {
   "cache_read": 0,
@@ -3156,7 +3883,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000225545,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-agno-stacked-openai-agent": {
   "cache_read": 512,
@@ -3177,7 +3913,16 @@
   ],
   "output": 98,
   "reasoning": 35,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000203165,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-agno-stacked-openai-error": {
   "cache_read": 0,
@@ -3219,7 +3964,16 @@
   ],
   "output": 85,
   "reasoning": 23,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000199065,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-claude-agent-sdk-native-anthropic-agent": {
   "cache_read": 4873,
@@ -3275,7 +4029,16 @@
   "labels": [],
   "output": 0,
   "reasoning": 0,
-  "success": 0
+  "success": 0,
+  "tools": {
+   "duration_sum": 0.00044646,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-crewai-openinference-anthropic-error": {
   "cache_read": 0,
@@ -3303,7 +4066,16 @@
   "labels": [],
   "output": 0,
   "reasoning": 0,
-  "success": 0
+  "success": 0,
+  "tools": {
+   "duration_sum": 0.00044305,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-crewai-openinference-openai-agent": {
   "cache_read": 0,
@@ -3317,7 +4089,16 @@
   "labels": [],
   "output": 0,
   "reasoning": 0,
-  "success": 0
+  "success": 0,
+  "tools": {
+   "duration_sum": 0.000467261,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-crewai-openinference-openai-error": {
   "cache_read": 0,
@@ -3345,7 +4126,39 @@
   "labels": [],
   "output": 0,
   "reasoning": 0,
-  "success": 0
+  "success": 0,
+  "tools": {
+   "duration_sum": 0.000494212,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
+ },
+ "fp-crewai-openinference-openai-toolerror": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 0,
+  "labels": [],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0,
+  "tools": {
+   "duration_sum": 0.001313896,
+   "names": {
+    "get_weather": {
+     "error": 1,
+     "success": 0
+    }
+   }
+  }
  },
  "fp-crewai-openllmetry-anthropic-agent": {
   "cache_read": 0,
@@ -3431,6 +4244,20 @@
   "reasoning": 0,
   "success": 0
  },
+ "fp-crewai-openllmetry-openai-toolerror": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 0,
+  "duration_sum": 0.0,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 0,
+  "labels": [],
+  "output": 0,
+  "reasoning": 0,
+  "success": 0
+ },
  "fp-crewai-stacked-anthropic-agent": {
   "cache_read": 0,
   "cache_write": 0,
@@ -3450,7 +4277,16 @@
   ],
   "output": 72,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.00045022,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-crewai-stacked-anthropic-error": {
   "cache_read": 0,
@@ -3492,7 +4328,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.00043927,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-crewai-stacked-openai-agent": {
   "cache_read": 768,
@@ -3513,7 +4358,16 @@
   ],
   "output": 86,
   "reasoning": 23,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000465821,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-crewai-stacked-openai-error": {
   "cache_read": 0,
@@ -3555,7 +4409,16 @@
   ],
   "output": 82,
   "reasoning": 19,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000491502,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-dspy-openinference-anthropic-agent": {
   "cache_read": 0,
@@ -3576,7 +4439,16 @@
   ],
   "output": 165,
   "reasoning": 51,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.002779324,
+   "names": {
+    "-": {
+     "error": 0,
+     "success": 2
+    }
+   }
+  }
  },
  "fp-dspy-openinference-anthropic-error": {
   "cache_read": 0,
@@ -3618,7 +4490,16 @@
   ],
   "output": 151,
   "reasoning": 37,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.002373834,
+   "names": {
+    "-": {
+     "error": 0,
+     "success": 2
+    }
+   }
+  }
  },
  "fp-dspy-openinference-openai-agent": {
   "cache_read": 1792,
@@ -3639,7 +4520,16 @@
   ],
   "output": 206,
   "reasoning": 71,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.001899146,
+   "names": {
+    "-": {
+     "error": 0,
+     "success": 2
+    }
+   }
+  }
  },
  "fp-dspy-openinference-openai-error": {
   "cache_read": 0,
@@ -3681,7 +4571,46 @@
   ],
   "output": 176,
   "reasoning": 39,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.002349324,
+   "names": {
+    "-": {
+     "error": 0,
+     "success": 2
+    }
+   }
+  }
+ },
+ "fp-dspy-openinference-openai-toolerror": {
+  "cache_read": 2560,
+  "cache_write": 0,
+  "duration_count": 3,
+  "duration_sum": 10.264861292,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 4696,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "-",
+    "deepseek-v4-flash"
+   ]
+  ],
+  "output": 671,
+  "reasoning": 425,
+  "success": 3,
+  "tools": {
+   "duration_sum": 0.004105931,
+   "names": {
+    "-": {
+     "error": 2,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-dspy-stacked-anthropic-agent": {
   "cache_read": 0,
@@ -3702,7 +4631,16 @@
   ],
   "output": 146,
   "reasoning": 32,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.002061119,
+   "names": {
+    "-": {
+     "error": 0,
+     "success": 2
+    }
+   }
+  }
  },
  "fp-dspy-stacked-anthropic-error": {
   "cache_read": 0,
@@ -3744,7 +4682,16 @@
   ],
   "output": 159,
   "reasoning": 45,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.00257235,
+   "names": {
+    "-": {
+     "error": 0,
+     "success": 2
+    }
+   }
+  }
  },
  "fp-dspy-stacked-openai-agent": {
   "cache_read": 1536,
@@ -3765,7 +4712,16 @@
   ],
   "output": 237,
   "reasoning": 99,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.00165555,
+   "names": {
+    "-": {
+     "error": 0,
+     "success": 2
+    }
+   }
+  }
  },
  "fp-dspy-stacked-openai-error": {
   "cache_read": 0,
@@ -3807,7 +4763,16 @@
   ],
   "output": 225,
   "reasoning": 72,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.00255955,
+   "names": {
+    "-": {
+     "error": 0,
+     "success": 2
+    }
+   }
+  }
  },
  "fp-google-adk-native-anthropic-agent": {
   "cache_read": 0,
@@ -3828,7 +4793,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000774338,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-google-adk-native-anthropic-error": {
   "cache_read": 0,
@@ -3870,7 +4844,16 @@
   ],
   "output": 67,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000806759,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-google-adk-native-openai-agent": {
   "cache_read": 512,
@@ -3891,7 +4874,16 @@
   ],
   "output": 93,
   "reasoning": 15,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000940333,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-google-adk-native-openai-error": {
   "cache_read": 0,
@@ -3933,7 +4925,46 @@
   ],
   "output": 95,
   "reasoning": 16,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000996383,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
+ },
+ "fp-google-adk-native-openai-toolerror": {
+  "cache_read": 256,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 4.359626627,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 418,
+  "labels": [
+   [
+    "openai",
+    "generate_content",
+    "openai/deepseek-v4-flash",
+    "-"
+   ]
+  ],
+  "output": 80,
+  "reasoning": 16,
+  "success": 1,
+  "tools": {
+   "duration_sum": 0.001585981,
+   "names": {
+    "get_weather": {
+     "error": 1,
+     "success": 0
+    }
+   }
+  }
  },
  "fp-google-adk-openinference-anthropic-agent": {
   "cache_read": 0,
@@ -3954,7 +4985,16 @@
   ],
   "output": 67,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.001026524,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-google-adk-openinference-anthropic-error": {
   "cache_read": 0,
@@ -3996,7 +5036,16 @@
   ],
   "output": 67,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.001068695,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-google-adk-openinference-openai-agent": {
   "cache_read": 512,
@@ -4017,7 +5066,16 @@
   ],
   "output": 91,
   "reasoning": 29,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000981304,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-google-adk-openinference-openai-error": {
   "cache_read": 0,
@@ -4059,7 +5117,46 @@
   ],
   "output": 95,
   "reasoning": 29,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.001237159,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
+ },
+ "fp-google-adk-openinference-openai-toolerror": {
+  "cache_read": 256,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 3.997431515,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 418,
+  "labels": [
+   [
+    "google",
+    "chat",
+    "-",
+    "openai/deepseek-v4-flash"
+   ]
+  ],
+  "output": 63,
+  "reasoning": 15,
+  "success": 1,
+  "tools": {
+   "duration_sum": 0.002607021,
+   "names": {
+    "get_weather": {
+     "error": 1,
+     "success": 0
+    }
+   }
+  }
  },
  "fp-google-adk-stacked-anthropic-agent": {
   "cache_read": 0,
@@ -4080,7 +5177,16 @@
   ],
   "output": 67,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000784228,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-google-adk-stacked-anthropic-error": {
   "cache_read": 0,
@@ -4122,7 +5228,16 @@
   ],
   "output": 67,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.00084943,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-google-adk-stacked-openai-agent": {
   "cache_read": 512,
@@ -4143,7 +5258,16 @@
   ],
   "output": 107,
   "reasoning": 22,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000822859,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-google-adk-stacked-openai-error": {
   "cache_read": 0,
@@ -4185,7 +5309,16 @@
   ],
   "output": 100,
   "reasoning": 17,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000959562,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-langchain-langfuse-anthropic-agent": {
   "cache_read": 0,
@@ -4359,7 +5492,16 @@
   ],
   "output": 138,
   "reasoning": 0,
-  "success": 4
+  "success": 4,
+  "tools": {
+   "duration_sum": 0.000830976,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-langchain-langsmith-anthropic-error": {
   "cache_read": 0,
@@ -4407,7 +5549,16 @@
   ],
   "output": 138,
   "reasoning": 0,
-  "success": 4
+  "success": 4,
+  "tools": {
+   "duration_sum": 0.000816128,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-langchain-langsmith-openai-agent": {
   "cache_read": 512,
@@ -4428,7 +5579,16 @@
   ],
   "output": 88,
   "reasoning": 26,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000901888,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-langchain-langsmith-openai-error": {
   "cache_read": 0,
@@ -4470,7 +5630,16 @@
   ],
   "output": 0,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000850944,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-langchain-langsmith-openai-streamusage": {
   "cache_read": 512,
@@ -4491,7 +5660,46 @@
   ],
   "output": 92,
   "reasoning": 29,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000542976,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
+ },
+ "fp-langchain-langsmith-openai-toolerror": {
+  "cache_read": 256,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 2.478982912,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 391,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "-"
+   ]
+  ],
+  "output": 69,
+  "reasoning": 21,
+  "success": 1,
+  "tools": {
+   "duration_sum": 0.001982976,
+   "names": {
+    "get_weather": {
+     "error": 1,
+     "success": 0
+    }
+   }
+  }
  },
  "fp-langchain-openinference-anthropic-agent": {
   "cache_read": 0,
@@ -4512,7 +5720,16 @@
   ],
   "output": 138,
   "reasoning": 0,
-  "success": 4
+  "success": 4,
+  "tools": {
+   "duration_sum": 0.000649984,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-langchain-openinference-anthropic-error": {
   "cache_read": 0,
@@ -4554,7 +5771,16 @@
   ],
   "output": 138,
   "reasoning": 0,
-  "success": 4
+  "success": 4,
+  "tools": {
+   "duration_sum": 0.000620288,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-langchain-openinference-openai-agent": {
   "cache_read": 512,
@@ -4575,7 +5801,16 @@
   ],
   "output": 100,
   "reasoning": 38,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000428032,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-langchain-openinference-openai-error": {
   "cache_read": 0,
@@ -4617,7 +5852,16 @@
   ],
   "output": 0,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000408064,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-langchain-openinference-openai-streamusage": {
   "cache_read": 512,
@@ -4638,7 +5882,46 @@
   ],
   "output": 98,
   "reasoning": 35,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000603136,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
+ },
+ "fp-langchain-openinference-openai-toolerror": {
+  "cache_read": 256,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 1.957073152,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 391,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 69,
+  "reasoning": 21,
+  "success": 1,
+  "tools": {
+   "duration_sum": 0.001872896,
+   "names": {
+    "get_weather": {
+     "error": 1,
+     "success": 0
+    }
+   }
+  }
  },
  "fp-langchain-openllmetry-anthropic-agent": {
   "cache_read": 0,
@@ -4659,7 +5942,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000770048,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-langchain-openllmetry-anthropic-error": {
   "cache_read": 0,
@@ -4701,7 +5993,16 @@
   ],
   "output": 138,
   "reasoning": 0,
-  "success": 4
+  "success": 4,
+  "tools": {
+   "duration_sum": 0.000789288,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-langchain-openllmetry-openai-agent": {
   "cache_read": 512,
@@ -4722,7 +6023,16 @@
   ],
   "output": 87,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000780149,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-langchain-openllmetry-openai-error": {
   "cache_read": 0,
@@ -4764,7 +6074,16 @@
   ],
   "output": 0,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000445001,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-langchain-openllmetry-openai-streamusage": {
   "cache_read": 512,
@@ -4785,7 +6104,46 @@
   ],
   "output": 99,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000360428,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
+ },
+ "fp-langchain-openllmetry-openai-toolerror": {
+  "cache_read": 256,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 1.96301959,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 391,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 69,
+  "reasoning": 0,
+  "success": 1,
+  "tools": {
+   "duration_sum": 0.00154952,
+   "names": {
+    "get_weather": {
+     "error": 1,
+     "success": 0
+    }
+   }
+  }
  },
  "fp-langchain-stacked-anthropic-agent": {
   "cache_read": 0,
@@ -4806,7 +6164,16 @@
   ],
   "output": 134,
   "reasoning": 0,
-  "success": 4
+  "success": 4,
+  "tools": {
+   "duration_sum": 0.000451072,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-langchain-stacked-anthropic-error": {
   "cache_read": 0,
@@ -4848,7 +6215,16 @@
   ],
   "output": 138,
   "reasoning": 0,
-  "success": 4
+  "success": 4,
+  "tools": {
+   "duration_sum": 0.000608768,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-langchain-stacked-openai-agent": {
   "cache_read": 1024,
@@ -4869,7 +6245,16 @@
   ],
   "output": 158,
   "reasoning": 32,
-  "success": 4
+  "success": 4,
+  "tools": {
+   "duration_sum": 0.00082304,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-langchain-stacked-openai-error": {
   "cache_read": 0,
@@ -4923,7 +6308,16 @@
   ],
   "output": 0,
   "reasoning": 0,
-  "success": 4
+  "success": 4,
+  "tools": {
+   "duration_sum": 0.000747776,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-llama-index-openinference-anthropic-agent": {
   "cache_read": 0,
@@ -4944,7 +6338,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.001329631,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-llama-index-openinference-anthropic-error": {
   "cache_read": 0,
@@ -4986,7 +6389,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.001250349,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-llama-index-openinference-openai-agent": {
   "cache_read": 0,
@@ -5007,7 +6419,16 @@
   ],
   "output": 0,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.001142728,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-llama-index-openinference-openai-error": {
   "cache_read": 0,
@@ -5049,7 +6470,16 @@
   ],
   "output": 0,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.001131796,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-llama-index-openinference-openai-streamusage": {
   "cache_read": 512,
@@ -5070,7 +6500,46 @@
   ],
   "output": 93,
   "reasoning": 31,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000727164,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
+ },
+ "fp-llama-index-openinference-openai-toolerror": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 0.028965436,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "-",
+    "deepseek-v4-flash"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.001867746,
+   "names": {
+    "get_weather": {
+     "error": 1,
+     "success": 0
+    }
+   }
+  }
  },
  "fp-llama-index-openllmetry-anthropic-agent": {
   "cache_read": 0,
@@ -5212,6 +6681,27 @@
   "reasoning": 0,
   "success": 2
  },
+ "fp-llama-index-openllmetry-openai-toolerror": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 5.858161022,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 0,
+  "labels": [
+   [
+    "openailike",
+    "chat",
+    "-",
+    "alibaba-tp/deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 2
+ },
  "fp-llama-index-stacked-anthropic-agent": {
   "cache_read": 0,
   "cache_write": 0,
@@ -5231,7 +6721,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000757837,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-llama-index-stacked-anthropic-error": {
   "cache_read": 0,
@@ -5273,7 +6772,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.00130756,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-llama-index-stacked-openai-agent": {
   "cache_read": 0,
@@ -5294,7 +6802,16 @@
   ],
   "output": 0,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.001146368,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-llama-index-stacked-openai-error": {
   "cache_read": 0,
@@ -5336,7 +6853,16 @@
   ],
   "output": 0,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000929962,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-llama-index-stacked-openai-streamusage": {
   "cache_read": 512,
@@ -5357,7 +6883,16 @@
   ],
   "output": 80,
   "reasoning": 17,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.001249454,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-openai-agents-logfire-anthropic-agent": {
   "cache_read": 0,
@@ -5525,7 +7060,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.001009152,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-openai-agents-openinference-anthropic-error": {
   "cache_read": 0,
@@ -5567,7 +7111,16 @@
   ],
   "output": 0,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000775936,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-openai-agents-openinference-openai-agent": {
   "cache_read": 0,
@@ -5588,7 +7141,16 @@
   ],
   "output": 102,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000928,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-openai-agents-openinference-openai-error": {
   "cache_read": 0,
@@ -5630,7 +7192,16 @@
   ],
   "output": 0,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.0010368,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-openai-agents-openinference-openai-streamusage": {
   "cache_read": 0,
@@ -5651,7 +7222,46 @@
   ],
   "output": 83,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000751104,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
+ },
+ "fp-openai-agents-openinference-openai-toolerror": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 3.719529984,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 901,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "-",
+    "deepseek-v4-flash"
+   ]
+  ],
+  "output": 110,
+  "reasoning": 0,
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.001209088,
+   "names": {
+    "get_weather": {
+     "error": 1,
+     "success": 0
+    }
+   }
+  }
  },
  "fp-openai-agents-openllmetry-anthropic-agent": {
   "cache_read": 0,
@@ -5672,7 +7282,16 @@
   ],
   "output": 0,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.001002044,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-openai-agents-openllmetry-anthropic-error": {
   "cache_read": 0,
@@ -5714,7 +7333,16 @@
   ],
   "output": 0,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.00087933,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-openai-agents-openllmetry-openai-agent": {
   "cache_read": 0,
@@ -5735,7 +7363,16 @@
   ],
   "output": 0,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000998775,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-openai-agents-openllmetry-openai-error": {
   "cache_read": 0,
@@ -5777,7 +7414,16 @@
   ],
   "output": 0,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000901362,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-openai-agents-openllmetry-openai-streamusage": {
   "cache_read": 0,
@@ -5798,7 +7444,46 @@
   ],
   "output": 0,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000664593,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
+ },
+ "fp-openai-agents-openllmetry-openai-toolerror": {
+  "cache_read": 0,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 3.580213238,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 0,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "-"
+   ]
+  ],
+  "output": 0,
+  "reasoning": 0,
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000845497,
+   "names": {
+    "get_weather": {
+     "error": 1,
+     "success": 0
+    }
+   }
+  }
  },
  "fp-openai-agents-stacked-anthropic-agent": {
   "cache_read": 0,
@@ -5819,7 +7504,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000711936,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-openai-agents-stacked-anthropic-error": {
   "cache_read": 0,
@@ -5861,7 +7555,16 @@
   ],
   "output": 0,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000774144,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-openai-agents-stacked-openai-agent": {
   "cache_read": 512,
@@ -5882,7 +7585,16 @@
   ],
   "output": 78,
   "reasoning": 15,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000941056,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-openai-agents-stacked-openai-error": {
   "cache_read": 0,
@@ -5924,7 +7636,16 @@
   ],
   "output": 0,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000729856,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-openai-agents-stacked-openai-streamusage": {
   "cache_read": 512,
@@ -5945,7 +7666,16 @@
   ],
   "output": 114,
   "reasoning": 51,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.00073984,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-pydantic-ai-native-anthropic-agent": {
   "cache_read": 0,
@@ -5966,7 +7696,16 @@
   ],
   "output": 67,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000763118,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-pydantic-ai-native-anthropic-error": {
   "cache_read": 0,
@@ -6008,7 +7747,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000739307,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-pydantic-ai-native-openai-agent": {
   "cache_read": 512,
@@ -6029,7 +7777,16 @@
   ],
   "output": 108,
   "reasoning": 45,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000633296,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-pydantic-ai-native-openai-error": {
   "cache_read": 0,
@@ -6071,7 +7828,46 @@
   ],
   "output": 92,
   "reasoning": 30,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000663946,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
+ },
+ "fp-pydantic-ai-native-openai-toolerror": {
+  "cache_read": 256,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 2.160806145,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 391,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-0731"
+   ]
+  ],
+  "output": 76,
+  "reasoning": 28,
+  "success": 1,
+  "tools": {
+   "duration_sum": 0.003638271,
+   "names": {
+    "get_weather": {
+     "error": 1,
+     "success": 0
+    }
+   }
+  }
  },
  "fp-pydantic-ai-openinference-anthropic-agent": {
   "cache_read": 0,
@@ -6092,7 +7888,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000749258,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-pydantic-ai-openinference-anthropic-error": {
   "cache_read": 0,
@@ -6134,7 +7939,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000601734,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-pydantic-ai-openinference-openai-agent": {
   "cache_read": 512,
@@ -6155,7 +7969,16 @@
   ],
   "output": 80,
   "reasoning": 17,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000769549,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-pydantic-ai-openinference-openai-error": {
   "cache_read": 0,
@@ -6197,7 +8020,46 @@
   ],
   "output": 97,
   "reasoning": 35,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.00040032,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
+ },
+ "fp-pydantic-ai-openinference-openai-toolerror": {
+  "cache_read": 256,
+  "cache_write": 0,
+  "duration_count": 1,
+  "duration_sum": 2.130306755,
+  "error": 0,
+  "first_chunk_count": 0,
+  "first_chunk_sum": 0.0,
+  "input": 391,
+  "labels": [
+   [
+    "openai",
+    "chat",
+    "-",
+    "deepseek-v4-flash"
+   ]
+  ],
+  "output": 88,
+  "reasoning": 40,
+  "success": 1,
+  "tools": {
+   "duration_sum": 0.002607941,
+   "names": {
+    "get_weather": {
+     "error": 1,
+     "success": 0
+    }
+   }
+  }
  },
  "fp-pydantic-ai-stacked-anthropic-agent": {
   "cache_read": 0,
@@ -6224,7 +8086,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.00042183,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-pydantic-ai-stacked-anthropic-error": {
   "cache_read": 0,
@@ -6266,7 +8137,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.00090171,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-pydantic-ai-stacked-openai-agent": {
   "cache_read": 512,
@@ -6287,7 +8167,16 @@
   ],
   "output": 112,
   "reasoning": 49,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000764479,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-pydantic-ai-stacked-openai-error": {
   "cache_read": 0,
@@ -6329,7 +8218,16 @@
   ],
   "output": 90,
   "reasoning": 27,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000707736,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-strands-native-anthropic-agent": {
   "cache_read": 0,
@@ -6350,7 +8248,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000805638,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-strands-native-anthropic-error": {
   "cache_read": 0,
@@ -6392,7 +8299,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.00044218,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-strands-native-openai-agent": {
   "cache_read": 512,
@@ -6413,7 +8329,16 @@
   ],
   "output": 91,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000533773,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-strands-native-openai-error": {
   "cache_read": 0,
@@ -6455,7 +8380,46 @@
   ],
   "output": 97,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000575043,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
+ },
+ "fp-strands-native-openai-toolerror": {
+  "cache_read": 512,
+  "cache_write": 0,
+  "duration_count": 2,
+  "duration_sum": 4.2107773,
+  "error": 0,
+  "first_chunk_count": 2,
+  "first_chunk_sum": 3.408,
+  "input": 864,
+  "labels": [
+   [
+    "strands-agents",
+    "chat",
+    "deepseek-v4-flash",
+    "-"
+   ]
+  ],
+  "output": 106,
+  "reasoning": 0,
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.001412448,
+   "names": {
+    "get_weather": {
+     "error": 1,
+     "success": 0
+    }
+   }
+  }
  },
  "fp-strands-stacked-anthropic-agent": {
   "cache_read": 0,
@@ -6476,7 +8440,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000752088,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-strands-stacked-anthropic-error": {
   "cache_read": 0,
@@ -6518,7 +8491,16 @@
   ],
   "output": 69,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000296837,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-strands-stacked-openai-agent": {
   "cache_read": 512,
@@ -6539,7 +8521,16 @@
   ],
   "output": 74,
   "reasoning": 11,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.00079753,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "fp-strands-stacked-openai-error": {
   "cache_read": 0,
@@ -6581,7 +8572,16 @@
   ],
   "output": 100,
   "reasoning": 37,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000925333,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "litellm-chat": {
   "cache_read": 0,
@@ -7694,7 +9694,16 @@
   ],
   "output": 77,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.001876879,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "lj-oivercel-openai-cache": {
   "cache_read": 2304,
@@ -7841,7 +9850,16 @@
   ],
   "output": 110,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.001900598,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "lj-openinference-anthropic-cache": {
   "cache_read": 3860,
@@ -8772,7 +10790,16 @@
   ],
   "output": 77,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000391986,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "lj-vercel-openai-cache": {
   "cache_read": 2304,
@@ -8919,7 +10946,16 @@
   ],
   "output": 88,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.000377446,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "lr-ddtrace-anthropic-async": {
   "cache_read": 0,
@@ -13244,7 +15280,16 @@
   ],
   "output": 34,
   "reasoning": 0,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.00046886,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  },
  "pydantic-ai-openai-chat": {
   "cache_read": 31,
@@ -13328,6 +15373,15 @@
   ],
   "output": 38,
   "reasoning": 10,
-  "success": 2
+  "success": 2,
+  "tools": {
+   "duration_sum": 0.00043618,
+   "names": {
+    "get_weather": {
+     "error": 0,
+     "success": 1
+    }
+   }
+  }
  }
 }

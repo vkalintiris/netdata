@@ -736,6 +736,25 @@
    "success": 2,
    "usage": true
   },
+  "fj-langchain-langsmith-openai-toolerror": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": {
+    "cache_read": "langsmith-js-no-call-span",
+    "cache_write": "langsmith-js-no-call-span",
+    "error": "langsmith-js-no-call-span",
+    "input": "langsmith-js-no-call-span",
+    "output": "langsmith-js-no-call-span",
+    "reasoning": "langsmith-js-no-call-span",
+    "success": "langsmith-js-no-call-span"
+   },
+   "input": 894,
+   "output": 115,
+   "reasoning": 48,
+   "success": 2,
+   "usage": true
+  },
   "fj-langchain-openinference-anthropic-agent": {
    "cache_read": 0,
    "cache_write": 0,
@@ -814,6 +833,16 @@
    "success": 2,
    "usage": true
   },
+  "fj-langchain-openinference-openai-toolerror": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 894,
+   "output": 119,
+   "reasoning": 51,
+   "success": 2,
+   "usage": true
+  },
   "fj-langchain-openllmetry-anthropic-agent": {
    "cache_read": 0,
    "cache_write": 0,
@@ -883,6 +912,20 @@
    "input": 894,
    "output": 84,
    "reasoning": 21,
+   "success": 2,
+   "usage": true
+  },
+  "fj-langchain-openllmetry-openai-toolerror": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": {
+    "cache_read": "openllmetry-langchain-no-cache-reasoning",
+    "reasoning": "openllmetry-langchain-no-cache-reasoning"
+   },
+   "input": 894,
+   "output": 119,
+   "reasoning": 52,
    "success": 2,
    "usage": true
   },
@@ -1080,6 +1123,16 @@
    "success": 2,
    "usage": true
   },
+  "fj-mastra-native-openai-toolerror": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 903,
+   "output": 103,
+   "reasoning": 36,
+   "success": 2,
+   "usage": true
+  },
   "fj-mastra-stacked-anthropic-agent": {
    "cache_read": 0,
    "cache_write": 0,
@@ -1217,6 +1270,16 @@
    "input": 890,
    "output": 80,
    "reasoning": 17,
+   "success": 2,
+   "usage": true
+  },
+  "fj-openai-agents-openinference-openai-toolerror": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "input": 887,
+   "output": 108,
+   "reasoning": 42,
    "success": 2,
    "usage": true
   },
@@ -1398,6 +1461,19 @@
    "success": 2,
    "usage": true
   },
+  "fj-vercel-native-openai-toolerror": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": {
+    "reasoning": "vercel-no-reasoning"
+   },
+   "input": 916,
+   "output": 120,
+   "reasoning": 53,
+   "success": 2,
+   "usage": true
+  },
   "fj-vercel-stacked-anthropic-agent": {
    "cache_read": 0,
    "cache_write": 0,
@@ -1555,6 +1631,19 @@
    "input": 852,
    "output": 90,
    "reasoning": 27,
+   "success": 2,
+   "usage": true
+  },
+  "fp-agno-openinference-openai-toolerror": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": {
+    "reasoning": "agno-openinference-no-reasoning"
+   },
+   "input": 845,
+   "output": 94,
+   "reasoning": 34,
    "success": 2,
    "usage": true
   },
@@ -1760,6 +1849,25 @@
    "success": 2,
    "usage": true
   },
+  "fp-crewai-openinference-openai-toolerror": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": {
+    "cache_read": "crewai-no-call-span",
+    "cache_write": "crewai-no-call-span",
+    "error": "crewai-no-call-span",
+    "input": "crewai-no-call-span",
+    "output": "crewai-no-call-span",
+    "reasoning": "crewai-no-call-span",
+    "success": "crewai-no-call-span"
+   },
+   "input": 951,
+   "output": 102,
+   "reasoning": 35,
+   "success": 2,
+   "usage": true
+  },
   "fp-crewai-openllmetry-anthropic-agent": {
    "cache_read": 0,
    "cache_write": 0,
@@ -1871,6 +1979,25 @@
    "input": 954,
    "output": 82,
    "reasoning": 19,
+   "success": 2,
+   "usage": true
+  },
+  "fp-crewai-openllmetry-openai-toolerror": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": {
+    "cache_read": "crewai-no-call-span",
+    "cache_write": "crewai-no-call-span",
+    "error": "crewai-no-call-span",
+    "input": "crewai-no-call-span",
+    "output": "crewai-no-call-span",
+    "reasoning": "crewai-no-call-span",
+    "success": "crewai-no-call-span"
+   },
+   "input": 951,
+   "output": 105,
+   "reasoning": 37,
    "success": 2,
    "usage": true
   },
@@ -1992,6 +2119,16 @@
    "output": 176,
    "reasoning": 39,
    "success": 2,
+   "usage": true
+  },
+  "fp-dspy-openinference-openai-toolerror": {
+   "cache_read": 2560,
+   "cache_write": 0,
+   "error": 0,
+   "input": 4696,
+   "output": 671,
+   "reasoning": 425,
+   "success": 3,
    "usage": true
   },
   "fp-dspy-stacked-anthropic-agent": {
@@ -2123,6 +2260,19 @@
    "success": 2,
    "usage": true
   },
+  "fp-google-adk-native-openai-toolerror": {
+   "cache_read": 256,
+   "cache_write": 0,
+   "error": 0,
+   "except": {
+    "output": "adk-output-overcount"
+   },
+   "input": 418,
+   "output": 64,
+   "reasoning": 16,
+   "success": 1,
+   "usage": true
+  },
   "fp-google-adk-openinference-anthropic-agent": {
    "cache_read": 0,
    "cache_write": 0,
@@ -2181,6 +2331,16 @@
    "output": 95,
    "reasoning": 29,
    "success": 2,
+   "usage": true
+  },
+  "fp-google-adk-openinference-openai-toolerror": {
+   "cache_read": 256,
+   "cache_write": 0,
+   "error": 0,
+   "input": 418,
+   "output": 63,
+   "reasoning": 15,
+   "success": 1,
    "usage": true
   },
   "fp-google-adk-stacked-anthropic-agent": {
@@ -2418,6 +2578,16 @@
    "success": 2,
    "usage": true
   },
+  "fp-langchain-langsmith-openai-toolerror": {
+   "cache_read": 256,
+   "cache_write": 0,
+   "error": 0,
+   "input": 391,
+   "output": 69,
+   "reasoning": 21,
+   "success": 1,
+   "usage": true
+  },
   "fp-langchain-openinference-anthropic-agent": {
    "cache_read": 0,
    "cache_write": 0,
@@ -2504,6 +2674,16 @@
    "output": 98,
    "reasoning": 35,
    "success": 2,
+   "usage": true
+  },
+  "fp-langchain-openinference-openai-toolerror": {
+   "cache_read": 256,
+   "cache_write": 0,
+   "error": 0,
+   "input": 391,
+   "output": 69,
+   "reasoning": 21,
+   "success": 1,
    "usage": true
   },
   "fp-langchain-openllmetry-anthropic-agent": {
@@ -2599,6 +2779,20 @@
    "output": 99,
    "reasoning": 36,
    "success": 2,
+   "usage": true
+  },
+  "fp-langchain-openllmetry-openai-toolerror": {
+   "cache_read": 256,
+   "cache_write": 0,
+   "error": 0,
+   "except": {
+    "cache_read": "openllmetry-langchain-no-cache-reasoning",
+    "reasoning": "openllmetry-langchain-no-cache-reasoning"
+   },
+   "input": 391,
+   "output": 69,
+   "reasoning": 21,
+   "success": 1,
    "usage": true
   },
   "fp-langchain-stacked-anthropic-agent": {
@@ -2785,6 +2979,16 @@
    "success": 2,
    "usage": true
   },
+  "fp-llama-index-openinference-openai-toolerror": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 2,
+   "usage": false
+  },
   "fp-llama-index-openllmetry-anthropic-agent": {
    "cache_read": 0,
    "cache_write": 0,
@@ -2860,6 +3064,16 @@
    "reasoning": 27,
    "success": 2,
    "usage": true
+  },
+  "fp-llama-index-openllmetry-openai-toolerror": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 0,
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 2,
+   "usage": false
   },
   "fp-llama-index-stacked-anthropic-agent": {
    "cache_read": 0,
@@ -3101,6 +3315,20 @@
    "success": 2,
    "usage": true
   },
+  "fp-openai-agents-openinference-openai-toolerror": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": {
+    "cache_read": "openai-agents-openinference-no-cache-reasoning",
+    "reasoning": "openai-agents-openinference-no-cache-reasoning"
+   },
+   "input": 901,
+   "output": 110,
+   "reasoning": 44,
+   "success": 2,
+   "usage": true
+  },
   "fp-openai-agents-openllmetry-anthropic-agent": {
    "cache_read": 0,
    "cache_write": 0,
@@ -3217,6 +3445,23 @@
    "input": 904,
    "output": 88,
    "reasoning": 22,
+   "success": 2,
+   "usage": true
+  },
+  "fp-openai-agents-openllmetry-openai-toolerror": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": {
+    "cache_read": "openai-agents-openllmetry-no-tokens",
+    "cache_write": "openai-agents-openllmetry-no-tokens",
+    "input": "openai-agents-openllmetry-no-tokens",
+    "output": "openai-agents-openllmetry-no-tokens",
+    "reasoning": "openai-agents-openllmetry-no-tokens"
+   },
+   "input": 896,
+   "output": 110,
+   "reasoning": 41,
    "success": 2,
    "usage": true
   },
@@ -3357,6 +3602,16 @@
    "success": 2,
    "usage": true
   },
+  "fp-pydantic-ai-native-openai-toolerror": {
+   "cache_read": 256,
+   "cache_write": 0,
+   "error": 0,
+   "input": 391,
+   "output": 76,
+   "reasoning": 28,
+   "success": 1,
+   "usage": true
+  },
   "fp-pydantic-ai-openinference-anthropic-agent": {
    "cache_read": 0,
    "cache_write": 0,
@@ -3415,6 +3670,16 @@
    "output": 97,
    "reasoning": 35,
    "success": 2,
+   "usage": true
+  },
+  "fp-pydantic-ai-openinference-openai-toolerror": {
+   "cache_read": 256,
+   "cache_write": 0,
+   "error": 0,
+   "input": 391,
+   "output": 88,
+   "reasoning": 40,
+   "success": 1,
    "usage": true
   },
   "fp-pydantic-ai-stacked-anthropic-agent": {
@@ -3546,6 +3811,19 @@
    "input": 866,
    "output": 97,
    "reasoning": 34,
+   "success": 2,
+   "usage": true
+  },
+  "fp-strands-native-openai-toolerror": {
+   "cache_read": 512,
+   "cache_write": 0,
+   "error": 0,
+   "except": {
+    "reasoning": "strands-no-reasoning"
+   },
+   "input": 864,
+   "output": 106,
+   "reasoning": 38,
    "success": 2,
    "usage": true
   },

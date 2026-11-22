@@ -4,7 +4,8 @@
 //! request per line, with only the attributes the rules read.
 //!
 //! - `expected.json` pins the chart totals of every run: a script that implements the rules as specified computed
-//!   them from the raw captures. It tells when a change alters what is charted, not whether that is right.
+//!   them from the raw captures. It tells when a change alters what is charted, not whether that is right. A run
+//!   with tool calls carries them under `tools`, per tool name; a run without the key charts none.
 //! - `wire.json` holds, for the runs that made real model calls, what the API returned: a recording proxy between
 //!   the client and the provider wrote down each request's outcome and usage. A run that is known to differ from it
 //!   names the fields that may differ and why.
@@ -12,9 +13,9 @@
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::common::v1::any_value::Value as Av;
-use otel_genai::{Call, Candidate, Normalizer, Pairs};
+use otel_genai::{Call, Candidate, Normalizer, Pairs, ToolCall};
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 #[derive(Debug, Default, PartialEq)]
@@ -31,9 +32,22 @@ struct Totals {
     first_chunk_count: u64,
     first_chunk_micros: u64,
     labels: BTreeSet<[String; 4]>,
+    /// Per tool name (`-` for none): the tool calls that succeeded and that failed.
+    tools: BTreeMap<String, [u64; 2]>,
+    tool_duration_micros: u64,
 }
 
 impl Totals {
+    fn add_tool(&mut self, tool: &ToolCall) {
+        let name = tool.name.clone().unwrap_or_else(|| "-".to_string());
+        self.tools.entry(name).or_default()[usize::from(tool.error)] += 1;
+        self.tool_duration_micros += (tool.duration_seconds * 1e6).round() as u64;
+    }
+
+    fn tool_calls(&self) -> u64 {
+        self.tools.values().flatten().sum()
+    }
+
     fn add(&mut self, call: &Call) {
         if call.error {
             self.error += 1;
@@ -98,6 +112,17 @@ fn expected(run: &Value) -> Totals {
         first_chunk_count: number("first_chunk_count"),
         first_chunk_micros: (run["first_chunk_sum"].as_f64().unwrap() * 1e6).round() as u64,
         labels,
+        tools: run["tools"]["names"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(name, counts)| {
+                let count = |key: &str| counts[key].as_u64().unwrap_or_else(|| panic!("{key}"));
+                (name.clone(), [count("success"), count("error")])
+            })
+            .collect(),
+        tool_duration_micros: (run["tools"]["duration_sum"].as_f64().unwrap_or(0.0) * 1e6).round()
+            as u64,
     }
 }
 
@@ -174,6 +199,23 @@ fn calls(
         .collect()
 }
 
+/// The tool calls of one export request: a span that is a model call is not tried as a tool call.
+fn tool_calls(normalizer: &Normalizer, export: &ExportTraceServiceRequest) -> Vec<ToolCall> {
+    let mut tools = Vec::new();
+    for resource_spans in &export.resource_spans {
+        for scope_spans in &resource_spans.scope_spans {
+            let scope = scope_spans.scope.as_ref();
+            for span in &scope_spans.spans {
+                if normalizer.span(scope, span).unwrap().is_some() {
+                    continue;
+                }
+                tools.extend(normalizer.tool_span(scope, span).unwrap());
+            }
+        }
+    }
+    tools
+}
+
 /// The chart totals of one captured run.
 fn totals(normalizer: &Normalizer, fixtures: &Path, run: &str) -> Totals {
     // One run is one producer session: its own pair memory.
@@ -182,6 +224,9 @@ fn totals(normalizer: &Normalizer, fixtures: &Path, run: &str) -> Totals {
     for export in exports(&fixtures.join(format!("{run}.traces.jsonl"))) {
         for call in calls(normalizer, &pairs, &export) {
             got.add(&call);
+        }
+        for tool in tool_calls(normalizer, &export) {
+            got.add_tool(&tool);
         }
     }
     for export in exports::<ExportLogsServiceRequest>(&fixtures.join(format!("{run}.logs.jsonl"))) {
@@ -227,6 +272,13 @@ fn corpus_runs_match_the_oracle() {
             want.first_chunk_micros
         );
         got.first_chunk_micros = want.first_chunk_micros;
+        assert!(
+            got.tool_duration_micros.abs_diff(want.tool_duration_micros) <= got.tool_calls(),
+            "{run}: tool duration {} vs {}",
+            got.tool_duration_micros,
+            want.tool_duration_micros
+        );
+        got.tool_duration_micros = want.tool_duration_micros;
         assert_eq!(got, want, "{run}");
         checked += 1;
     }
@@ -291,7 +343,8 @@ fn real_call_runs_match_the_api() {
 fn gates_admit_every_call_and_skip_the_rest() {
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     let normalizer = Normalizer::new().unwrap();
-    let (mut admitted, mut skipped) = ([0; 2], [0; 2]);
+    // Model call spans, log records, tool spans.
+    let (mut admitted, mut skipped) = ([0; 3], [0; 3]);
     let mut count = |signal: usize, admits: bool, ungated_is_none: bool, what: String| {
         if admits {
             admitted[signal] += 1;
@@ -318,6 +371,15 @@ fn gates_admit_every_call_and_skip_the_rest() {
                                 ungated.is_none(),
                                 format!("{name}: {}", span.name),
                             );
+                            let ungated = normalizer.tool_span_ungated(scope, span).unwrap();
+                            assert_eq!(normalizer.tool_span(scope, span).unwrap(), ungated);
+                            let admits = normalizer.is_tool_candidate(scope, span);
+                            count(
+                                2,
+                                admits,
+                                ungated.is_none(),
+                                format!("{name}: {} as a tool", span.name),
+                            );
                         }
                     }
                 }
@@ -343,9 +405,9 @@ fn gates_admit_every_call_and_skip_the_rest() {
             }
         }
     }
-    // The fixtures hold both kinds for both signals: HTTP, agent and tool spans next to the calls, and other events
-    // next to the counted ones.
-    for signal in 0..2 {
+    // The fixtures hold both kinds for each: HTTP and agent spans next to the calls and the tool calls, and other
+    // events next to the counted ones.
+    for signal in 0..3 {
         assert!(
             admitted[signal] > 0 && skipped[signal] > 0,
             "admitted {admitted:?}, skipped {skipped:?}"
