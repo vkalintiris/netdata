@@ -1,7 +1,7 @@
 //! Charts the OTel plugin derives itself, outside OTLP metrics ingestion:
 //! per-service request rate, errors and duration from spans, GenAI model calls,
-//! tokens and call duration from spans and log records, per-service log
-//! records by severity,
+//! tokens and call duration from spans and log records, GenAI tool calls and
+//! their duration from spans, per-service log records by severity,
 //! and the plugin's own ingest outcomes and derivation health
 //! (self-monitoring).
 //!
@@ -15,6 +15,7 @@
 //! data.
 
 mod genai_calls;
+mod genai_tools;
 mod self_monitoring;
 mod service;
 mod service_log_records;
@@ -120,7 +121,10 @@ impl DerivedMetrics {
         let per_service = if settings.enabled {
             Some(PerServiceMetrics {
                 requests: Arc::new(ServiceRequests::new(settings.max_services)?),
-                genai: Arc::new(GenAiCalls::new(genai_calls::MAX_SERIES)?),
+                genai: Arc::new(GenAiCalls::new(
+                    genai_calls::MAX_SERIES,
+                    genai_tools::MAX_SERIES,
+                )?),
                 log_records: Arc::new(ServiceLogRecords::new(settings.max_services)?),
                 health: DerivationHealth::new()?,
             })
@@ -141,7 +145,7 @@ impl DerivedMetrics {
             service_requests: Arc::clone(&per_service.requests),
             batch: per_service.requests.batch(),
             genai: Arc::clone(&per_service.genai),
-            genai_pending: Vec::new(),
+            genai_pending: genai_calls::Pending::default(),
         })
     }
 
@@ -193,7 +197,7 @@ impl DerivedMetrics {
         if let Some(per_service) = &self.per_service {
             let requests_stats = per_service.requests.emit(now, &mut chunks);
             let log_records_stats = per_service.log_records.emit(now, &mut chunks);
-            let genai_stats = per_service.genai.emit(now, &mut chunks);
+            let (genai_stats, genai_tool_stats) = per_service.genai.emit(now, &mut chunks);
             let signal_stats = [
                 (Signal::Traces, requests_stats),
                 (Signal::Logs, log_records_stats),
@@ -201,7 +205,7 @@ impl DerivedMetrics {
             let genai = (genai_stats, per_service.genai.uncounted());
             per_service
                 .health
-                .emit(now, signal_stats, genai, &mut chunks);
+                .emit(now, signal_stats, genai, genai_tool_stats, &mut chunks);
         }
         self.ingest_outcomes.emit(now, &mut chunks);
         chunks

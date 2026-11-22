@@ -7,7 +7,10 @@
 //! reads, cache writes, reasoning) are parts of the input and output tokens, never additions to them. A call counts
 //! at its end time; a call from a span is weighted like a request by its sampling threshold. The time to first chunk
 //! is the producer's own measurement, charted for the streamed calls of the producers that report one.
+//!
+//! The same pass over the spans finds the tool calls, which [`crate::genai_tools`] counts in its own charts.
 
+use crate::genai_tools::{GenAiTools, PendingTool};
 use crate::service::{service_labels, service_settings};
 use crate::service_requests::adjusted_count;
 use crate::shared_aggregator::SharedAggregator;
@@ -25,7 +28,7 @@ pub(crate) const MAX_SERIES: usize = 1000;
 
 /// Bucket bounds in seconds: the GenAI conventions' advice for `gen_ai.client.inference.duration` and for
 /// `gen_ai.client.inference.time_to_first_chunk`.
-const DURATION_BOUNDS: &[f64] = &[
+pub(crate) const DURATION_BOUNDS: &[f64] = &[
     0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28, 2.56, 5.12, 10.24, 20.48, 40.96, 81.92,
 ];
 
@@ -57,8 +60,13 @@ columns! {
     }
 }
 
-/// The calls among the spans of one export request, normalized but not yet paired or counted.
-pub(crate) type Pending = Vec<Candidate<Labels, f64>>;
+/// The model calls and tool calls among the spans of one export request, normalized but not yet counted.
+#[derive(Default)]
+pub(crate) struct Pending {
+    /// Not yet paired.
+    calls: Vec<Candidate<Labels, f64>>,
+    tools: Vec<PendingTool>,
+}
 
 /// The calls among the log records of one export request, normalized but not yet counted.
 pub(crate) type PendingLogs = Vec<(Labels, Call)>;
@@ -67,6 +75,7 @@ pub(crate) struct GenAiCalls {
     metric_set: MetricSet,
     aggregator: SharedAggregator,
     normalizer: Normalizer,
+    tools: GenAiTools,
     pairs: Pairs<Labels>,
     calls: Counter<Outcome>,
     tokens: Counter<Tokens>,
@@ -88,7 +97,10 @@ pub(crate) struct Uncounted {
 }
 
 impl GenAiCalls {
-    pub(crate) fn new(max_series: usize) -> Result<Self, netdata_plugin_metrics::Error> {
+    pub(crate) fn new(
+        max_series: usize,
+        max_tool_series: usize,
+    ) -> Result<Self, netdata_plugin_metrics::Error> {
         let mut builder = MetricSetBuilder::new(service_settings(max_series))?;
         let calls = builder.counter::<Outcome>(ChartDescriptor {
             title: "GenAI model calls".into(),
@@ -148,6 +160,7 @@ impl GenAiCalls {
             metric_set,
             aggregator,
             normalizer,
+            tools: GenAiTools::new(max_tool_series)?,
             pairs: Pairs::new(),
             calls,
             tokens,
@@ -160,7 +173,7 @@ impl GenAiCalls {
         })
     }
 
-    /// Normalize the calls among the spans of `export` into `pending`.
+    /// Normalize the model calls and tool calls among the spans of `export` into `pending`.
     pub(crate) fn record(
         &self,
         pending: &mut Pending,
@@ -170,31 +183,43 @@ impl GenAiCalls {
         for resource_spans in &export.resource_spans {
             let mut service = None;
             for scope_spans in &resource_spans.scope_spans {
+                let scope = scope_spans.scope.as_ref();
                 for span in &scope_spans.spans {
-                    let call = match self.normalizer.span(scope_spans.scope.as_ref(), span) {
-                        Ok(Some(call)) => call,
-                        Ok(None) => continue,
+                    let mut service = || {
+                        service
+                            .get_or_insert_with(|| {
+                                service_labels(tenant, resource_spans.resource.as_ref())
+                            })
+                            .clone()
+                    };
+                    match self.normalizer.span(scope, span) {
+                        Ok(Some(call)) => {
+                            pending.calls.push(Candidate {
+                                call,
+                                trace_id: span.trace_id.clone(),
+                                span_id: span.span_id.clone(),
+                                parent_span_id: span.parent_span_id.clone(),
+                                scope: scope.map(|scope| scope.name.clone()).unwrap_or_default(),
+                                group: service(),
+                                data: adjusted_count(&span.trace_state),
+                            });
+                            continue;
+                        }
+                        Ok(None) => {}
                         Err(error) => {
                             self.log_rule_error(&error);
                             continue;
                         }
-                    };
-                    let service = service.get_or_insert_with(|| {
-                        service_labels(tenant, resource_spans.resource.as_ref())
-                    });
-                    pending.push(Candidate {
-                        call,
-                        trace_id: span.trace_id.clone(),
-                        span_id: span.span_id.clone(),
-                        parent_span_id: span.parent_span_id.clone(),
-                        scope: scope_spans
-                            .scope
-                            .as_ref()
-                            .map(|scope| scope.name.clone())
-                            .unwrap_or_default(),
-                        group: service.clone(),
-                        data: adjusted_count(&span.trace_state),
-                    });
+                    }
+                    match self.normalizer.tool_span(scope, span) {
+                        Ok(Some(tool)) => pending.tools.push(PendingTool {
+                            service: service(),
+                            tool,
+                            weight: adjusted_count(&span.trace_state),
+                        }),
+                        Ok(None) => {}
+                        Err(error) => self.log_rule_error(&error),
+                    }
                 }
             }
         }
@@ -242,6 +267,8 @@ impl GenAiCalls {
 
     /// Pair and count `pending` at `now` (Unix seconds): its spans are durable.
     pub(crate) fn commit(&self, pending: Pending, now: u64) {
+        self.tools.commit(pending.tools, now);
+        let pending = pending.calls;
         if pending.is_empty() {
             return;
         }
@@ -263,9 +290,11 @@ impl GenAiCalls {
         }
     }
 
-    /// Add to `chunks` every window whose allowed lateness has passed by `now` (Unix seconds).
-    pub(crate) fn emit(&self, now: u64, chunks: &mut Vec<Vec<u8>>) -> Stats {
-        self.aggregator.emit(now, chunks)
+    /// Add to `chunks` every window whose allowed lateness has passed by `now` (Unix seconds). Returns the
+    /// statistics of the model call charts and of the tool charts.
+    pub(crate) fn emit(&self, now: u64, chunks: &mut Vec<Vec<u8>>) -> (Stats, Stats) {
+        let calls = self.aggregator.emit(now, chunks);
+        (calls, self.tools.emit(now, chunks))
     }
 
     fn count(&self, batch: &mut Batch, service: Labels, call: &Call, weight: f64) {
@@ -402,8 +431,8 @@ mod tests {
                 ..Default::default()
             }],
         };
-        let genai = GenAiCalls::new(10).unwrap();
-        let mut pending = Pending::new();
+        let genai = GenAiCalls::new(10, 10).unwrap();
+        let mut pending = Pending::default();
         genai.record(&mut pending, "default", &export);
         genai.commit(pending, 100);
         let mut chunks = Vec::new();
@@ -480,7 +509,7 @@ mod tests {
 
     #[test]
     fn reports_what_it_did_not_count() {
-        let genai = GenAiCalls::new(10).unwrap();
+        let genai = GenAiCalls::new(10, 10).unwrap();
         let negative = vec![
             text("gen_ai.operation.name", "chat"),
             int("gen_ai.usage.input_tokens", -1),
@@ -499,7 +528,7 @@ mod tests {
                 ..Default::default()
             }],
         };
-        let mut pending = Pending::new();
+        let mut pending = Pending::default();
         genai.record(&mut pending, "default", &export);
         genai.commit(pending, 100);
         assert_eq!(
@@ -542,7 +571,7 @@ mod tests {
                 ..Default::default()
             }],
         };
-        let genai = GenAiCalls::new(10).unwrap();
+        let genai = GenAiCalls::new(10, 10).unwrap();
         let mut pending = PendingLogs::new();
         genai.record_logs(&mut pending, "default", &export);
         genai.commit_logs(pending, 100);
@@ -558,6 +587,73 @@ mod tests {
             out.contains("CLABEL 'gen_ai.request.model' 'claude-opus-4-5' 1"),
             "{out}"
         );
+    }
+
+    /// The part of `out` that belongs to the chart `context`.
+    fn chart<'a>(out: &'a str, context: &str) -> &'a str {
+        out.split("BEGIN ")
+            .find(|chart| chart.starts_with(context))
+            .unwrap_or_else(|| panic!("no {context} chart:\n{out}"))
+    }
+
+    #[test]
+    fn charts_a_tool_call_under_its_name() {
+        let mut failed = call(
+            2,
+            0,
+            vec![
+                text("openinference.span.kind", "TOOL"),
+                text("tool.name", "get_weather"),
+            ],
+        );
+        failed.status = Some(opentelemetry_proto::tonic::trace::v1::Status {
+            code: 2,
+            ..Default::default()
+        });
+        let out = render(vec![
+            call(
+                1,
+                0,
+                vec![
+                    text("gen_ai.operation.name", "execute_tool"),
+                    text("gen_ai.tool.name", "get_weather"),
+                ],
+            ),
+            failed,
+        ]);
+        // Both dialects land in the same series: one tool of one service.
+        let calls = chart(&out, "otel.derived_metrics.genai.tool_calls");
+        assert_eq!(first(calls, "success"), "1");
+        assert_eq!(first(calls, "error"), "1");
+        let duration = chart(&out, "otel.derived_metrics.genai.tool_call_duration_avg");
+        assert_eq!(first(duration, "avg"), "0.5");
+        for label in [
+            "CLABEL 'gen_ai.tool.name' 'get_weather' 1",
+            "CLABEL 'resource.attributes.service.name' 'assistant' 1",
+        ] {
+            assert!(out.contains(label), "{label} missing:\n{out}");
+        }
+        // A tool call is not a model call.
+        assert!(!out.contains("otel.derived_metrics.genai.calls"), "{out}");
+        assert!(!out.contains("gen_ai.request.model"), "{out}");
+    }
+
+    #[test]
+    fn charts_a_tool_call_without_a_name_without_the_label() {
+        let out = render(vec![call(
+            1,
+            0,
+            vec![text("openinference.span.kind", "TOOL")],
+        )]);
+        let calls = chart(&out, "otel.derived_metrics.genai.tool_calls");
+        assert_eq!(first(calls, "success"), "1");
+        assert!(!out.contains("gen_ai.tool.name"), "{out}");
+    }
+
+    #[test]
+    fn a_model_call_charts_no_tool_call() {
+        let out = render(vec![call(1, 0, chat_attributes())]);
+        assert!(!out.contains("tool_call"), "{out}");
     }
 
     #[test]

@@ -48,7 +48,8 @@ columns! {
 }
 
 columns! {
-    /// Why a record that looked like a GenAI model call was not counted.
+    /// Why a record that looked like a GenAI model call or tool call was not counted. Only a model call can be a
+    /// duplicate.
     enum GenAiUncounted {
         Duplicate = "duplicate",
         FailedRule = "failed_rule",
@@ -219,6 +220,7 @@ pub(crate) struct DerivationHealth {
     adjusted_requests: CumulativeCounter<Adjustment>,
     adjusted_genai_calls: CumulativeCounter<Adjustment>,
     genai_uncounted: CumulativeCounter<GenAiUncounted>,
+    adjusted_genai_tool_calls: CumulativeCounter<Adjustment>,
 }
 
 impl DerivationHealth {
@@ -269,13 +271,23 @@ impl DerivationHealth {
             priority: 150_014,
         })?;
         let genai_uncounted = builder.cumulative_counter::<GenAiUncounted>(ChartDescriptor {
-            title: "GenAI records not counted as model calls".into(),
+            title: "GenAI records not counted".into(),
             units: "records/s".into(),
             family: "derived metrics".into(),
             context: "netdata.otel.derived_genai_uncounted".into(),
             chart_type: ChartType::Line,
             priority: 150_015,
         })?;
+        let adjusted_genai_tool_calls =
+            builder.cumulative_counter::<Adjustment>(ChartDescriptor {
+                title: "Adjusted GenAI tool calls".into(),
+                units: "calls/s".into(),
+                family: "derived metrics".into(),
+                context: "netdata.otel.derived_adjusted_genai_tool_calls".into(),
+                // One call can be both late and overflowed.
+                chart_type: ChartType::Line,
+                priority: 150_016,
+            })?;
         let metric_set = builder.build()?;
         let aggregator = SharedAggregator::new(&metric_set);
         Ok(Self {
@@ -287,11 +299,12 @@ impl DerivationHealth {
             adjusted_requests,
             adjusted_genai_calls,
             genai_uncounted,
+            adjusted_genai_tool_calls,
         })
     }
 
     /// Record the statistics each signal's aggregator has at `now` (Unix
-    /// seconds), and those of the GenAI charts, then add to `chunks` every
+    /// seconds), and those of the GenAI call and tool charts, then add to `chunks` every
     /// window that ended by `now`: a tick charts the statistics the tick
     /// before it recorded.
     pub(crate) fn emit(
@@ -299,6 +312,7 @@ impl DerivationHealth {
         now: u64,
         signal_stats: [(Signal, Stats); 2],
         genai: (Stats, Uncounted),
+        genai_tools: Stats,
         chunks: &mut Vec<Vec<u8>>,
     ) {
         let mut batch = Batch::new(&self.metric_set);
@@ -339,6 +353,19 @@ impl DerivationHealth {
                 self.genai_uncounted,
                 GenAiUncounted::FailedRule,
                 uncounted.failed_rules as f64,
+            );
+        let adjusted = self.adjusted_genai_tool_calls;
+        measurements
+            .set_total(adjusted, Adjustment::Late, genai_tools.late_events as f64)
+            .set_total(
+                adjusted,
+                Adjustment::Future,
+                genai_tools.future_events as f64,
+            )
+            .set_total(
+                adjusted,
+                Adjustment::Overflowed,
+                genai_tools.overflowed_events as f64,
             );
 
         self.aggregator.merge(batch, now);
@@ -434,8 +461,18 @@ mod tests {
                 duplicates: 2 * now,
                 failed_rules: 3 * now,
             };
+            let genai_tools = Stats {
+                overflowed_events: 4 * now,
+                ..Stats::default()
+            };
             let mut chunks = Vec::new();
-            health.emit(now, signal_stats, (genai, uncounted), &mut chunks);
+            health.emit(
+                now,
+                signal_stats,
+                (genai, uncounted),
+                genai_tools,
+                &mut chunks,
+            );
             readable(chunks)
         };
         let earlier = Stats {
@@ -477,6 +514,9 @@ mod tests {
         ));
         assert!(second.contains(
             "BEGIN netdata.otel.derived_genai_uncounted 1000000\nSET duplicate = 2\nSET failed_rule = 3\n"
+        ));
+        assert!(second.contains(
+            "BEGIN netdata.otel.derived_adjusted_genai_tool_calls 1000000\nSET late = 0\nSET future = 0\nSET overflowed = 4\n"
         ));
     }
 }
