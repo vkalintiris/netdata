@@ -1,0 +1,12 @@
+# Tool executions in the OpenTelemetry GenAI conventions, whoever sends them: frameworks' own spans, OpenLLMetry,
+# LangSmith, Claude Code's tool span, and MCP client and server spans. OpenLLMetry's LangChain instrumentation for
+# JavaScript sends no tool name (`traceloop.entity.name` holds the tool's class): its calls count without one.
+a = .attributes
+if a."gen_ai.operation.name" == "execute_tool" {
+  {
+    "name": a."gen_ai.tool.name",
+    "error": .status_code == 2 || exists(a."error.type")
+  }
+} else {
+  null
+}

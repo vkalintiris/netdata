@@ -1,0 +1,11 @@
+# Tool executions of the OpenInference family, recognized by the span kind whatever the scope. Its DSPy
+# instrumentation sends no tool name (only the span name, `<tool>.__call__`): those calls count without one.
+a = .attributes
+if a."openinference.span.kind" == "TOOL" {
+  {
+    "name": a."tool.name",
+    "error": .status_code == 2 || exists(a."error.type")
+  }
+} else {
+  null
+}

@@ -15,6 +15,10 @@
 //!
 //! Token counts follow the OpenTelemetry GenAI conventions: input includes cache reads and writes, output includes
 //! reasoning, and the cache and reasoning counts are parts of those totals, never additions to them.
+//!
+//! A second list of rules, under `rules/tools/`, turns a span that describes one run of a tool into a [`ToolCall`].
+//! A tool rule maps the tool's name and whether the run failed; the host supplies the times. A span is a model call
+//! or a tool call, never both: the two lists read different markers.
 
 mod gate;
 mod pairs;
@@ -152,6 +156,22 @@ const RULES: &[RuleSource] = &[
     },
 ];
 
+/// The tool rules, in the order they are tried. A span that carries both markers gives the same name either way.
+const TOOL_RULES: &[RuleSource] = &[
+    RuleSource {
+        name: "tools/openinference",
+        source: include_str!("../rules/tools/openinference.vrl"),
+        signal: Signal::Span,
+        gate: Gate::attribute_in("openinference.span.kind", &["TOOL"]),
+    },
+    RuleSource {
+        name: "tools/conventions",
+        source: include_str!("../rules/tools/conventions.vrl"),
+        signal: Signal::Span,
+        gate: Gate::attribute_in("gen_ai.operation.name", &["execute_tool"]),
+    },
+];
+
 /// Span scopes of producers whose rule counts from log records: Claude Code and Codex.
 const CLAIMED_SPAN_SCOPES: &[&str] = &["com.anthropic.claude_code.tracing", "codex_exec"];
 
@@ -191,6 +211,17 @@ pub struct Tokens {
     pub reasoning: Option<u64>,
 }
 
+/// One run of a tool, in the normalized vocabulary.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolCall {
+    /// `None` when the producer does not name the tool.
+    pub name: Option<String>,
+    pub error: bool,
+    /// When the run ended: the second it counts in.
+    pub end_time_unix_nano: u64,
+    pub duration_seconds: f64,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("GenAI rule {rule} does not compile: {message}")]
@@ -228,6 +259,7 @@ struct Rule {
 /// The compiled rules.
 pub struct Normalizer {
     rules: Vec<Rule>,
+    tool_rules: Vec<Rule>,
 }
 
 impl Normalizer {
@@ -236,24 +268,10 @@ impl Normalizer {
     /// A rule that does not compile: a defect of this crate, caught by its tests.
     pub fn new() -> Result<Self, Error> {
         let functions = functions();
-        let mut rules = Vec::with_capacity(RULES.len());
-        for rule in RULES {
-            let compiled =
-                vrl::compiler::compile(rule.source, &functions).map_err(|diagnostics| {
-                    Error::Compile {
-                        rule: rule.name,
-                        message: vrl::diagnostic::Formatter::new(rule.source, diagnostics)
-                            .to_string(),
-                    }
-                })?;
-            rules.push(Rule {
-                name: rule.name,
-                signal: rule.signal,
-                gate: rule.gate,
-                program: compiled.program,
-            });
-        }
-        Ok(Self { rules })
+        Ok(Self {
+            rules: compile(RULES, &functions)?,
+            tool_rules: compile(TOOL_RULES, &functions)?,
+        })
     }
 
     /// The call `span` describes, if a rule matches it.
@@ -280,6 +298,26 @@ impl Normalizer {
         record: &LogRecord,
     ) -> Result<Option<Call>, RuleError> {
         self.log_gated(scope, record, true)
+    }
+
+    /// The tool call `span` describes, if a tool rule matches it.
+    ///
+    /// # Errors
+    ///
+    /// As for [`Self::span`].
+    pub fn tool_span(
+        &self,
+        scope: Option<&InstrumentationScope>,
+        span: &Span,
+    ) -> Result<Option<ToolCall>, RuleError> {
+        self.tool_span_gated(scope, span, true)
+    }
+
+    /// Whether any tool rule's gate admits `span`: when not, [`Self::tool_span`] never runs VRL for it.
+    pub fn is_tool_candidate(&self, scope: Option<&InstrumentationScope>, span: &Span) -> bool {
+        self.tool_rules
+            .iter()
+            .any(|rule| rule.gate.admits(scope, &span.attributes))
     }
 
     /// Whether any rule's gate admits `span`: when not, [`Self::span`] never runs VRL for it.
@@ -322,14 +360,36 @@ impl Normalizer {
             // A span that ends before it starts has no duration.
             end_unix_nano: span.end_time_unix_nano.max(start),
         };
-        self.resolve(
+        let matched = resolve(
+            &self.rules,
             Signal::Span,
             scope,
             &span.attributes,
             || value::span(scope, span),
             gated,
-            times,
-        )
+        )?;
+        matched
+            .map(|(rule, fields)| call(rule, &fields, times))
+            .transpose()
+    }
+
+    fn tool_span_gated(
+        &self,
+        scope: Option<&InstrumentationScope>,
+        span: &Span,
+        gated: bool,
+    ) -> Result<Option<ToolCall>, RuleError> {
+        let matched = resolve(
+            &self.tool_rules,
+            Signal::Span,
+            scope,
+            &span.attributes,
+            || value::span(scope, span),
+            gated,
+        )?;
+        matched
+            .map(|(rule, fields)| tool_call(rule, &fields, span))
+            .transpose()
     }
 
     fn log_gated(
@@ -347,57 +407,76 @@ impl Normalizer {
                 record.observed_time_unix_nano
             },
         };
-        self.resolve(
+        let matched = resolve(
+            &self.rules,
             Signal::Log,
             scope,
             &record.attributes,
             || value::log(scope, record),
             gated,
-            times,
-        )
+        )?;
+        matched
+            .map(|(rule, fields)| call(rule, &fields, times))
+            .transpose()
     }
+}
 
-    /// The first matching rule of `signal`, applied; the duration is the record's own unless the rule supplies one.
-    fn resolve(
-        &self,
-        signal: Signal,
-        scope: Option<&InstrumentationScope>,
-        attributes: &[KeyValue],
-        event: impl Fn() -> Value,
-        gated: bool,
-        times: Times,
-    ) -> Result<Option<Call>, RuleError> {
-        let timezone = TimeZone::default();
-        let mut converted = None;
-        for rule in &self.rules {
-            if rule.signal != signal || (gated && !rule.gate.admits(scope, attributes)) {
-                continue;
+fn compile(sources: &[RuleSource], functions: &[Box<dyn Function>]) -> Result<Vec<Rule>, Error> {
+    let mut rules = Vec::with_capacity(sources.len());
+    for rule in sources {
+        let compiled = vrl::compiler::compile(rule.source, functions).map_err(|diagnostics| {
+            Error::Compile {
+                rule: rule.name,
+                message: vrl::diagnostic::Formatter::new(rule.source, diagnostics).to_string(),
             }
-            let converted = converted.get_or_insert_with(&event);
-            let mut target = TargetValue {
-                value: converted.clone(),
-                metadata: Value::Object(ObjectMap::new()),
-                secrets: Secrets::default(),
-            };
-            let mut state = RuntimeState::default();
-            let mut context = Context::new(&mut target, &mut state, &timezone);
-            let output =
-                rule.program
-                    .resolve(&mut context)
-                    .map_err(|terminate| RuleError::Runtime {
-                        rule: rule.name,
-                        message: terminate.to_string(),
-                    })?;
-            match output {
-                Value::Object(fields) => {
-                    return call(rule.name, &fields, times).map(Some);
-                }
-                Value::Boolean(false) => return Ok(None),
-                _ => continue,
-            }
-        }
-        Ok(None)
+        })?;
+        rules.push(Rule {
+            name: rule.name,
+            signal: rule.signal,
+            gate: rule.gate,
+            program: compiled.program,
+        });
     }
+    Ok(rules)
+}
+
+/// The first rule of `rules` for `signal` that matches, with the fields it returned.
+fn resolve(
+    rules: &[Rule],
+    signal: Signal,
+    scope: Option<&InstrumentationScope>,
+    attributes: &[KeyValue],
+    event: impl Fn() -> Value,
+    gated: bool,
+) -> Result<Option<(&'static str, ObjectMap)>, RuleError> {
+    let timezone = TimeZone::default();
+    let mut converted = None;
+    for rule in rules {
+        if rule.signal != signal || (gated && !rule.gate.admits(scope, attributes)) {
+            continue;
+        }
+        let converted = converted.get_or_insert_with(&event);
+        let mut target = TargetValue {
+            value: converted.clone(),
+            metadata: Value::Object(ObjectMap::new()),
+            secrets: Secrets::default(),
+        };
+        let mut state = RuntimeState::default();
+        let mut context = Context::new(&mut target, &mut state, &timezone);
+        let output =
+            rule.program
+                .resolve(&mut context)
+                .map_err(|terminate| RuleError::Runtime {
+                    rule: rule.name,
+                    message: terminate.to_string(),
+                })?;
+        match output {
+            Value::Object(fields) => return Ok(Some((rule.name, fields))),
+            Value::Boolean(false) => return Ok(None),
+            _ => continue,
+        }
+    }
+    Ok(None)
 }
 
 #[doc(hidden)]
@@ -409,6 +488,15 @@ impl Normalizer {
         span: &Span,
     ) -> Result<Option<Call>, RuleError> {
         self.span_gated(scope, span, false)
+    }
+
+    /// [`Self::tool_span`] with every gate open.
+    pub fn tool_span_ungated(
+        &self,
+        scope: Option<&InstrumentationScope>,
+        span: &Span,
+    ) -> Result<Option<ToolCall>, RuleError> {
+        self.tool_span_gated(scope, span, false)
     }
 
     /// [`Self::log`] with every gate open.
@@ -452,11 +540,7 @@ fn call(rule: &'static str, fields: &ObjectMap, times: Times) -> Result<Call, Ru
     else {
         return Err(bad(rule, "operation", fields.get("operation")));
     };
-    let error = match fields.get("error") {
-        None | Some(Value::Null) => false,
-        Some(Value::Boolean(error)) => *error,
-        other => return Err(bad(rule, "error", other)),
-    };
+    let error = flag(rule, fields, "error")?;
     let own_duration = times
         .start_unix_nano
         .map(|start| (times.end_unix_nano - start) as f64 / 1e9);
@@ -483,6 +567,27 @@ fn call(rule: &'static str, fields: &ObjectMap, times: Times) -> Result<Call, Ru
         time_to_first_chunk_seconds,
         response_id: string(rule, fields, "response_id")?,
     })
+}
+
+fn tool_call(rule: &'static str, fields: &ObjectMap, span: &Span) -> Result<ToolCall, RuleError> {
+    let start = span.start_time_unix_nano;
+    // A span that ends before it starts has no duration.
+    let end = span.end_time_unix_nano.max(start);
+    Ok(ToolCall {
+        name: string(rule, fields, "name")?,
+        error: flag(rule, fields, "error")?,
+        end_time_unix_nano: end,
+        duration_seconds: (end - start) as f64 / 1e9,
+    })
+}
+
+/// A yes-or-no field; absent is no.
+fn flag(rule: &'static str, fields: &ObjectMap, field: &'static str) -> Result<bool, RuleError> {
+    match fields.get(field) {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Boolean(flag)) => Ok(*flag),
+        other => Err(bad(rule, field, other)),
+    }
 }
 
 /// A span of time in seconds: a non-negative, finite number.
@@ -879,6 +984,122 @@ mod tests {
                 rule: "conventions",
                 field: "time_to_first_chunk_seconds",
                 value: "-0.5".into()
+            })
+        );
+    }
+
+    #[test]
+    fn tool_rules_map_the_name_under_either_marker() {
+        let normalizer = Normalizer::new().unwrap();
+        let expected = ToolCall {
+            name: Some("get_weather".into()),
+            error: false,
+            end_time_unix_nano: 2_500_000_000,
+            duration_seconds: 1.5,
+        };
+        let conventions = span(vec![
+            string("gen_ai.operation.name", "execute_tool"),
+            string("gen_ai.tool.name", "get_weather"),
+        ]);
+        let openinference = span(vec![
+            string("openinference.span.kind", "TOOL"),
+            string("tool.name", "get_weather"),
+        ]);
+        // OpenInference decorating a framework's own span: one span, one call.
+        let both = span(vec![
+            string("gen_ai.operation.name", "execute_tool"),
+            string("gen_ai.tool.name", "get_weather"),
+            string("openinference.span.kind", "TOOL"),
+            string("tool.name", "get_weather"),
+        ]);
+        for tool in [conventions, openinference, both] {
+            assert!(normalizer.is_tool_candidate(None, &tool));
+            assert_eq!(
+                normalizer.tool_span(None, &tool).unwrap(),
+                Some(expected.clone())
+            );
+            assert_eq!(normalizer.span(None, &tool).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn a_tool_call_without_a_name_still_counts() {
+        let normalizer = Normalizer::new().unwrap();
+        for marker in [
+            string("gen_ai.operation.name", "execute_tool"),
+            string("openinference.span.kind", "TOOL"),
+        ] {
+            let tool = normalizer.tool_span(None, &span(vec![marker])).unwrap();
+            assert_eq!(tool.unwrap().name, None);
+        }
+    }
+
+    #[test]
+    fn tool_errors_from_status_or_error_type() {
+        let normalizer = Normalizer::new().unwrap();
+        for marker in [
+            string("gen_ai.operation.name", "execute_tool"),
+            string("openinference.span.kind", "TOOL"),
+        ] {
+            let mut by_status = span(vec![marker.clone()]);
+            by_status.status = Some(Status {
+                code: 2,
+                ..Default::default()
+            });
+            assert!(
+                normalizer
+                    .tool_span(None, &by_status)
+                    .unwrap()
+                    .unwrap()
+                    .error
+            );
+
+            let by_type = span(vec![marker, string("error.type", "RuntimeError")]);
+            assert!(normalizer.tool_span(None, &by_type).unwrap().unwrap().error);
+        }
+    }
+
+    #[test]
+    fn model_calls_and_other_spans_are_not_tool_calls() {
+        let normalizer = Normalizer::new().unwrap();
+        for other in [
+            span(vec![string("gen_ai.operation.name", "chat")]),
+            span(vec![string("gen_ai.operation.name", "invoke_agent")]),
+            span(vec![string("openinference.span.kind", "LLM")]),
+            span(vec![string("http.method", "POST")]),
+        ] {
+            assert!(!normalizer.is_tool_candidate(None, &other));
+            assert_eq!(normalizer.tool_span(None, &other).unwrap(), None);
+            assert_eq!(normalizer.tool_span_ungated(None, &other).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn tool_spans_of_claimed_scopes_count() {
+        let normalizer = Normalizer::new().unwrap();
+        // Claude Code's model calls count from its log records; nothing else counts its tool runs.
+        let claude_code = scope("com.anthropic.claude_code.tracing");
+        let tool = span(vec![
+            string("gen_ai.operation.name", "execute_tool"),
+            string("gen_ai.tool.name", "Bash"),
+        ]);
+        let name = normalizer.tool_span(Some(&claude_code), &tool).unwrap();
+        assert_eq!(name.unwrap().name.as_deref(), Some("Bash"));
+    }
+
+    #[test]
+    fn a_bad_tool_name_is_an_error() {
+        let normalizer = Normalizer::new().unwrap();
+        let numbered = span(vec![
+            string("gen_ai.operation.name", "execute_tool"),
+            int("gen_ai.tool.name", 7),
+        ]);
+        assert_eq!(
+            normalizer.tool_span(None, &numbered),
+            Err(RuleError::Output {
+                rule: "tools/conventions",
+                field: "name",
+                value: "7".into()
             })
         );
     }
