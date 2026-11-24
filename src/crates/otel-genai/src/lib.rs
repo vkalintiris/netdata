@@ -400,12 +400,9 @@ fn functions() -> Vec<Box<dyn Function>> {
         Box::new(vrl::stdlib::IsObject),
         Box::new(vrl::stdlib::ToInt),
         Box::new(vrl::stdlib::String),
-        Box::new(vrl::stdlib::ToFloat),
         Box::new(vrl::stdlib::ParseInt),
         Box::new(vrl::stdlib::ParseJson),
         Box::new(vrl::stdlib::ParseTimestamp),
-        Box::new(vrl::stdlib::MapValues),
-        Box::new(vrl::stdlib::Merge),
     ]
 }
 
