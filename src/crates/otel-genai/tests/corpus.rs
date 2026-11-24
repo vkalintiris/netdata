@@ -123,8 +123,8 @@ fn expected(run: &Value) -> Totals {
     }
 }
 
-/// The export requests in `path`; none when the run has no records of that signal.
-fn exports<T: serde::de::DeserializeOwned>(path: &Path) -> Vec<T> {
+/// The span export requests in `path`; none when the run has no spans.
+fn exports(path: &Path) -> Vec<ExportTraceServiceRequest> {
     if !path.exists() {
         return Vec::new();
     }
@@ -343,7 +343,7 @@ fn gates_admit_every_call_and_skip_the_rest() {
         let path = entry.unwrap().path();
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         if name.ends_with(".traces.jsonl") {
-            for export in exports::<ExportTraceServiceRequest>(&path) {
+            for export in exports(&path) {
                 for resource_spans in &export.resource_spans {
                     for scope_spans in &resource_spans.scope_spans {
                         let scope = scope_spans.scope.as_ref();
