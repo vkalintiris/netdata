@@ -7,7 +7,7 @@ import { useTheme } from '@/lib/theme'
 import { cn } from '@/lib/utils'
 
 const TABS = [
-  { to: '/', label: 'Overview' },
+  { to: '/', label: 'Metrics' },
   { to: '/calls', label: 'Calls' },
 ]
 

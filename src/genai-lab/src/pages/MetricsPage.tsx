@@ -46,7 +46,7 @@ function rankRows(s: Series | undefined): RankRow[] {
   })
 }
 
-export function OverviewPage() {
+export function MetricsPage() {
   const { window, filters, setWindow, selected, toggleFilter } = usePageState()
 
   const base = useMemo(() => ({ window, filters }), [window, filters])

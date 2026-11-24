@@ -209,7 +209,7 @@ function ClearButton({ onClick }: { onClick: () => void }) {
   )
 }
 
-// The page filters as panels of values with their call counts: from the GenAI charts on the Overview, from the
+// The page filters as panels of values with their call counts: from the GenAI charts on Metrics, from the
 // stored spans on Calls, so a panel offers only values its page can show.
 export function FilterPanels({ source }: { source: Source }) {
   return (

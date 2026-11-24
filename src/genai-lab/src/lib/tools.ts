@@ -1,4 +1,4 @@
-// The Overview's table of tools, from the tool charts grouped by tool.
+// The Metrics tab's table of tools, from the tool charts grouped by tool.
 import { totals, type Series } from './agent'
 import { quantile } from './quantile'
 

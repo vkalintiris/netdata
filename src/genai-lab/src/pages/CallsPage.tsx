@@ -166,7 +166,7 @@ export function CallsPage() {
         <Info className="mt-px size-3.5 shrink-0" />
         <span>
           Lists the spans that describe model calls in OpenTelemetry's GenAI conventions. A call reported by two
-          instrumentations appears twice; calls reported in other conventions are counted on the Overview but not
+          instrumentations appears twice; calls reported in other conventions are counted on Metrics but not
           listed here. A span that names its provider only in the older gen_ai.system attribute shows as
           [unset] under Provider, and a provider filter does not match it.
         </span>

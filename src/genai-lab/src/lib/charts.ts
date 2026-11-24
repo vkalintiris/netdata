@@ -1,4 +1,4 @@
-// Chart pieces the Overview's sections share.
+// Chart pieces the Metrics tab's sections share.
 import type { SeriesStyle } from '@/components/TimeChart'
 import type { Series } from './agent'
 import { quantile } from './quantile'
