@@ -4095,34 +4095,6 @@
    }
   }
  },
- "fp-claude-agent-sdk-native-anthropic-agent": {
-  "cache_read": 0,
-  "cache_write": 0,
-  "duration_count": 0,
-  "duration_sum": 0.0,
-  "error": 0,
-  "first_chunk_count": 0,
-  "first_chunk_sum": 0.0,
-  "input": 0,
-  "labels": [],
-  "output": 0,
-  "reasoning": 0,
-  "success": 0
- },
- "fp-claude-agent-sdk-native-anthropic-error": {
-  "cache_read": 0,
-  "cache_write": 0,
-  "duration_count": 0,
-  "duration_sum": 0.0,
-  "error": 0,
-  "first_chunk_count": 0,
-  "first_chunk_sum": 0.0,
-  "input": 0,
-  "labels": [],
-  "output": 0,
-  "reasoning": 0,
-  "success": 0
- },
  "fp-crewai-openinference-anthropic-agent": {
   "cache_read": 0,
   "cache_write": 0,

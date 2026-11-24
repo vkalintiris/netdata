@@ -2153,44 +2153,6 @@
    "success": 2,
    "usage": true
   },
-  "fp-claude-agent-sdk-native-anthropic-agent": {
-   "cache_read": 4873,
-   "cache_write": 4947,
-   "error": 0,
-   "except": {
-    "cache_read": "claude-code-old-spans",
-    "cache_write": "claude-code-old-spans",
-    "error": "claude-code-old-spans",
-    "input": "claude-code-old-spans",
-    "output": "claude-code-old-spans",
-    "reasoning": "claude-code-old-spans",
-    "success": "claude-code-old-spans"
-   },
-   "input": 11019,
-   "output": 94,
-   "reasoning": 0,
-   "success": 3,
-   "usage": true
-  },
-  "fp-claude-agent-sdk-native-anthropic-error": {
-   "cache_read": 0,
-   "cache_write": 0,
-   "error": 4,
-   "except": {
-    "cache_read": "claude-code-old-spans",
-    "cache_write": "claude-code-old-spans",
-    "error": "claude-code-old-spans",
-    "input": "claude-code-old-spans",
-    "output": "claude-code-old-spans",
-    "reasoning": "claude-code-old-spans",
-    "success": "claude-code-old-spans"
-   },
-   "input": 0,
-   "output": 0,
-   "reasoning": 0,
-   "success": 0,
-   "usage": true
-  },
   "fp-crewai-openinference-anthropic-agent": {
    "cache_read": 0,
    "cache_write": 0,
