@@ -1,8 +1,6 @@
 import { useCallback, useMemo } from 'react'
-import { useNavigate } from 'react-router'
 import { Distribution } from '@/components/Distribution'
-import { Heatmap, type HeatCell, type HeatmapData } from '@/components/Heatmap'
-import { cellParam } from '@/lib/traces'
+import { Heatmap, type HeatmapData } from '@/components/Heatmap'
 import { FilterBar } from '@/components/FilterBar'
 import { Panel, SectionTitle } from '@/components/Panel'
 import { Ranking, type RankRow } from '@/components/Ranking'
@@ -49,8 +47,7 @@ function rankRows(s: Series | undefined): RankRow[] {
 }
 
 export function OverviewPage() {
-  const { window, filters, setWindow, selected, toggleFilter, search } = usePageState()
-  const navigate = useNavigate()
+  const { window, filters, setWindow, selected, toggleFilter } = usePageState()
 
   const base = useMemo(() => ({ window, filters }), [window, filters])
   const total = (context: string, extra: Partial<DataQuery> = {}): DataQuery => ({
@@ -94,13 +91,6 @@ export function OverviewPage() {
   const durationLines = useMemo(() => latencyLines(durationTrendH.data, durationMax.data), [durationTrendH.data, durationMax.data])
   const durationHeat = useMemo(() => metricHeatmap(durationTrendH.data), [durationTrendH.data])
   const ttfcHeat = useMemo(() => metricHeatmap(ttfcTrendH.data), [ttfcTrendH.data])
-  // A duration cell opens the Calls page on the same window, listing the spans of that cell.
-  const openCell = (c: HeatCell, d: HeatmapData) => {
-    const p = new URLSearchParams(search)
-    const row = d.rows[c.row]
-    p.set('cell', cellParam({ after: d.times[c.col], before: d.times[c.col] + d.step, min: row.lower, max: row.upper }))
-    navigate({ pathname: '/calls', search: `?${p}` })
-  }
   const ttfcLines = useMemo(() => latencyLines(ttfcTrendH.data, ttfcMax.data), [ttfcTrendH.data, ttfcMax.data])
 
   const callTotals = calls.data ? totals(calls.data) : undefined
@@ -203,8 +193,8 @@ export function OverviewPage() {
 
       <SectionTitle>Latency</SectionTitle>
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-        <Panel title="Call duration heatmap" subtitle="calls per time and duration; click a cell to list its calls" className="lg:col-span-2">
-          <Heatmap data={durationHeat} height={180} formatBound={formatSeconds} onCell={openCell} cellHint="Click to list these calls" />
+        <Panel title="Call duration heatmap" subtitle="calls per time and duration" className="lg:col-span-2">
+          <Heatmap data={durationHeat} height={180} formatBound={formatSeconds} />
         </Panel>
         <Panel title="Call duration distribution" subtitle="calls with a recorded duration">
           <Distribution buckets={durationBuckets} />

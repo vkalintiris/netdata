@@ -103,7 +103,7 @@ export function usePageState() {
 
   const selected = useCallback((name: FilterName) => params.getAll(name), [params])
 
-  return { window, filters, setWindow, toggleFilter, clearFilters, selected, search: params.toString() }
+  return { window, filters, setWindow, toggleFilter, clearFilters, selected }
 }
 
 // Absolute bounds of a window, for panning and zooming relative presets.
