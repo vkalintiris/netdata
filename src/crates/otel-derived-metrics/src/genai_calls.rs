@@ -1,11 +1,10 @@
-//! GenAI charts from spans and log records: model calls, tokens, token details, call duration and time to first
-//! chunk, per service, provider, operation, requested model and answering model.
+//! GenAI charts from spans: model calls, tokens, token details, call duration and time to first chunk, per service,
+//! provider, operation, requested model and answering model.
 //!
-//! `otel-genai` turns each span or log record that describes a model call into a normalized call, whatever dialect
-//! its producer speaks, and drops the second span of a call that arrives twice. This set counts what is left. Each
-//! producer counts from one signal, so a call from a log record has no span twin to pair with. Token details (cache
+//! `otel-genai` turns each span that describes a model call into a normalized call, whatever dialect its producer
+//! speaks, and drops the second span of a call that arrives twice. This set counts what is left. Token details (cache
 //! reads, cache writes, reasoning) are parts of the input and output tokens, never additions to them. A call counts
-//! at its end time; a call from a span is weighted like a request by its sampling threshold. The time to first chunk
+//! at its end time, weighted like a request by its sampling threshold. The time to first chunk
 //! is the producer's own measurement, charted for the streamed calls of the producers that report one.
 //!
 //! The same pass over the spans finds the tool calls, which [`crate::genai_tools`] counts in its own charts.
@@ -18,7 +17,6 @@ use netdata_plugin_metrics::{
     Batch, ChartDescriptor, ChartType, Counter, Histogram, Labels, MetricSet, MetricSetBuilder,
     Stats, columns,
 };
-use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use otel_genai::{Call, Candidate, Normalizer, Pairs};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -67,9 +65,6 @@ pub(crate) struct Pending {
     calls: Vec<Candidate<Labels, f64>>,
     tools: Vec<PendingTool>,
 }
-
-/// The calls among the log records of one export request, normalized but not yet counted.
-pub(crate) type PendingLogs = Vec<(Labels, Call)>;
 
 pub(crate) struct GenAiCalls {
     metric_set: MetricSet,
@@ -225,46 +220,6 @@ impl GenAiCalls {
         }
     }
 
-    /// Normalize the calls among the log records of `export` into `pending`.
-    pub(crate) fn record_logs(
-        &self,
-        pending: &mut PendingLogs,
-        tenant: &str,
-        export: &ExportLogsServiceRequest,
-    ) {
-        for resource_logs in &export.resource_logs {
-            let mut service = None;
-            for scope_logs in &resource_logs.scope_logs {
-                for record in &scope_logs.log_records {
-                    let call = match self.normalizer.log(scope_logs.scope.as_ref(), record) {
-                        Ok(Some(call)) => call,
-                        Ok(None) => continue,
-                        Err(error) => {
-                            self.log_rule_error(&error);
-                            continue;
-                        }
-                    };
-                    let service = service.get_or_insert_with(|| {
-                        service_labels(tenant, resource_logs.resource.as_ref())
-                    });
-                    pending.push((service.clone(), call));
-                }
-            }
-        }
-    }
-
-    /// Count `pending` at `now` (Unix seconds): its log records are durable.
-    pub(crate) fn commit_logs(&self, pending: PendingLogs, now: u64) {
-        if pending.is_empty() {
-            return;
-        }
-        let mut batch = Batch::new(&self.metric_set);
-        for (service, call) in pending {
-            self.count(&mut batch, service, &call, 1.0);
-        }
-        self.aggregator.merge(batch, now);
-    }
-
     /// Pair and count `pending` at `now` (Unix seconds): its spans are durable.
     pub(crate) fn commit(&self, pending: Pending, now: u64) {
         self.tools.commit(pending.tools, now);
@@ -335,9 +290,7 @@ impl GenAiCalls {
                 event.add(self.token_details, column, count as f64 * weight);
             }
         }
-        if let Some(seconds) = call.duration_seconds {
-            event.observe(self.duration, seconds, weight);
-        }
+        event.observe(self.duration, call.duration_seconds, weight);
         if let Some(seconds) = call.time_to_first_chunk_seconds {
             event.observe(self.time_to_first_chunk, seconds, weight);
         }
@@ -362,8 +315,7 @@ impl GenAiCalls {
 mod tests {
     use super::*;
     use opentelemetry_proto::tonic::common::v1::any_value::Value;
-    use opentelemetry_proto::tonic::common::v1::{AnyValue, InstrumentationScope, KeyValue};
-    use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+    use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue};
     use opentelemetry_proto::tonic::resource::v1::Resource;
     use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans, Span};
 
@@ -537,55 +489,6 @@ mod tests {
                 duplicates: 1,
                 failed_rules: 1
             }
-        );
-    }
-
-    #[test]
-    fn charts_a_call_from_a_log_record() {
-        let export = ExportLogsServiceRequest {
-            resource_logs: vec![ResourceLogs {
-                resource: Some(Resource {
-                    attributes: vec![text("service.name", "claude-code")],
-                    ..Default::default()
-                }),
-                scope_logs: vec![ScopeLogs {
-                    scope: Some(InstrumentationScope {
-                        name: "com.anthropic.claude_code.events".into(),
-                        ..Default::default()
-                    }),
-                    log_records: vec![LogRecord {
-                        time_unix_nano: 100_000_000_000,
-                        attributes: vec![
-                            text("event.name", "api_request"),
-                            text("model", "claude-opus-4-5"),
-                            int("input_tokens", 2),
-                            int("cache_read_tokens", 30),
-                            int("cache_creation_tokens", 10),
-                            int("output_tokens", 5),
-                            int("duration_ms", 1500),
-                        ],
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-        };
-        let genai = GenAiCalls::new(10, 10).unwrap();
-        let mut pending = PendingLogs::new();
-        genai.record_logs(&mut pending, "default", &export);
-        genai.commit_logs(pending, 100);
-        let mut chunks = Vec::new();
-        genai.emit(115, &mut chunks);
-        let out = netdata_plugin_protocol::readable_chart_stream(&chunks.concat());
-        netdata_plugin_protocol::validate_chart_stream(out.as_bytes()).unwrap();
-        assert_eq!(first(&out, "success"), "1");
-        assert_eq!(first(&out, "input"), "42");
-        assert_eq!(first(&out, "cache_read"), "30");
-        assert_eq!(first(&out, "avg"), "1.5");
-        assert!(
-            out.contains("CLABEL 'gen_ai.request.model' 'claude-opus-4-5' 1"),
-            "{out}"
         );
     }
 

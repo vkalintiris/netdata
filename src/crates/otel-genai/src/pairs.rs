@@ -206,9 +206,7 @@ impl<G: Hash + Eq + Clone> Pairs<G> {
             if !keep[index] || !call.error || call.response_id.is_some() {
                 continue;
             }
-            let Some(duration) = call.duration_seconds else {
-                continue;
-            };
+            let duration = call.duration_seconds;
             let end = call.end_time_unix_nano;
             let failure = Failure {
                 start: end.saturating_sub((duration * 1e9) as u64),
@@ -305,7 +303,7 @@ mod tests {
                 tokens: Tokens::default(),
                 error: false,
                 end_time_unix_nano: end,
-                duration_seconds: None,
+                duration_seconds: 0.0,
                 time_to_first_chunk_seconds: None,
                 response_id: response_id.map(str::to_string),
             },
@@ -457,7 +455,7 @@ mod tests {
     ) -> Candidate<&'static str, u8> {
         let mut candidate = candidate(span, 0, trace, None, end);
         candidate.call.error = true;
-        candidate.call.duration_seconds = Some((end - start) as f64 / 1e9);
+        candidate.call.duration_seconds = (end - start) as f64 / 1e9;
         candidate.scope = scope.to_string();
         candidate
     }

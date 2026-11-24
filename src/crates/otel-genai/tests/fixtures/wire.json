@@ -3,10 +3,10 @@
   "adk-output-overcount": "Google ADK adds the reasoning count to an output count that already includes it",
   "agno-openinference-no-reasoning": "OpenInference's Agno instrumentation sends no reasoning count",
   "claude-code-no-thinking": "Claude Code sends no thinking-token count",
-  "claude-code-retried-not-logged": "Claude Code logs nothing for a failed request it retries with success",
-  "claude-code-retries": "Claude Code logs one event per failed query, not one per failed request",
-  "claude-code-side-call": "Claude Code logs no event for an internal side call (Python Agent SDK run)",
-  "codex-exit-loses-events": "Codex ends a session on a failure without exporting its last log events",
+  "claude-code-old-spans": "Claude Code before 2.1.331 (CLI and the Agent SDKs that bundle it) sends no model-call span in the GenAI conventions: nothing is charted",
+  "claude-code-retried-no-span": "Claude Code sends no failed span for a request it retries with success (the attempts are span events)",
+  "claude-code-retries": "Claude Code sends one failed span per failed call, not one per failed request",
+  "codex-not-counted": "Codex is not counted: none of its spans names the model (since 2026-11-24)",
   "crewai-no-call-span": "CrewAI with OpenInference or OpenLLMetry emits no model-call span (run totals only)",
   "datadog-anthropic-no-reasoning": "Datadog's tracers send no reasoning count on the Anthropic path",
   "laminar-anthropic-no-reasoning": "Laminar sends no reasoning count on the Anthropic path",
@@ -38,8 +38,13 @@
    "cache_write": 0,
    "error": 2,
    "except": {
-    "error": "claude-code-retries",
-    "reasoning": "claude-code-no-thinking"
+    "cache_read": "claude-code-old-spans",
+    "cache_write": "claude-code-old-spans",
+    "error": "claude-code-old-spans",
+    "input": "claude-code-old-spans",
+    "output": "claude-code-old-spans",
+    "reasoning": "claude-code-old-spans",
+    "success": "claude-code-old-spans"
    },
    "input": 0,
    "output": 0,
@@ -52,8 +57,13 @@
    "cache_write": 0,
    "error": 3,
    "except": {
-    "error": "claude-code-retries",
-    "reasoning": "claude-code-no-thinking"
+    "cache_read": "claude-code-old-spans",
+    "cache_write": "claude-code-old-spans",
+    "error": "claude-code-old-spans",
+    "input": "claude-code-old-spans",
+    "output": "claude-code-old-spans",
+    "reasoning": "claude-code-old-spans",
+    "success": "claude-code-old-spans"
    },
    "input": 0,
    "output": 0,
@@ -66,8 +76,13 @@
    "cache_write": 7639,
    "error": 1,
    "except": {
-    "error": "claude-code-retried-not-logged",
-    "reasoning": "claude-code-no-thinking"
+    "cache_read": "claude-code-old-spans",
+    "cache_write": "claude-code-old-spans",
+    "error": "claude-code-old-spans",
+    "input": "claude-code-old-spans",
+    "output": "claude-code-old-spans",
+    "reasoning": "claude-code-old-spans",
+    "success": "claude-code-old-spans"
    },
    "input": 20426,
    "output": 3,
@@ -80,7 +95,13 @@
    "cache_write": 8625,
    "error": 0,
    "except": {
-    "reasoning": "claude-code-no-thinking"
+    "cache_read": "claude-code-old-spans",
+    "cache_write": "claude-code-old-spans",
+    "error": "claude-code-old-spans",
+    "input": "claude-code-old-spans",
+    "output": "claude-code-old-spans",
+    "reasoning": "claude-code-old-spans",
+    "success": "claude-code-old-spans"
    },
    "input": 104622,
    "output": 952,
@@ -93,7 +114,13 @@
    "cache_write": 7747,
    "error": 0,
    "except": {
-    "reasoning": "claude-code-no-thinking"
+    "cache_read": "claude-code-old-spans",
+    "cache_write": "claude-code-old-spans",
+    "error": "claude-code-old-spans",
+    "input": "claude-code-old-spans",
+    "output": "claude-code-old-spans",
+    "reasoning": "claude-code-old-spans",
+    "success": "claude-code-old-spans"
    },
    "input": 40971,
    "output": 101,
@@ -106,7 +133,13 @@
    "cache_write": 7988,
    "error": 0,
    "except": {
-    "reasoning": "claude-code-no-thinking"
+    "cache_read": "claude-code-old-spans",
+    "cache_write": "claude-code-old-spans",
+    "error": "claude-code-old-spans",
+    "input": "claude-code-old-spans",
+    "output": "claude-code-old-spans",
+    "reasoning": "claude-code-old-spans",
+    "success": "claude-code-old-spans"
    },
    "input": 82475,
    "output": 710,
@@ -119,7 +152,13 @@
    "cache_write": 7637,
    "error": 0,
    "except": {
-    "reasoning": "claude-code-no-thinking"
+    "cache_read": "claude-code-old-spans",
+    "cache_write": "claude-code-old-spans",
+    "error": "claude-code-old-spans",
+    "input": "claude-code-old-spans",
+    "output": "claude-code-old-spans",
+    "reasoning": "claude-code-old-spans",
+    "success": "claude-code-old-spans"
    },
    "input": 20424,
    "output": 3,
@@ -132,8 +171,13 @@
    "cache_write": 7639,
    "error": 1,
    "except": {
-    "error": "claude-code-retried-not-logged",
-    "reasoning": "claude-code-no-thinking"
+    "cache_read": "claude-code-old-spans",
+    "cache_write": "claude-code-old-spans",
+    "error": "claude-code-old-spans",
+    "input": "claude-code-old-spans",
+    "output": "claude-code-old-spans",
+    "reasoning": "claude-code-old-spans",
+    "success": "claude-code-old-spans"
    },
    "input": 20426,
    "output": 3,
@@ -146,8 +190,13 @@
    "cache_write": 7751,
    "error": 3,
    "except": {
-    "error": "claude-code-retried-not-logged",
-    "reasoning": "claude-code-no-thinking"
+    "cache_read": "claude-code-old-spans",
+    "cache_write": "claude-code-old-spans",
+    "error": "claude-code-old-spans",
+    "input": "claude-code-old-spans",
+    "output": "claude-code-old-spans",
+    "reasoning": "claude-code-old-spans",
+    "success": "claude-code-old-spans"
    },
    "input": 40979,
    "output": 99,
@@ -160,7 +209,13 @@
    "cache_write": 19933,
    "error": 0,
    "except": {
-    "reasoning": "claude-code-no-thinking"
+    "cache_read": "claude-code-old-spans",
+    "cache_write": "claude-code-old-spans",
+    "error": "claude-code-old-spans",
+    "input": "claude-code-old-spans",
+    "output": "claude-code-old-spans",
+    "reasoning": "claude-code-old-spans",
+    "success": "claude-code-old-spans"
    },
    "input": 75797,
    "output": 959,
@@ -173,7 +228,13 @@
    "cache_write": 15975,
    "error": 0,
    "except": {
-    "reasoning": "claude-code-no-thinking"
+    "cache_read": "claude-code-old-spans",
+    "cache_write": "claude-code-old-spans",
+    "error": "claude-code-old-spans",
+    "input": "claude-code-old-spans",
+    "output": "claude-code-old-spans",
+    "reasoning": "claude-code-old-spans",
+    "success": "claude-code-old-spans"
    },
    "input": 110353,
    "output": 1245,
@@ -186,7 +247,13 @@
    "cache_write": 8085,
    "error": 0,
    "except": {
-    "reasoning": "claude-code-no-thinking"
+    "cache_read": "claude-code-old-spans",
+    "cache_write": "claude-code-old-spans",
+    "error": "claude-code-old-spans",
+    "input": "claude-code-old-spans",
+    "output": "claude-code-old-spans",
+    "reasoning": "claude-code-old-spans",
+    "success": "claude-code-old-spans"
    },
    "input": 61849,
    "output": 466,
@@ -199,7 +266,13 @@
    "cache_write": 0,
    "error": 1,
    "except": {
-    "error": "codex-exit-loses-events"
+    "cache_read": "codex-not-counted",
+    "cache_write": "codex-not-counted",
+    "error": "codex-not-counted",
+    "input": "codex-not-counted",
+    "output": "codex-not-counted",
+    "reasoning": "codex-not-counted",
+    "success": "codex-not-counted"
    },
    "input": 0,
    "output": 0,
@@ -212,7 +285,13 @@
    "cache_write": 0,
    "error": 30,
    "except": {
-    "error": "codex-exit-loses-events"
+    "cache_read": "codex-not-counted",
+    "cache_write": "codex-not-counted",
+    "error": "codex-not-counted",
+    "input": "codex-not-counted",
+    "output": "codex-not-counted",
+    "reasoning": "codex-not-counted",
+    "success": "codex-not-counted"
    },
    "input": 0,
    "output": 0,
@@ -224,6 +303,15 @@
    "cache_read": 0,
    "cache_write": 0,
    "error": 1,
+   "except": {
+    "cache_read": "codex-not-counted",
+    "cache_write": "codex-not-counted",
+    "error": "codex-not-counted",
+    "input": "codex-not-counted",
+    "output": "codex-not-counted",
+    "reasoning": "codex-not-counted",
+    "success": "codex-not-counted"
+   },
    "input": 0,
    "output": 0,
    "reasoning": 0,
@@ -234,6 +322,15 @@
    "cache_read": 75008,
    "cache_write": 0,
    "error": 0,
+   "except": {
+    "cache_read": "codex-not-counted",
+    "cache_write": "codex-not-counted",
+    "error": "codex-not-counted",
+    "input": "codex-not-counted",
+    "output": "codex-not-counted",
+    "reasoning": "codex-not-counted",
+    "success": "codex-not-counted"
+   },
    "input": 85890,
    "output": 129,
    "reasoning": 0,
@@ -244,6 +341,15 @@
    "cache_read": 37376,
    "cache_write": 0,
    "error": 0,
+   "except": {
+    "cache_read": "codex-not-counted",
+    "cache_write": "codex-not-counted",
+    "error": "codex-not-counted",
+    "input": "codex-not-counted",
+    "output": "codex-not-counted",
+    "reasoning": "codex-not-counted",
+    "success": "codex-not-counted"
+   },
    "input": 40868,
    "output": 84,
    "reasoning": 0,
@@ -254,6 +360,15 @@
    "cache_read": 63872,
    "cache_write": 0,
    "error": 0,
+   "except": {
+    "cache_read": "codex-not-counted",
+    "cache_write": "codex-not-counted",
+    "error": "codex-not-counted",
+    "input": "codex-not-counted",
+    "output": "codex-not-counted",
+    "reasoning": "codex-not-counted",
+    "success": "codex-not-counted"
+   },
    "input": 85908,
    "output": 126,
    "reasoning": 0,
@@ -264,6 +379,15 @@
    "cache_read": 11136,
    "cache_write": 0,
    "error": 0,
+   "except": {
+    "cache_read": "codex-not-counted",
+    "cache_write": "codex-not-counted",
+    "error": "codex-not-counted",
+    "input": "codex-not-counted",
+    "output": "codex-not-counted",
+    "reasoning": "codex-not-counted",
+    "success": "codex-not-counted"
+   },
    "input": 20368,
    "output": 5,
    "reasoning": 0,
@@ -274,6 +398,15 @@
    "cache_read": 4736,
    "cache_write": 0,
    "error": 0,
+   "except": {
+    "cache_read": "codex-not-counted",
+    "cache_write": "codex-not-counted",
+    "error": "codex-not-counted",
+    "input": "codex-not-counted",
+    "output": "codex-not-counted",
+    "reasoning": "codex-not-counted",
+    "success": "codex-not-counted"
+   },
    "input": 21339,
    "output": 5,
    "reasoning": 0,
@@ -284,6 +417,15 @@
    "cache_read": 0,
    "cache_write": 0,
    "error": 1,
+   "except": {
+    "cache_read": "codex-not-counted",
+    "cache_write": "codex-not-counted",
+    "error": "codex-not-counted",
+    "input": "codex-not-counted",
+    "output": "codex-not-counted",
+    "reasoning": "codex-not-counted",
+    "success": "codex-not-counted"
+   },
    "input": 0,
    "output": 0,
    "reasoning": 0,
@@ -294,6 +436,15 @@
    "cache_read": 31488,
    "cache_write": 0,
    "error": 3,
+   "except": {
+    "cache_read": "codex-not-counted",
+    "cache_write": "codex-not-counted",
+    "error": "codex-not-counted",
+    "input": "codex-not-counted",
+    "output": "codex-not-counted",
+    "reasoning": "codex-not-counted",
+    "success": "codex-not-counted"
+   },
    "input": 40881,
    "output": 85,
    "reasoning": 0,
@@ -304,6 +455,15 @@
    "cache_read": 21120,
    "cache_write": 0,
    "error": 0,
+   "except": {
+    "cache_read": "codex-not-counted",
+    "cache_write": "codex-not-counted",
+    "error": "codex-not-counted",
+    "input": "codex-not-counted",
+    "output": "codex-not-counted",
+    "reasoning": "codex-not-counted",
+    "success": "codex-not-counted"
+   },
    "input": 42705,
    "output": 58,
    "reasoning": 0,
@@ -473,12 +633,179 @@
    "success": 6,
    "usage": true
   },
+  "cs1-claude-badmodel": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 2,
+   "except": {
+    "error": "claude-code-retries",
+    "reasoning": "claude-code-no-thinking"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "cs1-claude-exhaust": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 3,
+   "except": {
+    "error": "claude-code-retries",
+    "reasoning": "claude-code-no-thinking"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
+  "cs1-claude-fail400": {
+   "cache_read": 12785,
+   "cache_write": 7180,
+   "error": 1,
+   "except": {
+    "error": "claude-code-retried-no-span",
+    "reasoning": "claude-code-no-thinking"
+   },
+   "input": 19967,
+   "output": 3,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true
+  },
+  "cs1-claude-loop": {
+   "cache_read": 73227,
+   "cache_write": 7591,
+   "error": 0,
+   "except": {
+    "reasoning": "claude-code-no-thinking"
+   },
+   "input": 80826,
+   "output": 938,
+   "reasoning": 599,
+   "success": 4,
+   "usage": true
+  },
+  "cs1-claude-par-a": {
+   "cache_read": 52845,
+   "cache_write": 7751,
+   "error": 0,
+   "except": {
+    "reasoning": "claude-code-no-thinking"
+   },
+   "input": 60602,
+   "output": 585,
+   "reasoning": 202,
+   "success": 3,
+   "usage": true
+  },
+  "cs1-claude-par-b": {
+   "cache_read": 73102,
+   "cache_write": 7529,
+   "error": 0,
+   "except": {
+    "reasoning": "claude-code-no-thinking"
+   },
+   "input": 80639,
+   "output": 817,
+   "reasoning": 401,
+   "success": 4,
+   "usage": true
+  },
+  "cs1-claude-plain": {
+   "cache_read": 0,
+   "cache_write": 20003,
+   "error": 0,
+   "except": {
+    "reasoning": "claude-code-no-thinking"
+   },
+   "input": 20005,
+   "output": 3,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true
+  },
+  "cs1-claude-retry429": {
+   "cache_read": 12785,
+   "cache_write": 7180,
+   "error": 1,
+   "except": {
+    "error": "claude-code-retried-no-span",
+    "reasoning": "claude-code-no-thinking"
+   },
+   "input": 19967,
+   "output": 3,
+   "reasoning": 0,
+   "success": 1,
+   "usage": true
+  },
+  "cs1-claude-retry529x3": {
+   "cache_read": 53068,
+   "cache_write": 7851,
+   "error": 3,
+   "except": {
+    "error": "claude-code-retried-no-span",
+    "reasoning": "claude-code-no-thinking"
+   },
+   "input": 60925,
+   "output": 524,
+   "reasoning": 232,
+   "success": 3,
+   "usage": true
+  },
+  "cs1-claude-subagent": {
+   "cache_read": 63154,
+   "cache_write": 18354,
+   "error": 0,
+   "except": {
+    "reasoning": "claude-code-no-thinking"
+   },
+   "input": 81520,
+   "output": 470,
+   "reasoning": 0,
+   "success": 5,
+   "usage": true
+  },
+  "cs1-claude-subagents2": {
+   "cache_read": 110434,
+   "cache_write": 24422,
+   "error": 0,
+   "except": {
+    "reasoning": "claude-code-no-thinking"
+   },
+   "input": 134876,
+   "output": 1833,
+   "reasoning": 207,
+   "success": 10,
+   "usage": true
+  },
+  "cs1-claude-tool": {
+   "cache_read": 52840,
+   "cache_write": 7870,
+   "error": 0,
+   "except": {
+    "reasoning": "claude-code-no-thinking"
+   },
+   "input": 60716,
+   "output": 636,
+   "reasoning": 241,
+   "success": 3,
+   "usage": true
+  },
   "cw2-codex-badmodel": {
    "cache_read": 0,
    "cache_write": 0,
    "error": 2,
    "except": {
-    "error": "codex-exit-loses-events"
+    "cache_read": "codex-not-counted",
+    "cache_write": "codex-not-counted",
+    "error": "codex-not-counted",
+    "input": "codex-not-counted",
+    "output": "codex-not-counted",
+    "reasoning": "codex-not-counted",
+    "success": "codex-not-counted"
    },
    "input": 0,
    "output": 0,
@@ -491,7 +818,13 @@
    "cache_write": 0,
    "error": 36,
    "except": {
-    "error": "codex-exit-loses-events"
+    "cache_read": "codex-not-counted",
+    "cache_write": "codex-not-counted",
+    "error": "codex-not-counted",
+    "input": "codex-not-counted",
+    "output": "codex-not-counted",
+    "reasoning": "codex-not-counted",
+    "success": "codex-not-counted"
    },
    "input": 2,
    "output": 0,
@@ -504,9 +837,13 @@
    "cache_write": 0,
    "error": 1,
    "except": {
-    "error": "codex-exit-loses-events",
-    "input": "codex-exit-loses-events",
-    "success": "codex-exit-loses-events"
+    "cache_read": "codex-not-counted",
+    "cache_write": "codex-not-counted",
+    "error": "codex-not-counted",
+    "input": "codex-not-counted",
+    "output": "codex-not-counted",
+    "reasoning": "codex-not-counted",
+    "success": "codex-not-counted"
    },
    "input": 2,
    "output": 0,
@@ -518,6 +855,15 @@
    "cache_read": 84992,
    "cache_write": 0,
    "error": 0,
+   "except": {
+    "cache_read": "codex-not-counted",
+    "cache_write": "codex-not-counted",
+    "error": "codex-not-counted",
+    "input": "codex-not-counted",
+    "output": "codex-not-counted",
+    "reasoning": "codex-not-counted",
+    "success": "codex-not-counted"
+   },
    "input": 85897,
    "output": 128,
    "reasoning": 0,
@@ -528,6 +874,15 @@
    "cache_read": 21120,
    "cache_write": 0,
    "error": 0,
+   "except": {
+    "cache_read": "codex-not-counted",
+    "cache_write": "codex-not-counted",
+    "error": "codex-not-counted",
+    "input": "codex-not-counted",
+    "output": "codex-not-counted",
+    "reasoning": "codex-not-counted",
+    "success": "codex-not-counted"
+   },
    "input": 42738,
    "output": 84,
    "reasoning": 0,
@@ -538,6 +893,15 @@
    "cache_read": 63872,
    "cache_write": 0,
    "error": 0,
+   "except": {
+    "cache_read": "codex-not-counted",
+    "cache_write": "codex-not-counted",
+    "error": "codex-not-counted",
+    "input": "codex-not-counted",
+    "output": "codex-not-counted",
+    "reasoning": "codex-not-counted",
+    "success": "codex-not-counted"
+   },
    "input": 85900,
    "output": 134,
    "reasoning": 0,
@@ -548,6 +912,15 @@
    "cache_read": 21120,
    "cache_write": 0,
    "error": 0,
+   "except": {
+    "cache_read": "codex-not-counted",
+    "cache_write": "codex-not-counted",
+    "error": "codex-not-counted",
+    "input": "codex-not-counted",
+    "output": "codex-not-counted",
+    "reasoning": "codex-not-counted",
+    "success": "codex-not-counted"
+   },
    "input": 21304,
    "output": 5,
    "reasoning": 0,
@@ -558,6 +931,15 @@
    "cache_read": 0,
    "cache_write": 0,
    "error": 0,
+   "except": {
+    "cache_read": "codex-not-counted",
+    "cache_write": "codex-not-counted",
+    "error": "codex-not-counted",
+    "input": "codex-not-counted",
+    "output": "codex-not-counted",
+    "reasoning": "codex-not-counted",
+    "success": "codex-not-counted"
+   },
    "input": 20407,
    "output": 5,
    "reasoning": 0,
@@ -569,9 +951,13 @@
    "cache_write": 0,
    "error": 1,
    "except": {
-    "error": "codex-exit-loses-events",
-    "input": "codex-exit-loses-events",
-    "success": "codex-exit-loses-events"
+    "cache_read": "codex-not-counted",
+    "cache_write": "codex-not-counted",
+    "error": "codex-not-counted",
+    "input": "codex-not-counted",
+    "output": "codex-not-counted",
+    "reasoning": "codex-not-counted",
+    "success": "codex-not-counted"
    },
    "input": 2,
    "output": 0,
@@ -583,6 +969,15 @@
    "cache_read": 42240,
    "cache_write": 0,
    "error": 3,
+   "except": {
+    "cache_read": "codex-not-counted",
+    "cache_write": "codex-not-counted",
+    "error": "codex-not-counted",
+    "input": "codex-not-counted",
+    "output": "codex-not-counted",
+    "reasoning": "codex-not-counted",
+    "success": "codex-not-counted"
+   },
    "input": 42753,
    "output": 87,
    "reasoning": 0,
@@ -593,6 +988,15 @@
    "cache_read": 0,
    "cache_write": 0,
    "error": 0,
+   "except": {
+    "cache_read": "codex-not-counted",
+    "cache_write": "codex-not-counted",
+    "error": "codex-not-counted",
+    "input": "codex-not-counted",
+    "output": "codex-not-counted",
+    "reasoning": "codex-not-counted",
+    "success": "codex-not-counted"
+   },
    "input": 42733,
    "output": 83,
    "reasoning": 0,
@@ -603,6 +1007,15 @@
    "cache_read": 9470,
    "cache_write": 401,
    "error": 0,
+   "except": {
+    "cache_read": "claude-code-old-spans",
+    "cache_write": "claude-code-old-spans",
+    "error": "claude-code-old-spans",
+    "input": "claude-code-old-spans",
+    "output": "claude-code-old-spans",
+    "reasoning": "claude-code-old-spans",
+    "success": "claude-code-old-spans"
+   },
    "input": 11070,
    "output": 91,
    "reasoning": 0,
@@ -614,7 +1027,13 @@
    "cache_write": 0,
    "error": 4,
    "except": {
-    "error": "claude-code-retries"
+    "cache_read": "claude-code-old-spans",
+    "cache_write": "claude-code-old-spans",
+    "error": "claude-code-old-spans",
+    "input": "claude-code-old-spans",
+    "output": "claude-code-old-spans",
+    "reasoning": "claude-code-old-spans",
+    "success": "claude-code-old-spans"
    },
    "input": 0,
    "output": 0,
@@ -1565,6 +1984,33 @@
    "success": 2,
    "usage": true
   },
+  "fj2-claude-agent-sdk-native-anthropic-agent": {
+   "cache_read": 1092,
+   "cache_write": 4650,
+   "error": 0,
+   "except": {
+    "reasoning": "claude-code-no-thinking"
+   },
+   "input": 6941,
+   "output": 210,
+   "reasoning": 113,
+   "success": 3,
+   "usage": true
+  },
+  "fj2-claude-agent-sdk-native-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 4,
+   "except": {
+    "error": "claude-code-retries",
+    "reasoning": "claude-code-no-thinking"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
+   "usage": true
+  },
   "fp-agno-openinference-anthropic-agent": {
    "cache_read": 0,
    "cache_write": 0,
@@ -1712,9 +2158,13 @@
    "cache_write": 4947,
    "error": 0,
    "except": {
-    "input": "claude-code-side-call",
-    "output": "claude-code-side-call",
-    "success": "claude-code-side-call"
+    "cache_read": "claude-code-old-spans",
+    "cache_write": "claude-code-old-spans",
+    "error": "claude-code-old-spans",
+    "input": "claude-code-old-spans",
+    "output": "claude-code-old-spans",
+    "reasoning": "claude-code-old-spans",
+    "success": "claude-code-old-spans"
    },
    "input": 11019,
    "output": 94,
@@ -1727,7 +2177,13 @@
    "cache_write": 0,
    "error": 4,
    "except": {
-    "error": "claude-code-retries"
+    "cache_read": "claude-code-old-spans",
+    "cache_write": "claude-code-old-spans",
+    "error": "claude-code-old-spans",
+    "input": "claude-code-old-spans",
+    "output": "claude-code-old-spans",
+    "reasoning": "claude-code-old-spans",
+    "success": "claude-code-old-spans"
    },
    "input": 0,
    "output": 0,
@@ -3885,6 +4341,33 @@
    "output": 100,
    "reasoning": 37,
    "success": 2,
+   "usage": true
+  },
+  "fp2-claude-agent-sdk-native-anthropic-agent": {
+   "cache_read": 1068,
+   "cache_write": 4625,
+   "error": 0,
+   "except": {
+    "reasoning": "claude-code-no-thinking"
+   },
+   "input": 6892,
+   "output": 96,
+   "reasoning": 0,
+   "success": 3,
+   "usage": true
+  },
+  "fp2-claude-agent-sdk-native-anthropic-error": {
+   "cache_read": 0,
+   "cache_write": 0,
+   "error": 4,
+   "except": {
+    "error": "claude-code-retries",
+    "reasoning": "claude-code-no-thinking"
+   },
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "success": 0,
    "usage": true
   },
   "lj-ddtrace-anthropic-cache": {

@@ -1,7 +1,7 @@
 //! Captured GenAI telemetry against its expected chart totals and against what the provider's API returned.
 //!
-//! `tests/fixtures/<run>.traces.jsonl` and `<run>.logs.jsonl` hold the OTLP export requests of one captured run, one
-//! request per line, with only the attributes the rules read.
+//! `tests/fixtures/<run>.traces.jsonl` holds the OTLP span export requests of one captured run, one request per line,
+//! with only the attributes the rules read.
 //!
 //! - `expected.json` pins the chart totals of every run: a script that implements the rules as specified computed
 //!   them from the raw captures. It tells when a change alters what is charted, not whether that is right. A run
@@ -10,7 +10,6 @@
 //!   the client and the provider wrote down each request's outcome and usage. A run that is known to differ from it
 //!   names the fields that may differ and why.
 
-use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::common::v1::any_value::Value as Av;
 use otel_genai::{Call, Candidate, Normalizer, Pairs, ToolCall};
@@ -60,10 +59,8 @@ impl Totals {
         self.cache_read += tokens.cache_read.unwrap_or(0);
         self.cache_write += tokens.cache_write.unwrap_or(0);
         self.reasoning += tokens.reasoning.unwrap_or(0);
-        if let Some(seconds) = call.duration_seconds {
-            self.duration_count += 1;
-            self.duration_micros += (seconds * 1e6).round() as u64;
-        }
+        self.duration_count += 1;
+        self.duration_micros += (call.duration_seconds * 1e6).round() as u64;
         if let Some(seconds) = call.time_to_first_chunk_seconds {
             self.first_chunk_count += 1;
             self.first_chunk_micros += (seconds * 1e6).round() as u64;
@@ -229,17 +226,6 @@ fn totals(normalizer: &Normalizer, fixtures: &Path, run: &str) -> Totals {
             got.add_tool(&tool);
         }
     }
-    for export in exports::<ExportLogsServiceRequest>(&fixtures.join(format!("{run}.logs.jsonl"))) {
-        for resource_logs in &export.resource_logs {
-            for scope_logs in &resource_logs.scope_logs {
-                for record in &scope_logs.log_records {
-                    if let Some(call) = normalizer.log(scope_logs.scope.as_ref(), record).unwrap() {
-                        got.add(&call);
-                    }
-                }
-            }
-        }
-    }
     got
 }
 
@@ -338,13 +324,13 @@ fn real_call_runs_match_the_api() {
     assert_eq!(needed, reasons, "reasons no run needs any more");
 }
 
-/// The gates admit every record a rule matches, and keep the rest away from VRL.
+/// The gates admit every span a rule matches, and keep the rest away from VRL.
 #[test]
 fn gates_admit_every_call_and_skip_the_rest() {
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     let normalizer = Normalizer::new().unwrap();
-    // Model call spans, log records, tool spans.
-    let (mut admitted, mut skipped) = ([0; 3], [0; 3]);
+    // Model call spans, tool spans.
+    let (mut admitted, mut skipped) = ([0; 2], [0; 2]);
     let mut count = |signal: usize, admits: bool, ungated_is_none: bool, what: String| {
         if admits {
             admitted[signal] += 1;
@@ -375,7 +361,7 @@ fn gates_admit_every_call_and_skip_the_rest() {
                             assert_eq!(normalizer.tool_span(scope, span).unwrap(), ungated);
                             let admits = normalizer.is_tool_candidate(scope, span);
                             count(
-                                2,
+                                1,
                                 admits,
                                 ungated.is_none(),
                                 format!("{name}: {} as a tool", span.name),
@@ -384,30 +370,10 @@ fn gates_admit_every_call_and_skip_the_rest() {
                     }
                 }
             }
-        } else if name.ends_with(".logs.jsonl") {
-            for export in exports::<ExportLogsServiceRequest>(&path) {
-                for resource_logs in &export.resource_logs {
-                    for scope_logs in &resource_logs.scope_logs {
-                        let scope = scope_logs.scope.as_ref();
-                        for record in &scope_logs.log_records {
-                            let ungated = normalizer.log_ungated(scope, record).unwrap();
-                            assert_eq!(normalizer.log(scope, record).unwrap(), ungated);
-                            let admits = normalizer.is_log_candidate(scope, record);
-                            count(
-                                1,
-                                admits,
-                                ungated.is_none(),
-                                format!("{name}: a log record"),
-                            );
-                        }
-                    }
-                }
-            }
         }
     }
-    // The fixtures hold both kinds for each: HTTP and agent spans next to the calls and the tool calls, and other
-    // events next to the counted ones.
-    for signal in 0..3 {
+    // The fixtures hold both kinds for each: HTTP and agent spans next to the calls and the tool calls.
+    for signal in 0..2 {
         assert!(
             admitted[signal] > 0 && skipped[signal] > 0,
             "admitted {admitted:?}, skipped {skipped:?}"

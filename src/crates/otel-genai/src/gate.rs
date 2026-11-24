@@ -61,6 +61,6 @@ impl Gate {
     }
 }
 
-pub(crate) fn scope_name(scope: Option<&InstrumentationScope>) -> &str {
+fn scope_name(scope: Option<&InstrumentationScope>) -> &str {
     scope.map_or("", |scope| scope.name.as_str())
 }

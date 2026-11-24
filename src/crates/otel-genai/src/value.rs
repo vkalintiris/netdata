@@ -1,13 +1,11 @@
 //! The VRL view of an OTLP record: what a rule reads as its event.
 //!
 //! A span becomes an object with `scope.name`, `scope.version`, `name`, `kind`, `status_code` and `attributes` (one
-//! entry per attribute key, last value wins); a log record one with `scope`, `severity_number` and `attributes`.
-//! Timestamps are left out: the host derives the call's end time, and a span's duration, itself, so rules only deal
-//! with the producer's vocabulary.
+//! entry per attribute key, last value wins). Timestamps are left out: the host derives the call's end time and
+//! duration itself, so rules only deal with the producer's vocabulary.
 
 use opentelemetry_proto::tonic::common::v1::any_value::Value as Av;
 use opentelemetry_proto::tonic::common::v1::{AnyValue, InstrumentationScope, KeyValue};
-use opentelemetry_proto::tonic::logs::v1::LogRecord;
 use opentelemetry_proto::tonic::trace::v1::Span;
 use vrl::value::{KeyString, ObjectMap, Value};
 
@@ -19,17 +17,6 @@ pub(crate) fn span(scope: Option<&InstrumentationScope>, span: &Span) -> Value {
     let status_code = span.status.as_ref().map_or(0, |status| status.code);
     root.insert("status_code".into(), Value::Integer(i64::from(status_code)));
     root.insert("attributes".into(), attributes(&span.attributes));
-    Value::Object(root)
-}
-
-pub(crate) fn log(scope: Option<&InstrumentationScope>, record: &LogRecord) -> Value {
-    let mut root = ObjectMap::new();
-    root.insert("scope".into(), scope_object(scope));
-    root.insert(
-        "severity_number".into(),
-        Value::Integer(i64::from(record.severity_number)),
-    );
-    root.insert("attributes".into(), attributes(&record.attributes));
     Value::Object(root)
 }
 
