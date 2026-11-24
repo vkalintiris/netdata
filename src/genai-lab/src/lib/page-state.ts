@@ -117,18 +117,12 @@ export function usePageState() {
     [update],
   )
 
-  const clearFilters = useCallback(
-    () =>
-      update((p) => {
-        for (const name of Object.keys(LABELS)) p.delete(name)
-        p.delete('outcome')
-      }),
-    [update],
-  )
+  // One URL update per clear: react-router does not chain functional updates made in the same event.
+  const clearFilter = useCallback((name: FilterName | 'outcome') => update((p) => p.delete(name)), [update])
 
   const selected = useCallback((name: FilterName) => params.getAll(name), [params])
 
-  return { window, filters, outcomes, setWindow, toggleFilter, toggleOutcome, clearFilters, selected }
+  return { window, filters, outcomes, setWindow, toggleFilter, toggleOutcome, clearFilter, selected }
 }
 
 // Absolute bounds of a window, for panning and zooming relative presets.

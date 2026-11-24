@@ -1,7 +1,7 @@
 import { useCallback, useMemo } from 'react'
 import { Distribution } from '@/components/Distribution'
 import { Heatmap, type HeatmapData } from '@/components/Heatmap'
-import { FilterBar } from '@/components/FilterBar'
+import { FilterPanels } from '@/components/FilterPanels'
 import { Panel, SectionTitle } from '@/components/Panel'
 import { Ranking, type RankRow } from '@/components/Ranking'
 import { StatTile } from '@/components/StatTile'
@@ -81,11 +81,8 @@ export function OverviewPage() {
   const ttfcMax = useSeries(trend(`${C.ttfc}_max`, { timeGroup: 'max', aggregation: 'max' }))
 
   const by = (context: string, labels: string[]) => total(context, { groupByLabels: labels })
-  const callsByModel = useSeries(by(C.calls, [LABELS.model, LABELS.provider]))
   const tokensByModel = useSeries(by(C.tokens, [LABELS.model, LABELS.provider]))
-  const callsByProvider = useSeries(by(C.calls, [LABELS.provider]))
   const failuresByModel = useSeries(total(C.calls, { groupByLabels: [LABELS.model, LABELS.provider], dimensions: ['error'] }))
-  const callsByService = useSeries(by(C.calls, [LABELS.service]))
   const tokensByService = useSeries(by(C.tokens, [LABELS.service]))
 
   const durationLines = useMemo(() => latencyLines(durationTrendH.data, durationMax.data), [durationTrendH.data, durationMax.data])
@@ -137,7 +134,7 @@ export function OverviewPage() {
 
   return (
     <div className="flex flex-col">
-      <FilterBar />
+      <FilterPanels source="metrics" />
 
       <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
         <StatTile label="Calls" value={formatCount(callCount)} loading={!calls.data} detail="in this window" />
@@ -212,15 +209,6 @@ export function OverviewPage() {
 
       <SectionTitle>Breakdown</SectionTitle>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-        <Panel title="By model" subtitle="calls">
-          <Ranking rows={rankRows(callsByModel.data)} format={formatCount} empty="No calls" {...rank('model', 'provider')} />
-        </Panel>
-        <Panel title="By provider" subtitle="calls">
-          <Ranking rows={rankRows(callsByProvider.data)} format={formatCount} empty="No calls" {...rank('provider')} />
-        </Panel>
-        <Panel title="By service" subtitle="calls">
-          <Ranking rows={rankRows(callsByService.data)} format={formatCount} empty="No calls" {...rank('service')} />
-        </Panel>
         <Panel title="By model" subtitle="tokens, input and output">
           <Ranking rows={rankRows(tokensByModel.data)} format={formatCount} empty="No tokens reported" {...rank('model', 'provider')} />
         </Panel>

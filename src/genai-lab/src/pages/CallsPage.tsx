@@ -3,15 +3,14 @@ import { Info, X } from 'lucide-react'
 import { useMemo } from 'react'
 import { useSearchParams } from 'react-router'
 import { CallDetail } from '@/components/CallDetail'
-import { FilterBar } from '@/components/FilterBar'
+import { FilterPanels } from '@/components/FilterPanels'
 import { Panel } from '@/components/Panel'
-import { Ranking, type RankRow } from '@/components/Ranking'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { formatCount, formatSeconds } from '@/lib/format'
-import { absolute, OUTCOMES, usePageState, type FilterName, type Outcome } from '@/lib/page-state'
+import { absolute, usePageState } from '@/lib/page-state'
 import { Heatmap, type HeatCell, type HeatmapData } from '@/components/Heatmap'
 import {
   cellParam,
@@ -19,12 +18,9 @@ import {
   field,
   K,
   parseCell,
-  spanStack,
-  stackTotals,
   type CallCell,
   type ExploreAnswer,
   type SpanRow,
-  type StackTotals,
 } from '@/lib/traces'
 import { cn } from '@/lib/utils'
 
@@ -36,25 +32,6 @@ const dayTimeFmt = new Intl.DateTimeFormat(undefined, {
   minute: '2-digit',
   second: '2-digit',
 })
-
-// A breakdown as ranked rows; spans without the attribute and values past the Function's stack limit show as rows
-// no filter can match.
-function stackRows(t: StackTotals | undefined): RankRow[] {
-  if (!t) return []
-  const rows: RankRow[] = Object.entries(t.values).map(([name, value]) => ({ key: name, name, value }))
-  if (t.unset) rows.push({ key: '[unset]', name: '[unset]', value: t.unset })
-  if (t.other) rows.push({ key: '[other]', name: '[other]', value: t.other })
-  return rows
-}
-
-function outcomeRows(t: StackTotals | undefined): RankRow[] {
-  if (!t) return []
-  return (Object.keys(OUTCOMES) as Outcome[]).map((o) => ({
-    key: o,
-    name: o,
-    value: OUTCOMES[o].reduce((sum, code) => sum + (t.values[code] ?? 0), 0),
-  }))
-}
 
 function StatusBadge({ row }: { row: SpanRow }) {
   const status = field(row.fields, K.status)
@@ -97,13 +74,13 @@ export function cellOf(c: HeatCell, d: HeatmapData): CallCell {
 const cellTime = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 
 export function CallsPage() {
-  const { window, filters, outcomes, selected: chosen, toggleFilter, toggleOutcome } = usePageState()
+  const { window, filters, outcomes } = usePageState()
   const [params, setParams] = useSearchParams()
   const selected = params.get('call')
   const cell = parseCell(params.get('cell'))
   const live = window.after < 0 && !selected && !cell
 
-  // The list follows the selected heatmap cell; the breakdowns and the heatmap keep showing the whole window.
+  // The list follows the selected heatmap cell; the heatmap keeps showing the whole window.
   const query = useInfiniteQuery({
     queryKey: ['calls', window, filters, outcomes, cell],
     queryFn: ({ pageParam, signal }) => exploreCalls(window, filters, outcomes, pageParam, signal, cell),
@@ -119,21 +96,10 @@ export function CallsPage() {
     refetchInterval: window.after < 0 && !selected ? 10_000 : false,
     placeholderData: (prev) => prev,
   })
-  // The list's own answer stacks by requested model; the other breakdowns each need a query of their own.
-  const breakdown = (key: string) => ({
-    queryKey: ['calls-by', key, window, filters, outcomes],
-    queryFn: ({ signal }: { signal: AbortSignal }) => spanStack(window, filters, outcomes, key, signal),
-    refetchInterval: window.after < 0 && !selected ? 10_000 : (false as const),
-    placeholderData: (prev: StackTotals | undefined) => prev,
-  })
-  const byService = useQuery(breakdown(K.service))
-  const byProvider = useQuery(breakdown(K.provider))
-  const byStatus = useQuery(breakdown(K.status))
 
   const first = query.data?.pages[0]
   const whole = cell ? overview.data : first
   const rows = useMemo(() => query.data?.pages.flatMap((p) => p.rows.items) ?? [], [query.data])
-  const byModel = useMemo(() => stackTotals(whole), [whole])
   const heat = useMemo(() => spanHeatmap(whole), [whole])
   const selectedCell = useMemo(() => {
     if (!cell || !heat) return null
@@ -150,7 +116,6 @@ export function CallsPage() {
       next.delete('call')
       return next
     })
-  const rank = (name: FilterName) => ({ selected: chosen(name), onSelect: (v: string) => toggleFilter(name, v) })
 
   const select = (row: SpanRow | null) =>
     setParams((prev) => {
@@ -165,28 +130,7 @@ export function CallsPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <FilterBar fromSpans />
-
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <Panel title="By service" subtitle="calls">
-          <Ranking rows={stackRows(byService.data)} format={formatCount} empty="No calls" {...rank('service')} />
-        </Panel>
-        <Panel title="By model" subtitle="calls, by requested model">
-          <Ranking rows={stackRows(byModel)} format={formatCount} empty="No calls" {...rank('model')} />
-        </Panel>
-        <Panel title="By provider" subtitle="calls">
-          <Ranking rows={stackRows(byProvider.data)} format={formatCount} empty="No calls" {...rank('provider')} />
-        </Panel>
-        <Panel title="By outcome" subtitle="calls">
-          <Ranking
-            rows={outcomeRows(byStatus.data)}
-            format={formatCount}
-            empty="No calls"
-            selected={outcomes}
-            onSelect={(v) => toggleOutcome(v as Outcome)}
-          />
-        </Panel>
-      </div>
+      <FilterPanels source="spans" />
 
       <Panel
         title="Call duration heatmap"
@@ -224,7 +168,7 @@ export function CallsPage() {
           Lists the spans that describe model calls in OpenTelemetry's GenAI conventions. A call reported by two
           instrumentations appears twice; calls reported in other conventions are counted on the Overview but not
           listed here. A span that names its provider only in the older gen_ai.system attribute shows as
-          [unset] under By provider, and a provider filter does not match it.
+          [unset] under Provider, and a provider filter does not match it.
         </span>
       </p>
 

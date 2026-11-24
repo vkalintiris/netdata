@@ -202,7 +202,7 @@ export async function fetchTrace(id: string, aroundNs: number, signal?: AbortSig
 // stack limit and `unset` the spans without the attribute.
 export type StackTotals = { values: Record<string, number>; other: number; unset: number }
 
-export function stackTotals(a: ExploreAnswer | undefined): StackTotals | undefined {
+function stackTotals(a: ExploreAnswer | undefined): StackTotals | undefined {
   const h = a?.histogram
   if (!h) return undefined
   const values: Record<string, number> = {}
