@@ -196,7 +196,7 @@ export function OverviewPage() {
         <Panel title="Call duration heatmap" subtitle="calls per time and duration" className="lg:col-span-2">
           <Heatmap data={durationHeat} height={180} formatBound={formatSeconds} />
         </Panel>
-        <Panel title="Call duration distribution" subtitle="calls with a recorded duration">
+        <Panel title="Call duration distribution" subtitle="calls per duration">
           <Distribution buckets={durationBuckets} />
         </Panel>
         <Panel title="Call duration" subtitle="p50, p95 and maximum">
