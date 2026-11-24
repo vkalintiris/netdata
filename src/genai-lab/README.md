@@ -21,5 +21,6 @@ pnpm dev            # http://127.0.0.1:8094/
 - Overview: tiles, trends, latency and breakdowns from the `otel.derived_metrics.genai.*` charts. Drag a chart to pan,
   Shift + drag to zoom the whole page, double-click to return to the last relative window. The window and filters live
   in the URL.
-- Calls: model-call spans from the `otel-traces` Function, a chart by requested model and a table; a row opens
-  the call with its conversation, a summary and the trace. Duration heatmaps on both pages: a cell lists its calls.
+- Calls: model-call spans from the `otel-traces` Function: calls by service, model, provider and outcome as ranked
+  bars (a bar filters the page), a duration heatmap (a cell lists its calls) and a table; a row opens the call with
+  its conversation, a summary and the trace. The outcome filter applies to this page only.

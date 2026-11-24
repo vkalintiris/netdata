@@ -4,7 +4,11 @@ import { cn } from '@/lib/utils'
 export type RankRow = { key: string; name: string; group?: string; value: number }
 
 const LIMIT = 8
-const UNSET = '[unset]'
+// Rows no filter can match: a missing label ("[unset]", as the Agent reports it) and values past a query's limit.
+const UNMATCHABLE: Record<string, string> = {
+  '[unset]': 'The label is missing on these calls',
+  '[other]': 'Values past the query limit, added up',
+}
 
 export function Ranking({
   rows,
@@ -33,15 +37,14 @@ export function Ranking({
       {top.map((r) => {
         const active =
           selected.includes(r.name) && (!groupSelected || !r.group || groupSelected.includes(r.group))
-        // The Agent reports a missing label as "[unset]", which is not a value a filter can match.
-        const unset = r.name === UNSET || r.group === UNSET
+        const unmatchable = UNMATCHABLE[r.name] ?? (r.group ? UNMATCHABLE[r.group] : undefined)
         return (
           <li key={r.key}>
             <button
               type="button"
-              disabled={unset}
+              disabled={unmatchable != null}
               onClick={() => onSelect(r.name, r.group)}
-              title={unset ? 'The label is missing on these calls' : active ? 'Remove this filter' : 'Filter the page by this value'}
+              title={unmatchable ?? (active ? 'Remove this filter' : 'Filter the page by this value')}
               className={cn(
                 'group relative flex w-full items-center gap-2 overflow-hidden rounded px-2 py-1 text-left text-sm hover:bg-muted disabled:cursor-default disabled:hover:bg-transparent',
                 active && 'ring-1 ring-primary',

@@ -15,7 +15,7 @@ import { totals, type Filters } from '@/lib/agent'
 import { formatCount } from '@/lib/format'
 import { LABELS, usePageState, type FilterName } from '@/lib/page-state'
 import { useSeries } from '@/lib/queries'
-import { SPAN_KEY_OF, spanValues } from '@/lib/traces'
+import { SPAN_KEY_OF, spanStack } from '@/lib/traces'
 import { cn } from '@/lib/utils'
 
 const NAMES: { name: FilterName; label: string }[] = [
@@ -31,7 +31,7 @@ function without(filters: Filters, key: string): Filters {
 }
 
 function FilterPicker({ name, label, fromSpans }: { name: FilterName; label: string; fromSpans?: boolean }) {
-  const { window, filters, selected, toggleFilter } = usePageState()
+  const { window, filters, outcomes, selected, toggleFilter } = usePageState()
   const key = LABELS[name]
   // The choices honour the other filters, not this one, so a selection can be widened.
   const { data } = useSeries({
@@ -45,15 +45,15 @@ function FilterPicker({ name, label, fromSpans }: { name: FilterName; label: str
   })
   const spanKey = fromSpans ? SPAN_KEY_OF[key] : undefined
   const spans = useQuery({
-    queryKey: ['span-values', window, filters, key],
-    queryFn: ({ signal }) => spanValues(window, without(filters, key), spanKey!, signal),
+    queryKey: ['span-values', window, filters, outcomes, key],
+    queryFn: ({ signal }) => spanStack(window, without(filters, key), outcomes, spanKey!, signal),
     enabled: spanKey != null,
     placeholderData: (prev) => prev,
   })
   const choices = useMemo(() => {
     const t = data ? { ...totals(data) } : {}
     // Span counts fill in values the metrics no longer hold; where both exist the metric count (calls) wins.
-    for (const [v, n] of Object.entries(spans.data ?? {})) if (!(v in t) || !t[v]) t[v] = n
+    for (const [v, n] of Object.entries(spans.data?.values ?? {})) if (!(v in t) || !t[v]) t[v] = n
     return Object.entries(t)
       .filter(([, v]) => v > 0)
       .sort((a, b) => b[1] - a[1])
@@ -106,8 +106,8 @@ function FilterPicker({ name, label, fromSpans }: { name: FilterName; label: str
 }
 
 export function FilterBar({ fromSpans }: { fromSpans?: boolean }) {
-  const { filters, clearFilters } = usePageState()
-  const active = Object.keys(filters).length > 0
+  const { filters, outcomes, clearFilters } = usePageState()
+  const active = Object.keys(filters).length > 0 || (fromSpans === true && outcomes.length > 0)
   return (
     <div className="flex flex-wrap items-center gap-2">
       {NAMES.map((n) => (

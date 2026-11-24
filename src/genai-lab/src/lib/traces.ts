@@ -1,6 +1,6 @@
 // The otel-traces Function: model-call spans for the Calls page and whole traces for the call detail.
 import type { Filters, TimeWindow } from './agent'
-import { absolute, LABELS } from './page-state'
+import { absolute, LABELS, OUTCOMES, type Outcome } from './page-state'
 
 export const K = {
   service: 'resource.attributes.service.name',
@@ -37,15 +37,12 @@ const ROW_COLUMNS = [
   K.errorType,
 ]
 
-// Page filters that have a span attribute to match; the provider has two attributes across producers, so it is
-// not applied to the list (an exact match on one of them would drop the spans that carry the other).
+// Page filters as span attributes. The provider matches `gen_ai.provider.name` only: conditions AND, so spans that
+// name their provider in the older `gen_ai.system` alone cannot match a provider filter.
 const SPAN_KEYS: Record<string, string> = {
   [LABELS.service]: K.service,
   [LABELS.model]: K.requestModel,
-}
-
-export function unappliedFilters(filters: Filters): string[] {
-  return Object.keys(filters).filter((k) => !(k in SPAN_KEYS))
+  [LABELS.provider]: K.provider,
 }
 
 export type Fields = [string, string][]
@@ -133,7 +130,7 @@ export function cellParam(c: CallCell): string {
   return [c.after, c.before, c.min, c.max ?? ''].join(':')
 }
 
-function conditions(filters: Filters, cell?: CallCell | null) {
+function conditions(filters: Filters, outcomes: Outcome[], cell?: CallCell | null) {
   const out: { key: string; op: string; values: (string | number)[] }[] = [
     { key: K.operation, op: '=', values: MODEL_CALL_OPERATIONS },
   ]
@@ -141,6 +138,7 @@ function conditions(filters: Filters, cell?: CallCell | null) {
     const key = SPAN_KEYS[label]
     if (key && values.length) out.push({ key, op: '=', values })
   }
+  if (outcomes.length) out.push({ key: K.status, op: '=', values: outcomes.flatMap((o) => OUTCOMES[o]) })
   if (cell) {
     out.push({ key: 'duration', op: '>=', values: [Math.round(cell.min * 1e9)] })
     if (cell.max != null) out.push({ key: 'duration', op: '<', values: [Math.round(cell.max * 1e9)] })
@@ -153,6 +151,7 @@ export const ROWS_PAGE = 100
 export function exploreCalls(
   w: TimeWindow,
   filters: Filters,
+  outcomes: Outcome[],
   anchor: string | undefined,
   signal?: AbortSignal,
   cell?: CallCell | null,
@@ -160,7 +159,7 @@ export function exploreCalls(
 ): Promise<ExploreAnswer> {
   const { after, before } = cell ?? absolute(w)
   const rows = { limit: rowLimit, columns: ROW_COLUMNS }
-  const where = conditions(filters, cell)
+  const where = conditions(filters, outcomes, cell)
   const body = anchor
     ? { explore: { conditions: where, anchor, rows } }
     : { explore: { after, before, conditions: where, histogram: { stack: K.requestModel }, rows } }
@@ -199,26 +198,47 @@ export async function fetchTrace(id: string, aroundNs: number, signal?: AbortSig
   return { trace_id: raw.trace_id, spans: ordered }
 }
 
-// Values of one span attribute among model-call spans, with their counts: the Calls page's filter choices, which must
+// Model-call spans per value of one attribute in a histogram answer; `other` holds the values past the Function's
+// stack limit and `unset` the spans without the attribute.
+export type StackTotals = { values: Record<string, number>; other: number; unset: number }
+
+export function stackTotals(a: ExploreAnswer | undefined): StackTotals | undefined {
+  const h = a?.histogram
+  if (!h) return undefined
+  const values: Record<string, number> = {}
+  h.dimensions.forEach((d, i) => {
+    if (d) values[d] = h.buckets.reduce((sum, b) => sum + (b.counts[i] ?? 0), 0)
+  })
+  return {
+    values,
+    other: h.buckets.reduce((sum, b) => sum + b.other, 0),
+    unset: h.buckets.reduce((sum, b) => sum + b.unset, 0),
+  }
+}
+
+// Model-call spans per value of one span attribute: the Calls page's breakdowns and filter choices, which must
 // include services whose metrics are older than the Agent keeps.
-export async function spanValues(
+export async function spanStack(
   w: TimeWindow,
   filters: Filters,
+  outcomes: Outcome[],
   key: string,
   signal?: AbortSignal,
-): Promise<Record<string, number>> {
+): Promise<StackTotals> {
   const { after, before } = absolute(w)
   const a = await postTraces<ExploreAnswer>(
-    { explore: { after, before, conditions: conditions(filters), histogram: { stack: key }, rows: { limit: 1, columns: [key] } } },
+    {
+      explore: {
+        after,
+        before,
+        conditions: conditions(filters, outcomes),
+        histogram: { stack: key },
+        rows: { limit: 1, columns: [key] },
+      },
+    },
     signal,
   )
-  const out: Record<string, number> = {}
-  const h = a.histogram
-  h?.dimensions.forEach((d, i) => {
-    if (!d) return
-    out[d] = h.buckets.reduce((sum, b) => sum + (b.counts[i] ?? 0), 0)
-  })
-  return out
+  return stackTotals(a) ?? { values: {}, other: 0, unset: 0 }
 }
 
 export const SPAN_KEY_OF: Record<string, string> = SPAN_KEYS

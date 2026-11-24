@@ -10,6 +10,16 @@ export const LABELS = {
 
 export type FilterName = keyof typeof LABELS
 
+// The outcome filter matches span status, which no metric carries as a label: it applies on the Calls page only.
+// Instrumentations differ on marking success (OK or left unset); both mean the call did not fail.
+export const OUTCOMES = { succeeded: ['OK', 'UNSET'], failed: ['ERROR'] } as const
+
+export type Outcome = keyof typeof OUTCOMES
+
+function isOutcome(v: string): v is Outcome {
+  return v in OUTCOMES
+}
+
 export const PRESETS = [
   { label: '15m', after: -900 },
   { label: '1h', after: -3600 },
@@ -59,6 +69,8 @@ export function usePageState() {
     return out
   }, [params])
 
+  const outcomes: Outcome[] = useMemo(() => params.getAll('outcome').filter(isOutcome), [params])
+
   const update = useCallback(
     (fn: (p: URLSearchParams) => void) =>
       setParams((prev) => {
@@ -93,17 +105,30 @@ export function usePageState() {
     [update],
   )
 
+  const toggleOutcome = useCallback(
+    (value: Outcome) =>
+      update((p) => {
+        const values = p.getAll('outcome')
+        p.delete('outcome')
+        for (const v of values.includes(value) ? values.filter((v) => v !== value) : [...values, value]) {
+          p.append('outcome', v)
+        }
+      }),
+    [update],
+  )
+
   const clearFilters = useCallback(
     () =>
       update((p) => {
         for (const name of Object.keys(LABELS)) p.delete(name)
+        p.delete('outcome')
       }),
     [update],
   )
 
   const selected = useCallback((name: FilterName) => params.getAll(name), [params])
 
-  return { window, filters, setWindow, toggleFilter, clearFilters, selected }
+  return { window, filters, outcomes, setWindow, toggleFilter, toggleOutcome, clearFilters, selected }
 }
 
 // Absolute bounds of a window, for panning and zooming relative presets.
