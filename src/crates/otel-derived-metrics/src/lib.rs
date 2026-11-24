@@ -1,9 +1,8 @@
 //! Charts the OTel plugin derives itself, outside OTLP metrics ingestion:
 //! per-service request rate, errors and duration from spans, GenAI model calls,
 //! tokens and call duration from spans, GenAI tool calls and their duration
-//! from spans, per-service log records by severity,
-//! and the plugin's own ingest outcomes and derivation health
-//! (self-monitoring).
+//! from spans, per-service log records by severity, and the plugin's own
+//! ingest outcomes and derivation health (self-monitoring).
 //!
 //! Each of these is a metric set that owns its aggregator behind its own
 //! lock, so recording from export requests never waits on another set, nor on

@@ -206,10 +206,9 @@ impl<G: Hash + Eq + Clone> Pairs<G> {
             if !keep[index] || !call.error || call.response_id.is_some() {
                 continue;
             }
-            let duration = call.duration_seconds;
             let end = call.end_time_unix_nano;
             let failure = Failure {
-                start: end.saturating_sub((duration * 1e9) as u64),
+                start: end.saturating_sub((call.duration_seconds * 1e9) as u64),
                 end,
             };
             let own_trace = candidate.scope.starts_with(OWN_TRACE_SCOPE_PREFIX);

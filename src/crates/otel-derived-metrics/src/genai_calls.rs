@@ -4,8 +4,8 @@
 //! `otel-genai` turns each span that describes a model call into a normalized call, whatever dialect its producer
 //! speaks, and drops the second span of a call that arrives twice. This set counts what is left. Token details (cache
 //! reads, cache writes, reasoning) are parts of the input and output tokens, never additions to them. A call counts
-//! at its end time, weighted like a request by its sampling threshold. The time to first chunk
-//! is the producer's own measurement, charted for the streamed calls of the producers that report one.
+//! at its end time, weighted like a request by its sampling threshold. The time to first chunk is the producer's own
+//! measurement, charted for the streamed calls of the producers that report one.
 //!
 //! The same pass over the spans finds the tool calls, which [`crate::genai_tools`] counts in its own charts.
 
