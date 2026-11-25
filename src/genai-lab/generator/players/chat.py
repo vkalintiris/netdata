@@ -38,6 +38,9 @@ def setup(config):
                        instruments={Instruments.OPENAI})
     elif config == "openlit":
         import openlit
+        # OpenLIT reads the content-capture variable as a boolean: the SPAN_ONLY the other libraries take turns its
+        # messages off.
+        os.environ["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] = "true"
         openlit.init(otlp_endpoint=endpoint, application_name=service, service_name=service, environment="lab")
     elif config == "logfire":
         import logfire

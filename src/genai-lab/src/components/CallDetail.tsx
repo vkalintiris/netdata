@@ -5,7 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { conversationOf, type Message, type Part } from '@/lib/conversation'
+import { conversationOfSpan, type Message, type Part } from '@/lib/conversation'
 import { formatCount, formatSeconds } from '@/lib/format'
 import { fetchTrace, field, K, type TraceSpan } from '@/lib/traces'
 import { cn } from '@/lib/utils'
@@ -41,6 +41,14 @@ function PartView({ part }: { part: Part }) {
           {part.name ?? 'tool call'}
         </div>
         {part.arguments && <pre className="overflow-x-auto font-mono text-xs whitespace-pre-wrap">{part.arguments}</pre>}
+      </div>
+    )
+  }
+  if (part.kind === 'reasoning') {
+    return (
+      <div className="border-l-2 border-dashed pl-2">
+        <div className="mb-1 text-xs text-muted-foreground">reasoning</div>
+        <p className="text-sm whitespace-pre-wrap text-muted-foreground italic">{part.text}</p>
       </div>
     )
   }
@@ -143,14 +151,14 @@ export function CallDetail({ id, onClose }: { id: string; onClose: () => void })
   // overlapping span of the same trace that has them stands in.
   const { conversation, source } = useMemo(() => {
     if (!span || !trace.data) return { conversation: null, source: null }
-    const own = conversationOf(span.fields)
+    const own = conversationOfSpan(span)
     if (own) return { conversation: own, source: null }
     const end = span.start_ns + span.duration_ns
-    let best: { c: ReturnType<typeof conversationOf>; s: TraceSpan } | null = null
+    let best: { c: ReturnType<typeof conversationOfSpan>; s: TraceSpan } | null = null
     for (const other of trace.data.spans) {
       if (other.span_id === span.span_id) continue
       if (other.start_ns > end || other.start_ns + other.duration_ns < span.start_ns) continue
-      const c = conversationOf(other.fields)
+      const c = conversationOfSpan(other)
       if (!c) continue
       if (!best || Math.abs(other.start_ns - span.start_ns) < Math.abs(best.s.start_ns - span.start_ns)) {
         best = { c, s: other }

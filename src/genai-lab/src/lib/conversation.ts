@@ -10,6 +10,7 @@ export type Part =
   | { kind: 'text'; text: string }
   | { kind: 'toolCall'; name: string | null; arguments: string; id: string | null }
   | { kind: 'toolResult'; text: string; id: string | null }
+  | { kind: 'reasoning'; text: string }
   | { kind: 'other'; type: string; text: string }
 
 export type Message = {
@@ -83,6 +84,17 @@ const isPart = (part: Part | null): part is Part => part !== null
 
 const isMessage = (message: Message | null): message is Message => message !== null
 
+// The model's reasoning, under the names instrumentations give the part.
+const reasoningTypes = new Set(['reasoning', 'thinking', 'reasoningContent'])
+
+// Strands nests the text: {"reasoningText": {"text": ...}}.
+const reasoningTextOf = (content: unknown): unknown => {
+  if (isObject(content) && isObject(content.reasoningText) && typeof content.reasoningText.text === 'string') {
+    return content.reasoningText.text
+  }
+  return content
+}
+
 const normalizePart = (part: unknown): Part | null => {
   if (!isObject(part)) return textPartOf(part)
 
@@ -99,6 +111,11 @@ const normalizePart = (part: unknown): Part | null => {
   }
   if (part.type === 'tool_call_response') {
     return { kind: 'toolResult', text: asText(part.response), id: nonEmptyString(part.id) }
+  }
+
+  if (typeof part.type === 'string' && reasoningTypes.has(part.type)) {
+    const text = asText(reasoningTextOf(part.content))
+    return hasText(text) ? { kind: 'reasoning', text } : null
   }
 
   const { type, ...rest } = part
@@ -303,6 +320,28 @@ const firstValues = (pairs: unknown[][]): Map<unknown, unknown> => {
     if (!map.has(key)) map.set(key, value)
   }
   return map
+}
+
+// The conventions' event that carries a call's messages as its attributes, for producers that keep them off the
+// span's own attributes.
+const detailsEvent = 'gen_ai.client.inference.operation.details'
+const eventAttributePrefix = 'events.attributes.'
+
+// The conversation of a span: from its attributes, or from its details events when the attributes carry none.
+export const conversationOfSpan = (span: {
+  fields?: unknown
+  events?: { name?: string; attributes?: unknown }[]
+}): Conversation | null => {
+  const pairs = pairsOf(span.fields)
+  for (const event of span.events ?? []) {
+    if (event.name !== detailsEvent) continue
+    for (const [key, value] of pairsOf(event.attributes)) {
+      if (typeof key === 'string' && key.startsWith(eventAttributePrefix)) {
+        pairs.push([`attributes.${key.slice(eventAttributePrefix.length)}`, value])
+      }
+    }
+  }
+  return conversationOf(pairs)
 }
 
 export const conversationOf = (fields: [string, unknown][] | unknown): Conversation | null => {

@@ -75,7 +75,7 @@ export type TraceSpan = {
   start_ns: number
   duration_ns: number
   fields: Fields
-  events?: { name?: string; time_ns?: number; fields?: Fields }[]
+  events?: { name?: string; time_unix_nano?: number; attributes?: Fields }[]
 }
 
 export type TraceAnswer = { trace_id: string; spans: TraceSpan[] }

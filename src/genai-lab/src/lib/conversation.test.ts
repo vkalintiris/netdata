@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { conversationOf, invalidJsonNotice, invalidToolsNotice } from './conversation'
+import { conversationOf, conversationOfSpan, invalidJsonNotice, invalidToolsNotice } from './conversation'
 import type { Conversation } from './conversation'
 
 const semconvInput = JSON.stringify([
@@ -161,7 +161,6 @@ describe("conversationOf with the conventions' JSON attributes", () => {
         role: 'user',
         parts: [
           { type: 'blob', modality: 'image', mime_type: 'image/png' },
-          { type: 'reasoning', content: 'thinking' },
         ],
       },
     ])
@@ -171,8 +170,48 @@ describe("conversationOf with the conventions' JSON attributes", () => {
         type: 'blob',
         text: '{\n  "modality": "image",\n  "mime_type": "image/png"\n}',
       },
-      { kind: 'other', type: 'reasoning', text: 'thinking' },
     ])
+  })
+
+  it('shows the model\'s reasoning as reasoning, under each name producers give it', () => {
+    const input = JSON.stringify([
+      {
+        role: 'assistant',
+        parts: [
+          { type: 'reasoning', content: 'first' },
+          { type: 'thinking', content: 'second' },
+          { type: 'reasoningContent', content: { reasoningText: { text: 'third' } } },
+          { type: 'reasoning', content: '' },
+        ],
+      },
+    ])
+    expect(must(conversationOf([['attributes.gen_ai.input.messages', input]])).messages[0].parts).toEqual([
+      { kind: 'reasoning', text: 'first' },
+      { kind: 'reasoning', text: 'second' },
+      { kind: 'reasoning', text: 'third' },
+    ])
+  })
+
+  it('reads the messages a span carries in its details events', () => {
+    const event = (key: string, value: string) => ({
+      name: 'gen_ai.client.inference.operation.details',
+      attributes: [[`events.attributes.${key}`, value]],
+    })
+    const span = {
+      fields: [['name', 'chat']],
+      events: [
+        event('gen_ai.system_instructions', JSON.stringify([{ type: 'text', content: 'Be brief.' }])),
+        event('gen_ai.input.messages', JSON.stringify([{ role: 'user', parts: [{ type: 'text', content: 'Hi' }] }])),
+        event('gen_ai.output.messages', JSON.stringify([{ role: 'assistant', parts: [{ type: 'text', content: 'Hello' }] }])),
+        { name: 'exception', attributes: [['events.attributes.gen_ai.input.messages', 'ignored']] },
+      ],
+    }
+    expect(must(conversationOfSpan(span)).messages.map((m) => [m.section, m.role, m.parts])).toEqual([
+      ['input', 'system', [{ kind: 'text', text: 'Be brief.' }]],
+      ['input', 'user', [{ kind: 'text', text: 'Hi' }]],
+      ['output', 'assistant', [{ kind: 'text', text: 'Hello' }]],
+    ])
+    expect(conversationOfSpan({ fields: [['name', 'chat']], events: [] })).toBeNull()
   })
 
   it('shows a notice and the raw text when a value was cut', () => {
