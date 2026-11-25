@@ -4,12 +4,14 @@
   guess.py <version> [--games N]    play with one version (forever by default), service name guess-<version>
   guess.py rotate [<version> ...]   play one game per version in turn (all by default), each in its own venv, forever
 
-Every game picks one of game.MODELS. Pauses cap the spend while nobody watches; `rotate` plays one game at a time.
+Every game picks one of game.MODELS, and every process a user and their team (resource attributes `team` and
+`user.id`). Pauses cap the spend while nobody watches; `rotate` plays one game at a time.
 Env: LITELLM_API_KEY (required), GUESS_VENVS (the root of the venvs below), GUESS_GAME_PAUSE, GUESS_TURN_PAUSE,
 GUESS_MODELS, GUESS_BASE_URL, plus OTEL_EXPORTER_OTLP_ENDPOINT.
 """
 
 import os
+import random
 import subprocess
 import sys
 import time
@@ -38,10 +40,23 @@ VERSIONS = {
 
 GAME_PAUSE = float(os.environ.get("GUESS_GAME_PAUSE", "20"))
 
+# Who a game is played for: attributes of the application's own, for the lab to break usage down by. Unevenly
+# sized, so the breakdown has something to rank.
+TEAMS = {
+    "search": ["u-101", "u-102", "u-103", "u-104"],
+    "support": ["u-201", "u-202"],
+    "growth": ["u-301"],
+}
+
 
 def play(version, games):
     _, module, config = VERSIONS[version]
     os.environ["OTEL_SERVICE_NAME"] = "guess-" + version
+    # Resource attributes are the one place every instrumentation here copies to its spans.
+    user = random.choice([user for users in TEAMS.values() for user in users])
+    team = next(team for team, users in TEAMS.items() if user in users)
+    given = os.environ.get("OTEL_RESOURCE_ATTRIBUTES")
+    os.environ["OTEL_RESOURCE_ATTRIBUTES"] = ",".join(filter(None, [given, f"team={team},user.id={user}"]))
     # Message content on the spans, for the instrumentations that read these.
     os.environ.setdefault("OTEL_SEMCONV_STABILITY_OPT_IN", "gen_ai_latest_experimental")
     os.environ.setdefault("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "SPAN_ONLY")
