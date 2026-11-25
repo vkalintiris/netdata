@@ -1,0 +1,69 @@
+# yaml-language-server: $schema=https://agentgateway.dev/schema/config
+# agentgateway for the lab: the guessing game's models through the LLM proxy the game already uses.
+# Secrets come from the environment (run.sh): LITELLM_API_KEY upstream, AGW_KEY_<TEAM> for the game's teams.
+config:
+  adminAddr: 127.0.0.1:15100
+  readinessAddr: 127.0.0.1:15121
+  statsAddr: 127.0.0.1:15120
+  # Budgets keep their usage here (docker volume sjrg-agentgateway).
+  database:
+    url: /data/agentgateway.db
+  # The team of the key a request came with, on every metric.
+  metrics:
+    fields:
+      add:
+        team: apiKey.team
+  # Illustrative prices: agentgateway's catalog does not know these models, and without a price it reports no cost.
+  modelCatalog:
+  - inline:
+      providers:
+        openai:
+          models:
+            deepseek-v4-flash:
+              rates: {input: "0.27", output: "1.1"}
+            qwen3.8-flash:
+              rates: {input: "0.05", output: "0.4"}
+
+frontendPolicies:
+  tracing:
+    host: 172.17.0.1:44317
+    protocol: grpc
+    randomSampling: "true"
+    attributes:
+      team: apiKey.team
+  accessLog:
+    add:
+      team: apiKey.team
+    otlp:
+      host: 172.17.0.1:44317
+      protocol: grpc
+
+llm:
+  port: 3100
+  policies:
+    # One key per team of the game, each with a monthly budget (budgets show at the admin API only).
+    apiKey:
+      mode: strict
+      keys:
+      - key: $AGW_KEY_SEARCH
+        metadata: {name: guess-search, team: search}
+        budgets: [{name: monthly, limit: {unit: USD, amount: 5}, window: {rolling: 30d}, onBudgetExceeded: Audit}]
+      - key: $AGW_KEY_SUPPORT
+        metadata: {name: guess-support, team: support}
+        budgets: [{name: monthly, limit: {unit: USD, amount: 2}, window: {rolling: 30d}, onBudgetExceeded: Audit}]
+      - key: $AGW_KEY_GROWTH
+        metadata: {name: guess-growth, team: growth}
+        budgets: [{name: monthly, limit: {unit: USD, amount: 0.5}, window: {rolling: 30d}, onBudgetExceeded: Audit}]
+  models:
+  - name: deepseek-v4-flash
+    provider: openAI
+    params:
+      model: deepseek-v4-flash
+      apiKey: $LITELLM_API_KEY
+      baseUrl: https://llm.netdata.cloud/v1
+  - name: qwen3.8-flash
+    provider: openAI
+    params:
+      model: qwen3.8-flash
+      apiKey: $LITELLM_API_KEY
+      baseUrl: https://llm.netdata.cloud/v1
