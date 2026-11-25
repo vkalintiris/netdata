@@ -343,6 +343,50 @@ pub struct Bucket {
     pub unset: u64,
 }
 
+/// What [`IndexReader::timeline_sums`](crate::IndexReader::timeline_sums)
+/// adds up per position.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SumMeasure {
+    /// A stored field whose values are `i64` text. A position without the
+    /// field adds 0, a position with several values adds each, and a value
+    /// that does not parse is skipped and counted.
+    Field(String),
+    /// The span duration (`DURN`), nanoseconds.
+    Duration,
+}
+
+/// Per grid bucket and value of a stack field, the sums of several
+/// [`SumMeasure`]s over the matched positions. Accumulated in `i128`, so
+/// no sum over one file can overflow.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimelineSums {
+    pub grid: Grid,
+    /// The stack field's values, as [`Timeline::dimensions`] lists them;
+    /// empty when the field is absent or high-cardinality.
+    pub dimensions: Vec<String>,
+    /// One entry per `grid` bucket, in time order.
+    pub buckets: Vec<SumsBucket>,
+    /// Per measure, the sum over the matched positions, each once (a
+    /// position with several stack values adds under each in `buckets`).
+    pub totals: Vec<i128>,
+    /// Per measure, the values that did not parse as `i64`.
+    pub skipped: Vec<u64>,
+}
+
+/// One grid bucket of a [`TimelineSums`]; every vector is indexed by
+/// measure first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SumsBucket {
+    /// Per measure, per dimension (parallel to
+    /// [`TimelineSums::dimensions`]).
+    pub values: Vec<Vec<i128>>,
+    /// Per measure, the positions without the stack field.
+    pub unset: Vec<i128>,
+    /// Per measure, every position when the stack field is
+    /// high-cardinality (it cannot be split by value), else 0.
+    pub other: Vec<i128>,
+}
+
 /// A single materialized log row: its timestamp plus the full set of
 /// `(key, value)` attribute pairs stored for that position.
 ///

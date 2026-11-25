@@ -4,7 +4,7 @@
 //! shape, across source layouts (sealed, two sealed, sealed and tail,
 //! chunk and tail), plus the request errors, the stack cap, the
 //! high-cardinality stack, the budget, unavailable and failed sources,
-//! and cancellation.
+//! and cancellation; and the per-stack sums against their own oracle.
 
 mod common;
 
@@ -16,16 +16,16 @@ use std::sync::atomic::AtomicUsize;
 use tokio_util::sync::CancellationToken;
 
 use common::{
-    SpanSpec, corrupt_chunk, kv_str, memory_source, req_with, sealed_source, sealed_source_at, sp,
-    tail_source, unavailable_source, write_wal,
+    SpanSpec, corrupt_chunk, kv_int, kv_str, memory_source, req_with, sealed_source,
+    sealed_source_at, sp, tail_source, unavailable_source, write_wal,
 };
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::common::v1::{AnyValue, ArrayValue, KeyValue, any_value::Value};
 use sfsq::traces::{
     AttributeOwner, BuiltinField, CompareOp, Condition, ExploreData, ExploreQuery,
     ExploreRequestError, HEATMAP_ROWS, PartialReason, Predicate, PredicateTarget, PredicateValue,
-    QueryStatus, RowKey, RowsSpec, STACK_DIMENSIONS_MAX, Token, TokenQuery, TraceSource, explore,
-    heatmap_row_bounds,
+    QueryStatus, RowKey, RowsSpec, STACK_DIMENSIONS_MAX, SUMS_MAX, Token, TokenQuery, TraceSource,
+    explore, heatmap_row_bounds,
 };
 
 const NS: u64 = 1_000_000_000;
@@ -626,21 +626,39 @@ fn a_high_cardinality_stack_counts_as_other() {
         vec![req_with(vec![kv_str("service.name", "svc")], None, &narrow)],
         "narrow",
     );
-    let data = run(
-        vec![
-            sealed_source(dir.path(), &wide, "wide"),
-            sealed_source(dir.path(), &narrow, "narrow"),
-        ],
-        ExploreQuery::new(grid()).histogram("attributes.user"),
-    );
-    assert_eq!(
-        data.status,
-        QueryStatus::Complete.with(PartialReason::StackFieldHighCard)
-    );
-    let h = data.histogram.unwrap();
-    assert_eq!(h.dimensions, ["u-narrow"]);
-    assert_eq!(h.buckets.iter().map(|b| b.other).sum::<u64>(), 1_200);
-    assert_eq!(h.total, 1_201);
+    for sums in [Vec::new(), vec!["duration".to_string()]] {
+        let data = run(
+            vec![
+                sealed_source(dir.path(), &wide, "wide"),
+                sealed_source(dir.path(), &narrow, "narrow"),
+            ],
+            ExploreQuery::new(grid())
+                .histogram("attributes.user")
+                .sums(sums.clone()),
+        );
+        assert_eq!(
+            data.status,
+            QueryStatus::Complete.with(PartialReason::StackFieldHighCard)
+        );
+        let h = data.histogram.unwrap();
+        assert_eq!(h.dimensions, ["u-narrow"]);
+        assert_eq!(h.buckets.iter().map(|b| b.other).sum::<u64>(), 1_200);
+        assert_eq!(h.total, 1_201);
+        // Every span lasts 50 ns: the wide file's sums go where its spans
+        // count.
+        if sums.is_empty() {
+            assert!(h.sums.is_empty());
+            assert!(h.buckets.iter().all(|b| b.sums.is_empty()));
+        } else {
+            let sum = &h.sums[0];
+            assert_eq!(
+                (&sum.totals, sum.other, sum.unset, sum.total),
+                (&vec![50], 1_200 * 50, 0, 1_201 * 50)
+            );
+            let other: i64 = h.buckets.iter().map(|b| b.sums[0].other).sum();
+            assert_eq!(other, 1_200 * 50);
+        }
+    }
 }
 
 /// A file where the stack key is high-cardinality but the filter selects
@@ -749,6 +767,34 @@ fn bad_requests_are_refused() {
         matches!(e, ExploreRequestError::EmptyGrid)
     });
     check(query(), |e| matches!(e, ExploreRequestError::NoSection));
+    check(
+        query()
+            .histogram("status.code")
+            .sums(vec!["duration".to_string(); SUMS_MAX + 1]),
+        |e| matches!(e, ExploreRequestError::TooManySums { .. }),
+    );
+    check(
+        query()
+            .histogram("status.code")
+            .sums(vec!["trace_id".to_string()]),
+        |e| matches!(e, ExploreRequestError::NotSummable { .. }),
+    );
+    check(
+        query()
+            .histogram("status.code")
+            .sums(vec!["status".to_string()]),
+        |e| matches!(e, ExploreRequestError::UnknownKey { .. }),
+    );
+    check(
+        query()
+            .rows(RowsSpec {
+                limit: 10,
+                before: None,
+                columns: Vec::new(),
+            })
+            .sums(vec!["duration".to_string()]),
+        |e| matches!(e, ExploreRequestError::SumsWithoutHistogram),
+    );
 }
 
 fn tags(values: &[&str]) -> KeyValue {
@@ -1023,4 +1069,272 @@ fn a_cancelled_request_answers_nothing() {
             }
         );
     }
+}
+
+const SUMS_SPANS: u64 = 2_400;
+
+/// One span of the sums world, as the oracle sees it.
+struct SumsTruth {
+    bucket: usize,
+    tier: Option<String>,
+    /// `attributes.small`, low tier: `None` when absent or not an integer.
+    small: Option<i64>,
+    small_skipped: bool,
+    /// `attributes.mid`, mid tier.
+    mid: i64,
+    /// `attributes.big`, high tier (more than 1000 values in each half).
+    big: i64,
+    duration: i64,
+}
+
+/// 2400 spans over ten seconds: a stack key `tier` with 25 values (every
+/// 13th span lacks it) and integer attributes in every tier; `small` is
+/// `n/a` on every 11th span and absent on some others.
+fn sums_world() -> (Vec<SpanSpec>, Vec<SumsTruth>) {
+    let mut specs = Vec::new();
+    let mut truths = Vec::new();
+    for i in 0..SUMS_SPANS {
+        let start = BASE + i * 4_166_666;
+        let duration = 1_000 + (i % 50) as i64 * 37;
+        let tier = (i % 13 != 0).then(|| format!("t{:02}", i % 25));
+        let mut attrs = vec![
+            kv_int("mid", (i % 300) as i64 * 1_000),
+            kv_int("big", i as i64 * 7 + 1),
+        ];
+        let (small, small_skipped) = if i % 11 == 0 {
+            attrs.push(kv_str("small", "n/a"));
+            (None, true)
+        } else if i % 17 == 0 {
+            (None, false)
+        } else {
+            let v = (i % 7) as i64 - 3;
+            attrs.push(kv_int("small", v));
+            (Some(v), false)
+        };
+        if let Some(tier) = &tier {
+            attrs.push(kv_str("tier", tier));
+        }
+        specs.push(SpanSpec {
+            trace: trace_bytes((i / 250) as usize),
+            attrs,
+            end: start + duration as u64,
+            ..sp(((i % 250) + 1) as u8, 0, start, "op")
+        });
+        truths.push(SumsTruth {
+            bucket: ((start - BASE) / NS) as usize,
+            tier,
+            small,
+            small_skipped,
+            mid: (i % 300) as i64 * 1_000,
+            big: i as i64 * 7 + 1,
+            duration,
+        });
+    }
+    (specs, truths)
+}
+
+type SumsSelects = Box<dyn Fn(&SumsTruth) -> bool>;
+
+const SUM_KEYS: [&str; 4] = [
+    "attributes.small",
+    "attributes.mid",
+    "attributes.big",
+    "duration",
+];
+
+fn sum_value(t: &SumsTruth, key: usize) -> i64 {
+    match key {
+        0 => t.small.unwrap_or(0),
+        1 => t.mid,
+        2 => t.big,
+        _ => t.duration,
+    }
+}
+
+/// The sums world in a sealed file, or half sealed and half a WAL tail.
+fn sums_layout(dir: &Path, name: &str, specs: &[SpanSpec]) -> Vec<TraceSource> {
+    let request = |of: &[SpanSpec]| vec![req_with(vec![kv_str("service.name", "svc")], None, of)];
+    match name {
+        "single-sealed" => vec![sealed_source(
+            dir,
+            &write_wal(dir, request(specs), "sums-all"),
+            "sums-all",
+        )],
+        "sealed-plus-tail" => {
+            let (early, late) = specs.split_at(specs.len() / 2);
+            vec![
+                sealed_source(
+                    dir,
+                    &write_wal(dir, request(early), "sums-early"),
+                    "sums-early",
+                ),
+                tail_source(&write_wal(dir, request(late), "sums-late"), "sums-late"),
+            ]
+        }
+        other => panic!("unknown layout {other}"),
+    }
+}
+
+/// The sums per named dimension, `other` and `unset`, per bucket and in
+/// total, equal the oracle's for a measure in every tier and the
+/// duration, in a sealed file and across a tail; values past the named
+/// dimensions land in `other` and a non-integer value is skipped.
+#[test]
+fn sums_match_the_oracle() {
+    let (specs, truths) = sums_world();
+    let dir = tempfile::tempdir().unwrap();
+    let keys: Vec<String> = SUM_KEYS.map(String::from).to_vec();
+    let scopes: [(&str, TokenQuery, SumsSelects); 2] = [
+        ("all", TokenQuery::default(), Box::new(|_| true)),
+        (
+            "duration",
+            TokenQuery {
+                tokens: vec![positive(vec![cond(
+                    PredicateTarget::Builtin(BuiltinField::Duration),
+                    CompareOp::Gte,
+                    vec![PredicateValue::Integer(1_900)],
+                )])],
+            },
+            Box::new(|t| t.duration >= 1_900),
+        ),
+    ];
+    for layout_name in ["single-sealed", "sealed-plus-tail"] {
+        let sources = sums_layout(dir.path(), layout_name, &specs);
+        for (scope_name, tokens, selects) in &scopes {
+            let at = format!("{layout_name}/{scope_name}");
+            let data = run(
+                sources.clone(),
+                ExploreQuery::new(grid())
+                    .tokens(tokens.clone())
+                    .histogram("attributes.tier")
+                    .sums(keys.clone()),
+            );
+            assert_eq!(data.status, QueryStatus::Complete, "{at}");
+            let h = data.histogram.unwrap();
+            let selected: Vec<&SumsTruth> = truths.iter().filter(|t| selects(t)).collect();
+            assert_eq!(h.total, selected.len() as u64, "{at}");
+            assert_eq!(h.dimensions.len(), STACK_DIMENSIONS_MAX, "{at}");
+            let named = |t: &SumsTruth| {
+                t.tier
+                    .as_ref()
+                    .and_then(|v| h.dimensions.iter().position(|d| d == v))
+            };
+            assert_eq!(h.sums.len(), keys.len(), "{at}");
+            for (k, key) in keys.iter().enumerate() {
+                let sum = &h.sums[k];
+                assert_eq!(&sum.key, key, "{at}");
+                let mut totals = vec![0i64; h.dimensions.len()];
+                let (mut other, mut unset) = (0i64, 0i64);
+                for b in 0..10 {
+                    let mut values = vec![0i64; h.dimensions.len()];
+                    let (mut b_other, mut b_unset) = (0i64, 0i64);
+                    for t in selected.iter().filter(|t| t.bucket == b) {
+                        let v = sum_value(t, k);
+                        match (named(t), &t.tier) {
+                            (Some(d), _) => values[d] += v,
+                            (None, Some(_)) => b_other += v,
+                            (None, None) => b_unset += v,
+                        }
+                    }
+                    let bucket = &h.buckets[b].sums[k];
+                    assert_eq!(
+                        (&bucket.values, bucket.other, bucket.unset),
+                        (&values, b_other, b_unset),
+                        "{at} {key} bucket {b}"
+                    );
+                    for (sum, v) in totals.iter_mut().zip(&values) {
+                        *sum += v;
+                    }
+                    other += b_other;
+                    unset += b_unset;
+                }
+                assert!(
+                    other != 0,
+                    "{at} {key}: some values are past the named ones"
+                );
+                assert_eq!(
+                    (&sum.totals, sum.other, sum.unset),
+                    (&totals, other, unset),
+                    "{at} {key}"
+                );
+                let total: i64 = selected.iter().map(|t| sum_value(t, k)).sum();
+                assert_eq!(sum.total, total, "{at} {key}");
+                let skipped = if k == 0 {
+                    selected.iter().filter(|t| t.small_skipped).count() as u64
+                } else {
+                    0
+                };
+                assert_eq!(sum.skipped, skipped, "{at} {key}");
+            }
+        }
+    }
+}
+
+/// A sum over a high-cardinality attribute decodes stream batches, and
+/// those rows count into the budget: under a ceiling the counts alone fit
+/// in, the sum leaves the source out and says so.
+#[test]
+fn a_high_cardinality_sum_counts_into_the_budget() {
+    let (specs, _) = sums_world();
+    let dir = tempfile::tempdir().unwrap();
+    let sources = sums_layout(dir.path(), "single-sealed", &specs);
+    let ceiling = SUMS_SPANS + 100;
+    for (key, status, total) in [
+        ("attributes.mid", QueryStatus::Complete, SUMS_SPANS),
+        (
+            "attributes.big",
+            QueryStatus::Complete.with(PartialReason::WorkCeiling),
+            0,
+        ),
+    ] {
+        let data = run(
+            sources.clone(),
+            ExploreQuery::new(grid())
+                .histogram("attributes.tier")
+                .sums(vec![key.to_string()])
+                .rows_ceiling_for_tests(ceiling),
+        );
+        assert_eq!(data.status, status, "{key}");
+        assert_eq!(data.histogram.unwrap().total, total, "{key}");
+    }
+}
+
+/// A span with several values of the stack key adds its sum under each,
+/// and once to the total.
+#[test]
+fn a_span_with_several_stack_values_sums_under_each() {
+    let dir = tempfile::tempdir().unwrap();
+    let spans = vec![
+        SpanSpec {
+            attrs: vec![tags(&["a", "b"]), kv_int("n", 5)],
+            ..sp(1, 0, BASE, "op")
+        },
+        SpanSpec {
+            attrs: vec![tags(&["a"]), kv_int("n", 7)],
+            ..sp(2, 0, BASE + 1000, "op")
+        },
+        SpanSpec {
+            attrs: vec![kv_int("n", 11)],
+            ..sp(3, 0, BASE + 2000, "op")
+        },
+    ];
+    let wal = write_wal(
+        dir.path(),
+        vec![req_with(vec![kv_str("service.name", "svc")], None, &spans)],
+        "tags-sums",
+    );
+    let data = run(
+        vec![sealed_source(dir.path(), &wal, "tags-sums")],
+        ExploreQuery::new(grid())
+            .histogram("attributes.tags[]")
+            .sums(vec!["attributes.n".to_string()]),
+    );
+    let h = data.histogram.unwrap();
+    assert_eq!(h.dimensions, ["a", "b"]);
+    let sum = &h.sums[0];
+    assert_eq!(
+        (&sum.totals, sum.other, sum.unset, sum.total, sum.skipped),
+        (&vec![12, 5], 0, 11, 23, 0)
+    );
+    assert_eq!(h.buckets[0].sums[0].values, [12, 5]);
 }

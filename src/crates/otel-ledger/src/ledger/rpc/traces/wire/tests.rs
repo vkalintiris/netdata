@@ -269,6 +269,10 @@ fn explore_params_are_strict_and_parse_through() {
             "unknown field",
         ),
         (
+            json!({"explore": {"histogram": {"sums": "duration"}}}),
+            "invalid type",
+        ),
+        (
             json!({"explore": {}, "suggest": {}}),
             "conflicting mode selectors: suggest, explore",
         ),
@@ -294,10 +298,27 @@ fn explore_params_are_strict_and_parse_through() {
     assert_eq!((p.after, p.before), (-900, 0));
     assert_eq!(p.conditions.len(), 1);
     assert_eq!(p.text, ["boom"]);
-    assert_eq!(p.histogram.unwrap().stack, None);
+    let histogram = p.histogram.unwrap();
+    assert_eq!(histogram.stack, None);
+    assert!(histogram.sums.is_empty());
     let rows = p.rows.unwrap();
     assert_eq!(rows.limit, Some(5));
     assert_eq!(rows.columns, Some(vec!["name".to_string()]));
+}
+
+/// The histogram's optional sums parse through in order.
+#[test]
+fn explore_histogram_sums_parse_through() {
+    let TracesMode::Explore(p) = req(json!({"explore": {
+        "histogram": {"stack": "kind", "sums": ["attributes.size", "duration"]}
+    }}))
+    .mode
+    else {
+        panic!("explore mode expected");
+    };
+    let histogram = p.histogram.unwrap();
+    assert_eq!(histogram.stack.as_deref(), Some("kind"));
+    assert_eq!(histogram.sums, ["attributes.size", "duration"]);
 }
 
 #[test]

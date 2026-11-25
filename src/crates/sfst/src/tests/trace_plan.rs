@@ -1505,6 +1505,195 @@ fn a_plan_filters_the_per_bucket_statistics() {
     }
 }
 
+/// One row of the sums fixture: the stack value and each measure's text.
+struct SumsRow {
+    st: Option<&'static str>,
+    lo: i64,
+    mid: i64,
+    hi: i64,
+    bad: Option<i64>,
+    dur: i64,
+}
+
+/// 256 rows (threshold 10): a sparse low stack `st`, integer measures in
+/// every tier (`lo` low, `mid` mid, `hi` high), `bad` with a non-integer
+/// value on every seventh row, and a DURN column.
+fn sums_fixture() -> (Vec<u8>, Vec<SumsRow>) {
+    let arena = Bump::new();
+    let mut ri = RowIndex::new(&arena, 10);
+    let mut rows = Vec::with_capacity(N);
+    for i in 0..N {
+        let row = SumsRow {
+            st: (i % 5 != 0).then_some(["a", "b", "c"][i % 3]),
+            lo: (i % 4) as i64 - 1,
+            mid: (i % 20) as i64,
+            hi: (i * 3) as i64,
+            bad: (i % 7 != 0).then_some((i % 2) as i64),
+            dur: (i as i64) * 10,
+        };
+        let mut tokens = vec![
+            format!("lo={}", row.lo),
+            format!("mid={}", row.mid),
+            format!("hi={}", row.hi),
+            format!(
+                "bad={}",
+                row.bad.map_or("n/a".to_string(), |v| v.to_string())
+            ),
+        ];
+        if let Some(st) = row.st {
+            tokens.push(format!("st={st}"));
+        }
+        let slots: Vec<_> = tokens.iter().map(|kv| ri.intern(None, kv)).collect();
+        ri.row(1_000 + i as i64, &slots);
+        rows.push(row);
+    }
+    ri.durations = Some(Durations(rows.iter().map(|r| r.dur).collect()));
+    let (buf, _s, _m) = IndexWriter::write_into(&ri, Cursor::new(Vec::new()), Vec::new()).unwrap();
+    (buf.into_inner(), rows)
+}
+
+/// The sums per stack value and bucket equal a per-row oracle for a
+/// measure in every tier and the duration; a missing measure adds 0, a
+/// non-integer value is skipped and counted, positions without the stack
+/// add to `unset`, and a high-cardinality stack puts everything in
+/// `other`.
+#[test]
+fn timeline_sums_match_the_rows() {
+    let (buf, rows) = sums_fixture();
+    let idx = IndexReader::open(&buf).unwrap();
+    let grid = crate::Grid::new(1_000, 64, 4);
+    let measures = [
+        crate::SumMeasure::Field("lo".into()),
+        crate::SumMeasure::Field("mid".into()),
+        crate::SumMeasure::Field("hi".into()),
+        crate::SumMeasure::Field("bad".into()),
+        crate::SumMeasure::Duration,
+        crate::SumMeasure::Field("missing".into()),
+    ];
+    let measure = |r: &SumsRow, m: usize| -> i128 {
+        i128::from(match m {
+            0 => r.lo,
+            1 => r.mid,
+            2 => r.hi,
+            3 => r.bad.unwrap_or(0),
+            4 => r.dur,
+            _ => 0,
+        })
+    };
+    let range = (37, 201);
+    let filter = matched(&idx, &plan(Vec::new()), range).to_filter();
+    let in_scope = |i: usize| (range.0 as usize..range.1 as usize).contains(&i);
+    let rows_of = |b: usize| (b * 64..(b + 1) * 64).filter(|&i| in_scope(i));
+
+    let mut work = ScanWork::default();
+    let sums = idx
+        .timeline_sums("st", &filter, grid, &measures, u64::MAX, &mut work)
+        .unwrap()
+        .unwrap();
+    // Only the high-tier measure decodes rows: the file's one batch.
+    assert_eq!(work.rows_visited, N as u64);
+    assert_eq!(sums.dimensions, ["a", "b", "c"]);
+    for (b, bucket) in sums.buckets.iter().enumerate() {
+        for m in 0..measures.len() {
+            for (d, dim) in sums.dimensions.iter().enumerate() {
+                let want: i128 = rows_of(b)
+                    .filter(|&i| rows[i].st == Some(dim.as_str()))
+                    .map(|i| measure(&rows[i], m))
+                    .sum();
+                assert_eq!(bucket.values[m][d], want, "bucket {b}, measure {m}, {dim}");
+            }
+            let unset: i128 = rows_of(b)
+                .filter(|&i| rows[i].st.is_none())
+                .map(|i| measure(&rows[i], m))
+                .sum();
+            assert_eq!(bucket.unset[m], unset, "bucket {b}, measure {m}");
+            assert_eq!(bucket.other[m], 0);
+        }
+    }
+    let totals: Vec<i128> = (0..measures.len())
+        .map(|m| {
+            (0..N)
+                .filter(|&i| in_scope(i))
+                .map(|i| measure(&rows[i], m))
+                .sum()
+        })
+        .collect();
+    assert_eq!(sums.totals, totals);
+    let bad = (0..N)
+        .filter(|&i| in_scope(i) && rows[i].bad.is_none())
+        .count() as u64;
+    assert_eq!(sums.skipped, [0, 0, 0, bad, 0, 0]);
+
+    // A mid-tier stack splits the same way.
+    let by_mid = idx
+        .timeline_sums(
+            "mid",
+            &filter,
+            grid,
+            &measures[4..5],
+            u64::MAX,
+            &mut ScanWork::default(),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(by_mid.dimensions.len(), 20);
+    for (b, bucket) in by_mid.buckets.iter().enumerate() {
+        for (d, dim) in by_mid.dimensions.iter().enumerate() {
+            let want: i128 = rows_of(b)
+                .filter(|&i| rows[i].mid.to_string() == *dim)
+                .map(|i| i128::from(rows[i].dur))
+                .sum();
+            assert_eq!(bucket.values[0][d], want, "bucket {b}, mid={dim}");
+        }
+        assert_eq!(bucket.unset, [0]);
+    }
+
+    let by_high = idx
+        .timeline_sums(
+            "hi",
+            &filter,
+            grid,
+            &measures,
+            u64::MAX,
+            &mut ScanWork::default(),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(by_high.dimensions.is_empty());
+    for (b, bucket) in by_high.buckets.iter().enumerate() {
+        let other: Vec<i128> = (0..measures.len())
+            .map(|m| rows_of(b).map(|i| measure(&rows[i], m)).sum())
+            .collect();
+        assert_eq!(bucket.other, other, "bucket {b}");
+        assert_eq!(bucket.unset, [0; 6]);
+    }
+}
+
+/// A high-tier measure's batch decode counts into the work budget and
+/// stops the sums once the count passes the ceiling.
+#[test]
+fn timeline_sums_stop_at_the_rows_ceiling() {
+    let (buf, _) = sums_fixture();
+    let idx = IndexReader::open(&buf).unwrap();
+    let grid = crate::Grid::new(1_000, 64, 4);
+    let filter = matched(&idx, &plan(Vec::new()), (0, N as u32)).to_filter();
+    let high = [crate::SumMeasure::Field("hi".into())];
+    let low = [crate::SumMeasure::Field("lo".into())];
+    let mut work = ScanWork::default();
+    assert!(
+        idx.timeline_sums("st", &filter, grid, &high, 100, &mut work)
+            .unwrap()
+            .is_none()
+    );
+    let mut work = ScanWork::default();
+    assert!(
+        idx.timeline_sums("st", &filter, grid, &low, 100, &mut work)
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(work.rows_visited, 0);
+}
+
 /// The span-level trace-id filter: rows of the given traces inside the
 /// range; an unset id never matches; a file without TRCE errors.
 #[test]

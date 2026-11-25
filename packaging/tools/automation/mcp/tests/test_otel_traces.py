@@ -38,6 +38,10 @@ def test_build_payload():
                 "histogram": {"stack": "kind"}, "rows": {"limit": 10, "columns": ["name"]},
             }},
         ),
+        "explore sums imply the histogram": (
+            "explore", None, dict(histogram_sums=["attributes.size", "duration"]),
+            {"explore": {"histogram": {"sums": ["attributes.size", "duration"]}}},
+        ),
         "explore false flags ask nothing": (
             "explore", None, dict(histogram=False, rows=False), {"explore": {}},
         ),
@@ -53,6 +57,7 @@ def test_build_payload_refuses_params_of_other_modes():
         "info tenant": ("info", dict(), "mode 'info' does not take: tenant"),
         "suggest": ("suggest", dict(conditions=[_CHIP]), "mode 'suggest' does not take: conditions"),
         "trace": ("trace", dict(last=5), "mode 'trace' does not take: last"),
+        "list sums": ("list", dict(histogram_sums=["duration"]), "mode 'list' does not take: histogram_sums"),
     }
     for name, (mode, params, msg) in cases.items():
         with pytest.raises(ValueError) as exc:

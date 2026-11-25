@@ -25,12 +25,12 @@ use sfsq::traces::{
 
 use super::wire::{
     AnchorWire, CONDITION_VALUES_MAX, ConditionParams, ConditionValue, CoverageWire, EventWire,
-    ExploreBucketWire, ExploreHistogramWire, ExploreParams, ExplorePercentilesWire, ExploreResult,
-    ExploreRowsWire, ExploreSpanWire, ExploreWindowWire, FieldKindsWire, LinkWire,
-    OverviewGridWire, OverviewPercentilesWire, OverviewSection, OverviewTotals,
-    REQUEST_TEXT_MAX_BYTES, ResourceWire, SearchItems, SearchResult, ServiceBreakdownWire,
-    ServiceSpansWire, SpanWire, StatusWire, SuggestResult, SuggestionWire, TraceItems, TraceResult,
-    TraceSummaryWire,
+    ExploreBucketSumWire, ExploreBucketWire, ExploreHistogramWire, ExploreParams,
+    ExplorePercentilesWire, ExploreResult, ExploreRowsWire, ExploreSpanWire, ExploreSumWire,
+    ExploreWindowWire, FieldKindsWire, LinkWire, OverviewGridWire, OverviewPercentilesWire,
+    OverviewSection, OverviewTotals, REQUEST_TEXT_MAX_BYTES, ResourceWire, SearchItems,
+    SearchResult, ServiceBreakdownWire, ServiceSpansWire, SpanWire, StatusWire, SuggestResult,
+    SuggestionWire, TraceItems, TraceResult, TraceSummaryWire,
 };
 
 /// Parse a W3C text-form trace id: exactly 32 hex chars (16 bytes),
@@ -1168,6 +1168,9 @@ pub(crate) fn explore_request(
     if let Some(stack) = &stack {
         query = query.histogram(stack.clone());
     }
+    if let Some(histogram) = &params.histogram {
+        query = query.sums(histogram.sums.clone());
+    }
     let mut columns = Vec::new();
     if let Some(rows) = &params.rows {
         columns = rows
@@ -1289,11 +1292,24 @@ pub(crate) fn to_explore_result(
                             other += count;
                         }
                     }
+                    let sums = b
+                        .sums
+                        .into_iter()
+                        .map(|sum| {
+                            let (values, other) = fold_unnamed(sum.values, sum.other, &named);
+                            ExploreBucketSumWire {
+                                values,
+                                other,
+                                unset: sum.unset,
+                            }
+                        })
+                        .collect();
                     ExploreBucketWire {
                         counts,
                         other,
                         unset: b.unset,
                         durations: b.durations.to_vec(),
+                        sums,
                     }
                 })
                 .collect(),
@@ -1305,6 +1321,21 @@ pub(crate) fn to_explore_result(
                 p99_ns: p.p99,
             }),
             duration_rows: heatmap_row_bounds().to_vec(),
+            sums: h
+                .sums
+                .into_iter()
+                .map(|sum| {
+                    let (totals, other) = fold_unnamed(sum.totals, sum.other, &named);
+                    ExploreSumWire {
+                        key: sum.key,
+                        totals,
+                        other,
+                        unset: sum.unset,
+                        total: sum.total,
+                        skipped: sum.skipped,
+                    }
+                })
+                .collect(),
         }
     });
     let rows = data.rows.map(|rows| {
@@ -1360,6 +1391,20 @@ pub(crate) fn to_explore_result(
         histogram,
         rows,
     }
+}
+
+/// Keep the sums of the dimensions `named` keeps; the rest add to
+/// `other`, as their spans count there.
+fn fold_unnamed(values: Vec<i64>, mut other: i64, named: &[bool]) -> (Vec<i64>, i64) {
+    let mut kept = Vec::with_capacity(values.len());
+    for (value, &named) in values.into_iter().zip(named) {
+        if named {
+            kept.push(value);
+        } else {
+            other = other.saturating_add(value);
+        }
+    }
+    (kept, other)
 }
 
 // ── Search: window canonicalization ─────────────────────────────────

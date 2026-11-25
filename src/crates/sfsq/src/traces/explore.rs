@@ -27,6 +27,15 @@
 //!   where the key is high-cardinality cannot be stacked: its spans count
 //!   in `other` and the answer is partial
 //!   [`StackFieldHighCard`](PartialReason::StackFieldHighCard).
+//! - **Sums**: optionally, per requested key (at most [`SUMS_MAX`]), the
+//!   sum of that integer attribute, or of the span duration, per stack
+//!   value, per bucket and in total. The dimensions stay ranked by span
+//!   count; the sums of unnamed values, of a high-cardinality file and of
+//!   spans without the stack key go where those spans count. A span
+//!   without the attribute adds 0, a span with several values of it adds
+//!   each, and a value that is not an `i64` adds nothing and counts in
+//!   `skipped`. Sums are accumulated in `i128` and reported saturated to
+//!   `i64`; durations are nanoseconds.
 //! - **Rows**: newest first by [`RowKey`] (start, trace id, span id), a
 //!   strict total order over distinct spans, so pages never repeat a span;
 //!   a walk continues strictly below the last key it was given. An exact
@@ -34,7 +43,8 @@
 //!   copies past a page boundary are not listed (the rows' matched count
 //!   still counts them).
 //! - **One budget**: sources are visited newest first; plan compiles,
-//!   duration reads and row candidates count into one rows budget, and
+//!   duration reads, the stream-batch rows a sum over a high-cardinality
+//!   attribute decodes and row candidates count into one rows budget, and
 //!   once it runs out the older sources are left out
 //!   ([`WorkCeiling`](PartialReason::WorkCeiling)).
 //!
@@ -54,7 +64,7 @@ use super::overview::top_k;
 use super::predicate::{PredicateError, TokenKind, TokenQuery};
 use super::sources::{SourceSetError, TraceSource, validate_sources};
 use super::status::{PartialReason, QueryStatus, StatusBuilder};
-use super::vocab::{AttributeKey, KeyError, parse_key};
+use super::vocab::{AttributeKey, BuiltinField, KeyError, parse_key};
 use super::window::{TimeWindow, WindowError};
 use crate::logs::merge::merge_timelines;
 use crate::source::{Mapped, map_source};
@@ -67,6 +77,8 @@ pub const DEFAULT_ROWS_LIMIT: usize = 100;
 pub const ROW_COLUMNS_MAX: usize = 32;
 /// The most stack values the histogram names; the rest are `other`.
 pub const STACK_DIMENSIONS_MAX: usize = 20;
+/// The most sums the histogram answers.
+pub const SUMS_MAX: usize = 4;
 /// The rows budget of one request (stream-batch rows scanned, positions
 /// emitted, row candidates): the overview's fold budget, since the
 /// explorer is polled like the list.
@@ -103,6 +115,7 @@ pub struct ExploreQuery {
     grid: sfst::Grid,
     tokens: TokenQuery,
     stack: Option<String>,
+    sums: Vec<String>,
     rows: Option<RowsSpec>,
     rows_ceiling: u64,
 }
@@ -115,6 +128,7 @@ impl ExploreQuery {
             grid,
             tokens: TokenQuery::default(),
             stack: None,
+            sums: Vec::new(),
             rows: None,
             rows_ceiling: ROWS_CEILING,
         }
@@ -129,6 +143,13 @@ impl ExploreQuery {
     /// Answer the histogram, stacked by `stack`, a key with stored values.
     pub fn histogram(mut self, stack: impl Into<String>) -> Self {
         self.stack = Some(stack.into());
+        self
+    }
+
+    /// Add up, per stack value, each of `keys`: an attribute with stored
+    /// integer values or `duration` (module docs). Needs the histogram.
+    pub fn sums(mut self, keys: Vec<String>) -> Self {
+        self.sums = keys;
         self
     }
 
@@ -153,6 +174,17 @@ impl ExploreQuery {
         Scope::new(&self.tokens)?;
         if let Some(stack) = &self.stack {
             stored_key(stack)?;
+        }
+        if !self.sums.is_empty() && self.stack.is_none() {
+            return Err(ExploreRequestError::SumsWithoutHistogram);
+        }
+        if self.sums.len() > SUMS_MAX {
+            return Err(ExploreRequestError::TooManySums {
+                got: self.sums.len(),
+            });
+        }
+        for key in &self.sums {
+            sum_measure(key)?;
         }
         if let Some(rows) = &self.rows {
             if rows.limit == 0 || rows.limit > ROWS_LIMIT_MAX {
@@ -214,6 +246,14 @@ pub enum ExploreRequestError {
     RowsLimit { got: usize },
     #[error("{got} row columns exceed the limit of {max}", max = ROW_COLUMNS_MAX)]
     TooManyColumns { got: usize },
+    #[error("{got} sums exceed the limit of {max}", max = SUMS_MAX)]
+    TooManySums { got: usize },
+    /// A sum key that is neither `duration` nor a key with stored values.
+    #[error("{key} has no stored values to sum")]
+    NotSummable { key: String },
+    /// Sums are asked for without the histogram they split by.
+    #[error("sums need the histogram")]
+    SumsWithoutHistogram,
     /// Neither the histogram nor the rows are asked for.
     #[error("the request asks for nothing: ask for the histogram, the rows or both")]
     NoSection,
@@ -241,6 +281,35 @@ pub struct HistogramData {
     pub errors: u64,
     /// The window's duration percentiles; `None` when no span counted.
     pub percentiles: Option<DurationPercentiles>,
+    /// One per requested sum, in request order.
+    pub sums: Vec<HistogramSum>,
+}
+
+/// One requested sum over the whole window (module docs).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistogramSum {
+    /// The key, as requested.
+    pub key: String,
+    /// Per named dimension, parallel to [`HistogramData::dimensions`].
+    pub totals: Vec<i64>,
+    /// Of the spans counted in the buckets' `other`.
+    pub other: i64,
+    /// Of the spans without the stack key.
+    pub unset: i64,
+    /// Of every counted span, each once (a span with several stack values
+    /// adds under each above, so the parts can exceed this).
+    pub total: i64,
+    /// Values of the key that are not `i64`, left out of the sums.
+    pub skipped: u64,
+}
+
+/// One requested sum in one grid bucket.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistogramBucketSum {
+    /// Per named dimension, parallel to [`HistogramData::dimensions`].
+    pub values: Vec<i64>,
+    pub other: i64,
+    pub unset: i64,
 }
 
 /// One grid bucket of the histogram.
@@ -256,6 +325,8 @@ pub struct HistogramBucket {
     pub unset: u64,
     /// Spans per duration heatmap row (`heatmap_row_bounds`).
     pub durations: [u64; HEATMAP_ROWS],
+    /// One per requested sum, in request order.
+    pub sums: Vec<HistogramBucketSum>,
 }
 
 /// One rows page.
@@ -296,6 +367,10 @@ pub fn explore(
     validate_sources(&sources)?;
     let scope = Scope::new(&query.tokens)?;
     let stack = query.stack.as_deref().map(stored_key).transpose()?;
+    let mut sums = Vec::with_capacity(query.sums.len());
+    for key in &query.sums {
+        sums.push(sum_measure(key)?);
+    }
     // The up-front poll exists for the empty-source-list case: the
     // per-source polls never run, so without it a cancelled call with no
     // sources would report Complete.
@@ -309,6 +384,7 @@ pub fn explore(
         range: grid.bucket_start_ns..grid_end,
         grid,
         stack: stack.as_deref(),
+        sums: &sums,
         rows: query.rows.as_ref(),
         limits: sfst::ScanLimits {
             rows: query.rows_ceiling,
@@ -360,7 +436,7 @@ pub fn explore(
         status.add(PartialReason::StackFieldHighCard);
     }
 
-    let histogram = stack.as_ref().map(|_| fold.histogram());
+    let histogram = stack.as_ref().map(|_| fold.histogram(&query.sums));
     let rows = query.rows.as_ref().map(|spec| {
         let (rows, failed) = fold.page(spec);
         if failed {
@@ -402,6 +478,20 @@ fn stored_key(key: &str) -> Result<String, ExploreRequestError> {
         Err(KeyError::EmptyAttribute | KeyError::Unknown) => Err(ExploreRequestError::UnknownKey {
             key: key.to_string(),
         }),
+    }
+}
+
+/// What a sum key adds up: the span duration, or a key with stored values.
+fn sum_measure(key: &str) -> Result<sfst::SumMeasure, ExploreRequestError> {
+    if let Ok((_, AttributeKey::Builtin(BuiltinField::Duration))) = parse_key(key) {
+        return Ok(sfst::SumMeasure::Duration);
+    }
+    match stored_key(key) {
+        Ok(field) => Ok(sfst::SumMeasure::Field(field)),
+        Err(ExploreRequestError::NoStoredValues { key }) => {
+            Err(ExploreRequestError::NotSummable { key })
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -524,6 +614,8 @@ struct Shard {
     timeline: Option<sfst::Timeline>,
     /// Per bucket, the spans of a source that cannot stack.
     high: Option<Vec<u64>>,
+    /// The requested sums; `None` when none were asked for.
+    sums: Option<sfst::TimelineSums>,
     /// Per bucket, the span durations.
     durations: Vec<DurationHistogram>,
     rows: Option<SourceRows>,
@@ -552,6 +644,7 @@ struct Request<'a> {
     grid: sfst::Grid,
     /// The stack's storage field, when the histogram is asked for.
     stack: Option<&'a str>,
+    sums: &'a [sfst::SumMeasure],
     rows: Option<&'a RowsSpec>,
     limits: sfst::ScanLimits,
 }
@@ -574,6 +667,7 @@ fn evaluate(
         errors: 0,
         timeline: None,
         high: None,
+        sums: None,
         durations: Vec::new(),
         rows: None,
     };
@@ -637,6 +731,12 @@ fn evaluate(
             while next < positions.len() && positions[next] < bucket_hi {
                 shard.durations[bucket].record(durations.0[positions[next] as usize]);
                 next += 1;
+            }
+        }
+        if !request.sums.is_empty() {
+            match reader.timeline_sums(field, &filter, grid, request.sums, limits.rows, work)? {
+                Some(sums) => shard.sums = Some(sums),
+                None => return Ok(None),
             }
         }
     }
@@ -720,6 +820,7 @@ struct Fold {
     matched: u64,
     errors: u64,
     timelines: Vec<sfst::Timeline>,
+    sums: Vec<sfst::TimelineSums>,
     /// Per bucket, the spans of the sources that cannot stack.
     high: Vec<u64>,
     stack_high: bool,
@@ -743,6 +844,7 @@ impl Fold {
             matched: 0,
             errors: 0,
             timelines: Vec::new(),
+            sums: Vec::new(),
             high: vec![0; grid.num_buckets],
             stack_high: false,
             durations: (0..grid.num_buckets)
@@ -759,6 +861,9 @@ impl Fold {
         self.errors += shard.errors;
         if let Some(timeline) = shard.timeline {
             self.timelines.push(timeline);
+        }
+        if let Some(sums) = shard.sums {
+            self.sums.push(sums);
         }
         if let Some(high) = shard.high {
             self.stack_high = true;
@@ -780,7 +885,8 @@ impl Fold {
         }
     }
 
-    fn histogram(&mut self) -> HistogramData {
+    /// `keys`: the requested sums, in request order.
+    fn histogram(&mut self, keys: &[String]) -> HistogramData {
         let merged = merge_timelines(std::mem::take(&mut self.timelines));
         let num_buckets = self.grid.num_buckets;
         let (dimensions, stacked): (Vec<String>, Vec<sfst::Bucket>) = match merged {
@@ -803,6 +909,8 @@ impl Fold {
             .map(|(i, d)| (d.as_str(), i))
             .collect();
         let named_index: Vec<usize> = named.iter().map(|(d, _)| index[d.as_str()]).collect();
+        let dimensions: Vec<String> = named.into_iter().map(|(d, _)| d).collect();
+        let (sums, mut bucket_sums) = self.sums(keys, &dimensions);
         let mut window = DurationHistogram::new();
         let buckets = (0..num_buckets)
             .map(|b| {
@@ -814,23 +922,114 @@ impl Fold {
                         let other = bucket.counts.iter().sum::<u64>() - counts.iter().sum::<u64>();
                         (counts, other, bucket.unset)
                     }
-                    None => (vec![0; named.len()], 0, 0),
+                    None => (vec![0; dimensions.len()], 0, 0),
                 };
                 HistogramBucket {
                     counts,
                     other: other + self.high[b],
                     unset,
                     durations: self.durations[b].heatmap_rows(),
+                    sums: std::mem::take(&mut bucket_sums[b]),
                 }
             })
             .collect();
         HistogramData {
-            dimensions: named.into_iter().map(|(d, _)| d).collect(),
+            dimensions,
             buckets,
             total: self.matched,
             errors: self.errors,
             percentiles: window.percentiles(),
+            sums,
         }
+    }
+
+    /// The sums of `keys` split by the `named` dimensions, in total and per
+    /// bucket (one list per bucket, empty when no sum was asked for). A
+    /// value outside `named` adds to `other`, where its spans count.
+    fn sums(
+        &mut self,
+        keys: &[String],
+        named: &[String],
+    ) -> (Vec<HistogramSum>, Vec<Vec<HistogramBucketSum>>) {
+        let num_buckets = self.grid.num_buckets;
+        if keys.is_empty() {
+            return (Vec::new(), vec![Vec::new(); num_buckets]);
+        }
+        let index: std::collections::HashMap<&str, usize> = named
+            .iter()
+            .enumerate()
+            .map(|(i, d)| (d.as_str(), i))
+            .collect();
+        let zero = Parts {
+            values: vec![0; named.len()],
+            other: 0,
+            unset: 0,
+        };
+        // Per bucket, per key.
+        let mut buckets = vec![vec![zero; keys.len()]; num_buckets];
+        let mut totals = vec![0i128; keys.len()];
+        let mut skipped = vec![0u64; keys.len()];
+        for file in std::mem::take(&mut self.sums) {
+            let slots: Vec<Option<usize>> = file
+                .dimensions
+                .iter()
+                .map(|d| index.get(d.as_str()).copied())
+                .collect();
+            for m in 0..keys.len() {
+                totals[m] += file.totals[m];
+                skipped[m] += file.skipped[m];
+            }
+            for (parts, bucket) in buckets.iter_mut().zip(&file.buckets) {
+                for (m, part) in parts.iter_mut().enumerate() {
+                    part.other += bucket.other[m];
+                    part.unset += bucket.unset[m];
+                    for (slot, value) in slots.iter().zip(&bucket.values[m]) {
+                        match slot {
+                            Some(d) => part.values[*d] += value,
+                            None => part.other += value,
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut sums = Vec::with_capacity(keys.len());
+        for (m, key) in keys.iter().enumerate() {
+            let mut whole = Parts {
+                values: vec![0; named.len()],
+                other: 0,
+                unset: 0,
+            };
+            for parts in &buckets {
+                let part = &parts[m];
+                for (sum, value) in whole.values.iter_mut().zip(&part.values) {
+                    *sum += value;
+                }
+                whole.other += part.other;
+                whole.unset += part.unset;
+            }
+            sums.push(HistogramSum {
+                key: key.clone(),
+                totals: whole.values.iter().map(|&v| saturate(v)).collect(),
+                other: saturate(whole.other),
+                unset: saturate(whole.unset),
+                total: saturate(totals[m]),
+                skipped: skipped[m],
+            });
+        }
+        let mut bucket_sums = Vec::with_capacity(num_buckets);
+        for parts in buckets {
+            let mut sums = Vec::with_capacity(keys.len());
+            for part in parts {
+                sums.push(HistogramBucketSum {
+                    values: part.values.iter().map(|&v| saturate(v)).collect(),
+                    other: saturate(part.other),
+                    unset: saturate(part.unset),
+                });
+            }
+            bucket_sums.push(sums);
+        }
+        (sums, bucket_sums)
     }
 
     /// The page: the newest candidates over every source, with their
@@ -904,6 +1103,20 @@ impl Fold {
         };
         (rows, failed.contains(&true))
     }
+}
+
+/// One sum's parts before saturation: per named dimension, `other` and
+/// `unset`.
+#[derive(Clone)]
+struct Parts {
+    values: Vec<i128>,
+    other: i128,
+    unset: i128,
+}
+
+/// A sum as reported: `i128` saturated to `i64`.
+fn saturate(value: i128) -> i64 {
+    i64::try_from(value).unwrap_or(if value < 0 { i64::MIN } else { i64::MAX })
 }
 
 /// Read the given columns at `positions` from a source's bytes.

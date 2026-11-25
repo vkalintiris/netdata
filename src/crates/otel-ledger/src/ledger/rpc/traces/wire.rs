@@ -539,6 +539,13 @@ pub struct ExploreHistogramParams {
     /// (`status.code` when absent).
     #[serde(default)]
     pub stack: Option<String>,
+    /// Keys to add up per stack value (at most `sfsq::traces::SUMS_MAX`):
+    /// each a key with stored integer values, or `duration` (nanoseconds).
+    /// A span without the key adds 0, a span with several values of it
+    /// adds each, and a value that is not an integer is left out and
+    /// counted in `skipped`. Absent or empty: no sums.
+    #[serde(default)]
+    pub sums: Vec<String>,
 }
 
 /// The rows section's parameters.
@@ -731,6 +738,30 @@ pub struct ExploreHistogramWire {
     /// `null` for the last, unbounded row. Index-parallel to every
     /// bucket's `durations`.
     pub duration_rows: Vec<Option<i64>>,
+    /// The requested sums over the window, in request order; left out when
+    /// none were asked for.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sums: Vec<ExploreSumWire>,
+}
+
+/// One requested sum over the window. Each part adds the key's values of
+/// the spans the same part of the counts counts, so a span with several
+/// stack values adds under each. Sums past the `i64` range are clamped to
+/// it.
+#[derive(Debug, Serialize)]
+pub struct ExploreSumWire {
+    /// The key, echoed.
+    pub key: String,
+    /// Per dimension, index-parallel to `dimensions`.
+    pub totals: Vec<i64>,
+    /// Of the spans in the buckets' `other`.
+    pub other: i64,
+    /// Of the spans without the stack key.
+    pub unset: i64,
+    /// Of every counted span, each once.
+    pub total: i64,
+    /// Values of the key that are not integers, left out.
+    pub skipped: u64,
 }
 
 /// One bucket of the histogram.
@@ -747,6 +778,19 @@ pub struct ExploreBucketWire {
     pub unset: u64,
     /// Spans per heatmap row (`duration_rows`).
     pub durations: Vec<u64>,
+    /// The requested sums in this bucket, in request order; left out when
+    /// none were asked for.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sums: Vec<ExploreBucketSumWire>,
+}
+
+/// One requested sum in one bucket, split as the bucket's counts are.
+#[derive(Debug, Serialize)]
+pub struct ExploreBucketSumWire {
+    /// Per dimension, index-parallel to `dimensions`.
+    pub values: Vec<i64>,
+    pub other: i64,
+    pub unset: i64,
 }
 
 #[derive(Debug, Serialize)]

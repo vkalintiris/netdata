@@ -92,8 +92,8 @@ pub use by_id::{
 pub use duration_hist::{DurationPercentiles, HEATMAP_ROWS, heatmap_row_bounds};
 pub use explore::{
     DEFAULT_ROWS_LIMIT, ExploreData, ExploreQuery, ExploreRequestError, HistogramBucket,
-    HistogramData, ROW_COLUMNS_MAX, ROWS_LIMIT_MAX, RowKey, RowsData, RowsSpec,
-    STACK_DIMENSIONS_MAX, SpanRow, explore,
+    HistogramBucketSum, HistogramData, HistogramSum, ROW_COLUMNS_MAX, ROWS_LIMIT_MAX, RowKey,
+    RowsData, RowsSpec, STACK_DIMENSIONS_MAX, SUMS_MAX, SpanRow, explore,
 };
 pub use overview::{
     DURATION_BIN_COUNT, DURATION_BIN_LABELS, OverviewData, OverviewQuery, OverviewRequestError,

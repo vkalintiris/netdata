@@ -49,7 +49,7 @@ _MODE_PARAMS: dict[str, frozenset[str]] = {
     "suggest": frozenset({"after", "before", "key", "term", "max_items", "tier"}),
     "explore": frozenset({
         "after", "before", "conditions", "text", "anchor",
-        "histogram", "histogram_stack", "rows", "rows_limit", "rows_columns",
+        "histogram", "histogram_stack", "histogram_sums", "rows", "rows_limit", "rows_columns",
     }),
 }
 
@@ -88,10 +88,13 @@ _Tier = Annotated[Literal["low", "mid", "high"] | None, Field(description=(
     "suggest: every key of this tier (keys only, not with key/max_items)."
 ))]
 _Histogram = Annotated[bool | None, Field(description=(
-    "explore: ask for the histogram section (implied by histogram_stack)."
+    "explore: ask for the histogram section (implied by histogram_stack/histogram_sums)."
 ))]
 _HistogramStack = Annotated[str | None, Field(description=(
     "explore: key whose values stack the histogram (default status.code)."
+))]
+_HistogramSums = Annotated[list[str] | None, Field(description=(
+    "explore: keys to add up per stack value and bucket (at most 4): integer attribute keys or 'duration' (ns)."
 ))]
 _Rows = Annotated[bool | None, Field(description=(
     "explore: ask for a page of spans, newest first (implied by rows_limit/rows_columns)."
@@ -128,10 +131,12 @@ def build_payload(mode: str, tenant: str | None, params: dict[str, Any]) -> dict
         body = {"suggest": set_params}
     else:
         sel = {k: set_params[k] for k in ("after", "before", "conditions", "text", "anchor") if k in set_params}
-        if set_params.get("histogram") or "histogram_stack" in set_params:
+        if set_params.get("histogram") or "histogram_stack" in set_params or "histogram_sums" in set_params:
             hist: dict[str, Any] = {}
             if "histogram_stack" in set_params:
                 hist["stack"] = set_params["histogram_stack"]
+            if "histogram_sums" in set_params:
+                hist["sums"] = set_params["histogram_sums"]
             sel["histogram"] = hist
         if set_params.get("rows") or "rows_limit" in set_params or "rows_columns" in set_params:
             rows: dict[str, Any] = {}
@@ -178,6 +183,7 @@ def register(mcp: FastMCP) -> None:
         tier: _Tier = None,
         histogram: _Histogram = None,
         histogram_stack: _HistogramStack = None,
+        histogram_sums: _HistogramSums = None,
         rows: _Rows = None,
         rows_limit: _RowsLimit = None,
         rows_columns: _RowsColumns = None,
@@ -187,7 +193,7 @@ def register(mcp: FastMCP) -> None:
             after=after, before=before, conditions=conditions, text=text, anchor=anchor,
             last=last, skip_overview=skip_overview, trace_id=trace_id, key=key, term=term,
             max_items=max_items, tier=tier, histogram=histogram, histogram_stack=histogram_stack,
-            rows=rows, rows_limit=rows_limit, rows_columns=rows_columns,
+            histogram_sums=histogram_sums, rows=rows, rows_limit=rows_limit, rows_columns=rows_columns,
         )
         try:
             payload = build_payload(mode, tenant, params)

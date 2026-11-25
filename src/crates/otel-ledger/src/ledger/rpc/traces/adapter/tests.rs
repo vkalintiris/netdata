@@ -1755,13 +1755,14 @@ fn an_explore_walk_continues_only_from_complete_rows() {
     }
 }
 
-#[test]
-fn an_explore_stack_value_too_long_to_send_back_counts_as_other() {
-    let params: ExploreParams =
-        serde_json::from_value(json!({"histogram": {"stack": "attributes.q"}})).unwrap();
+/// A histogram answer with a dimension too long to send back, with or
+/// without sums.
+fn explore_histogram_page(histogram: serde_json::Value) -> serde_json::Value {
+    let params: ExploreParams = serde_json::from_value(json!({ "histogram": histogram })).unwrap();
     let grid = sfst::Grid::new(0, 1_000_000_000, 1);
     let request = explore_request(&params, grid, None).unwrap();
     let long = "q".repeat(REQUEST_TEXT_MAX_BYTES + 1);
+    let sums: Vec<String> = params.histogram.unwrap().sums;
     let data = ExploreData {
         status: QueryStatus::Complete,
         histogram: Some(sfsq::traces::HistogramData {
@@ -1771,21 +1772,91 @@ fn an_explore_stack_value_too_long_to_send_back_counts_as_other() {
                 other: 1,
                 unset: 4,
                 durations: [0; sfsq::traces::HEATMAP_ROWS],
+                sums: sums
+                    .iter()
+                    .map(|_| sfsq::traces::HistogramBucketSum {
+                        values: vec![50, 30, 20],
+                        other: 10,
+                        unset: 40,
+                    })
+                    .collect(),
             }],
             total: 15,
             errors: 0,
             percentiles: None,
+            sums: sums
+                .iter()
+                .map(|key| sfsq::traces::HistogramSum {
+                    key: key.clone(),
+                    totals: vec![50, 30, 20],
+                    other: 10,
+                    unset: 40,
+                    total: 150,
+                    skipped: 2,
+                })
+                .collect(),
         }),
         rows: None,
     };
-    let page =
-        serde_json::to_value(to_explore_result(data, &request, grid, (0, 1), (0, 1))).unwrap();
+    serde_json::to_value(to_explore_result(data, &request, grid, (0, 1), (0, 1))).unwrap()
+}
+
+#[test]
+fn an_explore_stack_value_too_long_to_send_back_counts_as_other() {
+    let page = explore_histogram_page(json!({"stack": "attributes.q"}));
     assert_eq!(page["histogram"]["dimensions"], json!(["short"]));
     let bucket = &page["histogram"]["buckets"][0];
     assert_eq!(
         (&bucket["counts"], &bucket["other"], &bucket["unset"]),
         (&json!([3]), &json!(8), &json!(4))
     );
+}
+
+/// The sums of a value too long to send back go to `other` with its
+/// spans, in each bucket and in total.
+#[test]
+fn an_explore_sum_of_a_value_too_long_to_send_back_adds_to_other() {
+    let page = explore_histogram_page(json!({"stack": "attributes.q", "sums": ["duration"]}));
+    assert_eq!(
+        page["histogram"]["sums"],
+        json!([{"key": "duration", "totals": [30], "other": 80, "unset": 40, "total": 150, "skipped": 2}])
+    );
+    assert_eq!(
+        page["histogram"]["buckets"][0]["sums"],
+        json!([{"values": [30], "other": 80, "unset": 40}])
+    );
+}
+
+/// A request without sums answers without any `sums` key, as before sums
+/// existed.
+#[test]
+fn an_explore_answer_without_sums_has_no_sums_key() {
+    let page = explore_histogram_page(json!({"stack": "attributes.q"}));
+    assert_eq!(
+        page["histogram"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<Vec<_>>(),
+        [
+            "stack",
+            "dimensions",
+            "buckets",
+            "total",
+            "errors",
+            "percentiles",
+            "duration_rows"
+        ]
+    );
+    assert_eq!(
+        page["histogram"]["buckets"][0]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<Vec<_>>(),
+        ["counts", "other", "unset", "durations"]
+    );
+    assert!(!page.to_string().contains("sums"));
 }
 
 #[test]

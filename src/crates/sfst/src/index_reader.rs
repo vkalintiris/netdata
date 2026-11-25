@@ -42,7 +42,8 @@ pub use trace_plan::{
 
 use crate::{
     BitmapValue, Bucket, FacetResult, FieldEntry, FieldTier, Filter, Grid, Histogram, IdRanges,
-    KvId, Matcher, Metadata, SpanId, Summary, Timeline, Timestamps, TraceId,
+    KvId, Matcher, Metadata, SpanId, SumMeasure, Summary, SumsBucket, Timeline, TimelineSums,
+    Timestamps, TraceId,
 };
 
 /// The metadata view of an `.sfst` file: `SUMR` on open, `META` and the
@@ -1281,6 +1282,198 @@ impl<'a> IndexReader<'a> {
             .collect())
     }
 
+    /// Per grid bucket and value of the stack `field`, the sums of
+    /// `measures` over the positions `filter` matches: the summing
+    /// counterpart of [`timeline`](Self::timeline), with its dimensions and
+    /// rules (the full filter applies, a position with several values of
+    /// `field` adds under each, one without it adds to `unset`). A
+    /// high-cardinality `field` cannot be split by value, so every
+    /// position adds to `other`.
+    ///
+    /// A low- or mid-tier measure field parses each distinct value once and
+    /// reads its position bitmap. A high-tier one reads the matched rows
+    /// from the stream batches: every row of a batch it decodes counts into
+    /// `work.rows_visited`, and `Ok(None)` means the count passed `ceiling`
+    /// (the sums would be incomplete, so none are returned).
+    ///
+    /// Errors: [`crate::Error::InvalidBucketWidth`] if
+    /// `grid.bucket_width_ns <= 0`.
+    pub fn timeline_sums(
+        &self,
+        field: &str,
+        filter: &BitmapFilter,
+        grid: Grid,
+        measures: &[SumMeasure],
+        ceiling: u64,
+        work: &mut ScanWork,
+    ) -> Result<Option<TimelineSums>, crate::Error> {
+        if grid.bucket_width_ns <= 0 {
+            return Err(crate::Error::InvalidBucketWidth(grid.bucket_width_ns));
+        }
+        let matched_set = filter.full();
+        let matched: Vec<u32> = matched_set.iter().collect();
+        let bucket_ranges = self.load_timestamps()?.bucket_ranges(grid);
+
+        let prefix = format!("{field}=");
+        let mut dimensions: Vec<String> = Vec::new();
+        let mut dim_sets: Vec<PosSet> = Vec::new();
+        let mut high = false;
+        match self.locate_field(field) {
+            None => {}
+            Some(FieldLocation::Low) => {
+                for (kv_bytes, bv) in self.primary.prefix_pairs(prefix.as_bytes()) {
+                    dimensions
+                        .push(String::from_utf8_lossy(&kv_bytes[prefix.len()..]).into_owned());
+                    dim_sets.push(matched_within(bv, matched_set));
+                }
+            }
+            Some(FieldLocation::Mid(idx)) => {
+                self.sfst.mid_field(idx)?.for_each(|kv_bytes, bv| {
+                    dimensions
+                        .push(String::from_utf8_lossy(&kv_bytes[prefix.len()..]).into_owned());
+                    dim_sets.push(matched_within(bv, matched_set));
+                });
+            }
+            Some(FieldLocation::High(_)) => high = true,
+        }
+        let mut unset = matched_set.clone();
+        for set in &dim_sets {
+            unset.and_not_assign(set);
+        }
+
+        let mut buckets: Vec<SumsBucket> = (0..grid.num_buckets)
+            .map(|_| SumsBucket {
+                values: vec![vec![0; dimensions.len()]; measures.len()],
+                unset: vec![0; measures.len()],
+                other: vec![0; measures.len()],
+            })
+            .collect();
+        let mut totals = Vec::with_capacity(measures.len());
+        let mut skipped = Vec::with_capacity(measures.len());
+        // One measure at a time keeps a single per-position array alive.
+        for (m, measure) in measures.iter().enumerate() {
+            let Some((values, skips)) =
+                self.measure_values(measure, &matched, matched_set, ceiling, work)?
+            else {
+                return Ok(None);
+            };
+            totals.push(values.iter().sum::<i128>());
+            skipped.push(skips);
+            if high {
+                add_by_bucket(matched_set, &matched, &values, &bucket_ranges, |b, v| {
+                    buckets[b].other[m] += v;
+                });
+                continue;
+            }
+            for (d, set) in dim_sets.iter().enumerate() {
+                add_by_bucket(set, &matched, &values, &bucket_ranges, |b, v| {
+                    buckets[b].values[m][d] += v;
+                });
+            }
+            add_by_bucket(&unset, &matched, &values, &bucket_ranges, |b, v| {
+                buckets[b].unset[m] += v;
+            });
+        }
+
+        Ok(Some(TimelineSums {
+            grid,
+            dimensions,
+            buckets,
+            totals,
+            skipped,
+        }))
+    }
+
+    /// Per matched position (parallel to `matched`, the positions of
+    /// `matched_set` ascending), the sum of `measure`'s values there, and
+    /// the values that did not parse as `i64`. `Ok(None)`: decoding stream
+    /// batches passed `ceiling` (see [`timeline_sums`](Self::timeline_sums)).
+    fn measure_values(
+        &self,
+        measure: &SumMeasure,
+        matched: &[u32],
+        matched_set: &PosSet,
+        ceiling: u64,
+        work: &mut ScanWork,
+    ) -> Result<Option<(Vec<i128>, u64)>, crate::Error> {
+        let mut values = vec![0i128; matched.len()];
+        let mut skipped = 0u64;
+        let field = match measure {
+            SumMeasure::Duration => {
+                let durations = self.durations()?;
+                for (value, &position) in values.iter_mut().zip(matched) {
+                    *value = i128::from(durations.0[position as usize]);
+                }
+                return Ok(Some((values, 0)));
+            }
+            SumMeasure::Field(field) => field,
+        };
+        let prefix_len = field.len() + 1;
+        let mut add_value = |kv_bytes: &[u8], bv: &BitmapValue| {
+            let set = matched_within(bv, matched_set);
+            match parse_i64(&kv_bytes[prefix_len..]) {
+                Some(value) => {
+                    let mut rank = 0;
+                    for position in set.iter() {
+                        rank += matched[rank..].partition_point(|&p| p < position);
+                        values[rank] += i128::from(value);
+                    }
+                }
+                None => skipped += set.len(),
+            }
+        };
+        match self.locate_field(field) {
+            None => {}
+            Some(FieldLocation::Low) => {
+                let prefix = format!("{field}=");
+                for (kv_bytes, bv) in self.primary.prefix_pairs(prefix.as_bytes()) {
+                    add_value(&kv_bytes, bv);
+                }
+            }
+            Some(FieldLocation::Mid(idx)) => {
+                self.sfst
+                    .mid_field(idx)?
+                    .for_each(|kv_bytes, bv| add_value(kv_bytes, bv));
+            }
+            Some(FieldLocation::High(idx)) => {
+                let hf = self.sfst.high_field(idx)?;
+                let base = self.high_kv_id(idx, 0).0;
+                let parsed: Vec<Option<i64>> =
+                    hf.keys().map(|key| parse_i64(&key[prefix_len..])).collect();
+                // Batches that hold none of the field's values are never decoded.
+                let field_mask = hf.masks.iter().fold(0u32, |mask, &m| mask | u32::from(m));
+                let batch_size = crate::stream_batch_size(self.summary.record_count);
+                let mut loaded: Option<(u32, crate::StreamBatch)> = None;
+                for (rank, &position) in matched.iter().enumerate() {
+                    let b = position / batch_size;
+                    if (field_mask >> b) & 1 == 0 {
+                        continue;
+                    }
+                    if loaded.as_ref().is_none_or(|(at, _)| *at != b) {
+                        let batch = self.sfst.stream_batch(b as u8)?;
+                        work.rows_visited += batch.num_rows() as u64;
+                        if work.rows_visited > ceiling {
+                            return Ok(None);
+                        }
+                        loaded = Some((b, batch));
+                    }
+                    let (_, batch) = loaded.as_ref().expect("loaded above");
+                    for id in batch.row((position % batch_size) as usize) {
+                        let Some(local) = id.0.checked_sub(base) else {
+                            continue;
+                        };
+                        match parsed.get(local as usize) {
+                            Some(Some(value)) => values[rank] += i128::from(*value),
+                            Some(None) => skipped += 1,
+                            None => {}
+                        }
+                    }
+                }
+            }
+        }
+        Ok(Some((values, skipped)))
+    }
+
     // ── Query helpers (private) ──────────────────────────────────────
 
     /// Locate a field by name and return its tier + tier-relative chunk
@@ -1698,6 +1891,41 @@ fn bucket_counts(
             .iter()
             .map(|&(lo, hi)| set.range_cardinality(lo, hi))
             .collect()
+    }
+}
+
+/// The positions of an on-disk value bitmap that `matched` holds too.
+fn matched_within(bv: &BitmapValue, matched: &PosSet) -> PosSet {
+    let mut set = PosSet::from_value(bv);
+    set.and_assign(matched);
+    set
+}
+
+/// A stored value as an `i64`, or `None` when it is not one.
+fn parse_i64(value: &[u8]) -> Option<i64> {
+    std::str::from_utf8(value).ok()?.parse().ok()
+}
+
+/// Call `add(bucket, values[rank])` for every position of `set`, where
+/// `rank` is the position's index in `matched` (ascending, a superset of
+/// `set`). Positions outside the grid add nothing.
+fn add_by_bucket(
+    set: &PosSet,
+    matched: &[u32],
+    values: &[i128],
+    bucket_ranges: &[(u32, u32)],
+    mut add: impl FnMut(usize, i128),
+) {
+    let (mut rank, mut bucket) = (0, 0);
+    for position in set.iter() {
+        rank += matched[rank..].partition_point(|&p| p < position);
+        bucket += bucket_ranges[bucket..].partition_point(|&(_, hi)| hi <= position);
+        let Some(&(lo, _)) = bucket_ranges.get(bucket) else {
+            break;
+        };
+        if position >= lo {
+            add(bucket, values[rank]);
+        }
     }
 }
 
