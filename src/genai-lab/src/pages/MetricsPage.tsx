@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react'
+import { useMemo } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
 import { Distribution } from '@/components/Distribution'
 import { Heatmap, type HeatCell, type HeatmapData } from '@/components/Heatmap'
@@ -11,7 +11,7 @@ import { TimeChart, type SeriesStyle } from '@/components/TimeChart'
 import { totals, type DataQuery, type Series } from '@/lib/agent'
 import { LATENCY_STYLES, latencyLines, OUTCOME_STYLES } from '@/lib/charts'
 import { formatCount, formatInterval, formatNumber, formatPercent, formatSeconds } from '@/lib/format'
-import { absolute, LABELS, POINTS, resetWindow, usePageState, type FilterName } from '@/lib/page-state'
+import { LABELS, POINTS, useChartNav, usePageState, type FilterName } from '@/lib/page-state'
 import { quantile } from '@/lib/quantile'
 import { useSeries } from '@/lib/queries'
 import { cellParam } from '@/lib/traces'
@@ -49,7 +49,7 @@ function rankRows(s: Series | undefined): RankRow[] {
 }
 
 export function MetricsPage() {
-  const { window, filters, setWindow, selected, toggleFilter } = usePageState()
+  const { window, filters, selected, toggleFilter } = usePageState()
   const navigate = useNavigate()
   const [params] = useSearchParams()
 
@@ -117,19 +117,7 @@ export function MetricsPage() {
   const successCount = callTotals?.success ?? 0
   const q = (b: Record<string, number> | undefined, p: number) => (b ? quantile(p, b) : null)
 
-  const onZoom = useCallback((after: number, before: number) => setWindow({ after, before }), [setWindow])
-  const onPan = useCallback(
-    (seconds: number) => {
-      const w = absolute(window)
-      const now = Math.floor(Date.now() / 1000)
-      const shift = Math.round(seconds)
-      if (w.before + shift >= now) setWindow({ after: -(w.before - w.after), before: 0 })
-      else setWindow({ after: w.after + shift, before: w.before + shift })
-    },
-    [window, setWindow],
-  )
-  const onReset = useCallback(() => setWindow(resetWindow()), [setWindow])
-  const nav = { onZoom, onPan, onReset }
+  const nav = useChartNav()
 
   const per = (s: Series | undefined) => (s?.pointSeconds ? `per ${formatInterval(s.pointSeconds)}` : undefined)
   // A model row is a model and its provider; its click filters by both, so the page shows exactly that row.

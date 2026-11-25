@@ -65,7 +65,17 @@ export type ExploreAnswer = {
   histogram?: {
     stack: string
     dimensions: string[]
-    buckets: { counts: number[]; other: number; unset: number; durations?: number[] }[]
+    buckets: {
+      counts: number[]
+      other: number
+      unset: number
+      durations?: number[]
+      // One entry per sum asked for; `values` follows `dimensions`.
+      sums?: { values: number[]; other: number; unset: number }[]
+    }[]
+    // One entry per sum asked for, in the order asked; `totals` follows `dimensions`. Absent when none was asked,
+    // or from an Agent that predates sums.
+    sums?: { key: string; totals: number[]; other: number; unset: number; total: number; skipped: number }[]
     // Upper bound of each duration row in ns; null for the open-ended last row.
     duration_rows?: (number | null)[]
   }
@@ -205,6 +215,37 @@ export async function fetchTrace(id: string, aroundNs: number, signal?: AbortSig
   // Spans whose parent is missing from the answer still show, at the top level.
   spans.forEach((_, i) => walk(i, 0))
   return { trace_id: raw.trace_id, spans: ordered }
+}
+
+// Spans per time bucket and per value of `key`, with `sums` of numeric fields per value when asked; no rows. The
+// window is the whole request: nothing is paged.
+export function exploreGroups(
+  w: TimeWindow,
+  query: SpanQuery,
+  key: string,
+  sums: readonly string[],
+  signal?: AbortSignal,
+): Promise<ExploreAnswer> {
+  const { after, before } = absolute(w)
+  const histogram = sums.length ? { stack: key, sums } : { stack: key }
+  return postTraces<ExploreAnswer>(
+    { explore: { after, before, conditions: conditions(query), histogram, rows: { limit: 1, columns: [key] } } },
+    signal,
+  )
+}
+
+export type KeyChoice = { text: string; tier: string; kinds: string[] }
+
+// Every attribute key the Function can group by in the window: the ones few enough in values to be indexed by
+// value. A key with more values than that is not offered; grouping by it would answer one `other`.
+export async function groupableKeys(w: TimeWindow, signal?: AbortSignal): Promise<KeyChoice[]> {
+  const { after, before } = absolute(w)
+  const out: KeyChoice[] = []
+  for (const tier of ['low', 'mid']) {
+    const a = await postTraces<{ items?: KeyChoice[] }>({ suggest: { after, before, tier } }, signal)
+    out.push(...(a.items ?? []))
+  }
+  return out
 }
 
 // Spans per value of one attribute in a histogram answer; `other` holds the values past the Function's

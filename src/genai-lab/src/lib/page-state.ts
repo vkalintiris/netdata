@@ -180,6 +180,25 @@ export function usePageState() {
   }
 }
 
+// What a time chart needs to move the page's window: a drag pans, a selection zooms, a double-click returns to the
+// last relative window. A pan that reaches now turns the window relative again.
+export function useChartNav() {
+  const { window, setWindow } = usePageState()
+  const onZoom = useCallback((after: number, before: number) => setWindow({ after, before }), [setWindow])
+  const onPan = useCallback(
+    (seconds: number) => {
+      const w = absolute(window)
+      const now = Math.floor(Date.now() / 1000)
+      const shift = Math.round(seconds)
+      if (w.before + shift >= now) setWindow({ after: -(w.before - w.after), before: 0 })
+      else setWindow({ after: w.after + shift, before: w.before + shift })
+    },
+    [window, setWindow],
+  )
+  const onReset = useCallback(() => setWindow(resetWindow()), [setWindow])
+  return useMemo(() => ({ onZoom, onPan, onReset }), [onZoom, onPan, onReset])
+}
+
 // Absolute bounds of a window, for panning and zooming relative presets.
 export function absolute(w: TimeWindow, now = Math.floor(Date.now() / 1000)): TimeWindow {
   if (w.after > 0) return w

@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils'
 
 const TABS = [
   { to: '/', label: 'Metrics' },
+  { to: '/breakdown', label: 'Breakdown' },
   { to: '/traces', label: 'Traces' },
 ]
 
@@ -20,6 +21,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   shared.delete('cell')
   shared.delete('at')
   shared.delete('rows')
+  shared.delete('by')
+  shared.delete('measure')
   const sharedSearch = shared.toString() ? `?${shared}` : ''
   return (
     <div className="min-h-screen">

@@ -24,6 +24,9 @@ pnpm dev            # http://127.0.0.1:8094/
 - Metrics (`/`): tiles, trends, latency and breakdowns from the `otel.derived_metrics.genai.*` charts; the panels count
   from the same charts. Drag a chart to pan, Shift + drag to zoom the whole page, double-click to return to the last
   relative window.
+- Breakdown (`/breakdown`): model calls added up per value of one attribute the user picks (any span or resource
+  attribute the Function indexes by value): calls, failed calls, tokens in and out, time in calls, as a stacked
+  trend and a table. From the `otel-traces` Function's histogram with `sums`. A row opens its calls on Traces.
 - Traces (`/traces`): the list to find one trace or one call, from the `otel-traces` Function. Rows are traces
   (the model calls and tool calls the plugin recognised, added up per trace in the browser from the spans loaded,
   200 per request, so the oldest traces listed can miss spans) or calls (one row per model call or tool call; a
