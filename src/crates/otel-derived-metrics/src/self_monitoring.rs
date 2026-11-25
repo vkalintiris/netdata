@@ -49,9 +49,10 @@ columns! {
 
 columns! {
     /// Why a record that looked like a GenAI model call or tool call was not counted. Only a model call can be a
-    /// duplicate.
+    /// duplicate or come from a gateway.
     enum GenAiUncounted {
         Duplicate = "duplicate",
+        Gateway = "gateway",
         FailedRule = "failed_rule",
     }
 }
@@ -351,6 +352,11 @@ impl DerivationHealth {
             )
             .set_total(
                 self.genai_uncounted,
+                GenAiUncounted::Gateway,
+                uncounted.gateway_calls as f64,
+            )
+            .set_total(
+                self.genai_uncounted,
                 GenAiUncounted::FailedRule,
                 uncounted.failed_rules as f64,
             );
@@ -459,6 +465,7 @@ mod tests {
             };
             let uncounted = Uncounted {
                 duplicates: 2 * now,
+                gateway_calls: 5 * now,
                 failed_rules: 3 * now,
             };
             let genai_tools = Stats {
@@ -513,7 +520,7 @@ mod tests {
             "BEGIN netdata.otel.derived_adjusted_genai_calls 1000000\nSET late = 1\nSET future = 0\nSET overflowed = 0\n"
         ));
         assert!(second.contains(
-            "BEGIN netdata.otel.derived_genai_uncounted 1000000\nSET duplicate = 2\nSET failed_rule = 3\n"
+            "BEGIN netdata.otel.derived_genai_uncounted 1000000\nSET duplicate = 2\nSET gateway = 5\nSET failed_rule = 3\n"
         ));
         assert!(second.contains(
             "BEGIN netdata.otel.derived_adjusted_genai_tool_calls 1000000\nSET late = 0\nSET future = 0\nSET overflowed = 4\n"

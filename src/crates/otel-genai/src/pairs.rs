@@ -432,6 +432,7 @@ mod tests {
                 duration_seconds: 0.0,
                 time_to_first_chunk_seconds: None,
                 response_id: response_id.map(str::to_string),
+                gateway: false,
             },
             trace_id: vec![trace; 16],
             span_id: vec![span; 8],

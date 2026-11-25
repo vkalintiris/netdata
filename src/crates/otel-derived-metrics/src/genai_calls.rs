@@ -11,6 +11,9 @@
 //!
 //! The pass also writes each call onto its span ([`otel_genai::annotation`]), with whether it counts, before the
 //! span is stored: the stored spans marked as counted are the calls of the charts.
+//!
+//! A call a gateway reported while forwarding it is marked but not counted: the charts count what applications
+//! report, and a traced application behind the gateway reports the same call again.
 
 use crate::genai_tools::{GenAiTools, PendingTool};
 use crate::service::{service_labels, service_settings};
@@ -68,6 +71,8 @@ pub(crate) struct Pending {
     calls: Vec<Candidate<Labels, f64>>,
     /// Call spans that are the second span of a call.
     duplicates: u64,
+    /// Call spans a gateway reported.
+    gateway_calls: u64,
     tools: Vec<PendingTool>,
     /// What pairing remembers of the request, to forget if the request is not stored.
     remembered: Vec<Remembered<Labels>>,
@@ -86,6 +91,7 @@ pub(crate) struct GenAiCalls {
     time_to_first_chunk: Histogram,
     rule_error_logged_at: AtomicU64,
     duplicates: AtomicU64,
+    gateway_calls: AtomicU64,
     failed_rules: AtomicU64,
 }
 
@@ -94,6 +100,8 @@ pub(crate) struct GenAiCalls {
 pub(crate) struct Uncounted {
     /// Call spans dropped as the second span of a call already counted.
     pub(crate) duplicates: u64,
+    /// Call spans a gateway reported.
+    pub(crate) gateway_calls: u64,
     /// Records a rule matched and then failed on.
     pub(crate) failed_rules: u64,
 }
@@ -171,6 +179,7 @@ impl GenAiCalls {
             time_to_first_chunk,
             rule_error_logged_at: AtomicU64::new(0),
             duplicates: AtomicU64::new(0),
+            gateway_calls: AtomicU64::new(0),
             failed_rules: AtomicU64::new(0),
         })
     }
@@ -201,6 +210,11 @@ impl GenAiCalls {
                             .clone()
                     };
                     match self.normalizer.span(scope, span) {
+                        Ok(Some(call)) if call.gateway => {
+                            annotation::annotate(span, &call, false);
+                            pending.gateway_calls += 1;
+                            continue;
+                        }
                         Ok(Some(call)) => {
                             candidates.push(Candidate {
                                 call,
@@ -259,6 +273,8 @@ impl GenAiCalls {
         self.tools.commit(pending.tools, now);
         self.duplicates
             .fetch_add(pending.duplicates, Ordering::Relaxed);
+        self.gateway_calls
+            .fetch_add(pending.gateway_calls, Ordering::Relaxed);
         if pending.calls.is_empty() {
             return;
         }
@@ -280,6 +296,7 @@ impl GenAiCalls {
     pub(crate) fn uncounted(&self) -> Uncounted {
         Uncounted {
             duplicates: self.duplicates.load(Ordering::Relaxed),
+            gateway_calls: self.gateway_calls.load(Ordering::Relaxed),
             failed_rules: self.failed_rules.load(Ordering::Relaxed),
         }
     }
@@ -348,7 +365,7 @@ impl GenAiCalls {
 mod tests {
     use super::*;
     use opentelemetry_proto::tonic::common::v1::any_value::Value;
-    use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue};
+    use opentelemetry_proto::tonic::common::v1::{AnyValue, InstrumentationScope, KeyValue};
     use opentelemetry_proto::tonic::resource::v1::Resource;
     use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans, Span};
 
@@ -540,7 +557,8 @@ mod tests {
             genai.uncounted(),
             Uncounted {
                 duplicates: 1,
-                failed_rules: 1
+                failed_rules: 1,
+                ..Uncounted::default()
             }
         );
     }
@@ -633,6 +651,51 @@ mod tests {
                 annotation::CACHE_READ_TOKENS,
                 annotation::CACHE_WRITE_TOKENS,
             ]
+        );
+    }
+
+    #[test]
+    fn a_call_a_gateway_reports_is_marked_and_not_counted() {
+        let genai = GenAiCalls::new(10, 10).unwrap();
+        // The application's call span, and below it, in the same trace, the LiteLLM proxy's span of the same call.
+        let mut export = export_of(vec![call(1, 0, chat_attributes())]);
+        let mut gateway_attributes = chat_attributes();
+        gateway_attributes[0] = text("gen_ai.operation.name", "acompletion");
+        export.resource_spans[0].scope_spans.push(ScopeSpans {
+            scope: Some(InstrumentationScope {
+                name: "litellm".into(),
+                ..Default::default()
+            }),
+            spans: vec![call(2, 1, gateway_attributes)],
+            ..Default::default()
+        });
+        let mut pending = Pending::default();
+        genai.record(&mut pending, "default", &mut export, 100);
+        let marker = |scope: usize| {
+            export.resource_spans[0].scope_spans[scope].spans[0]
+                .attributes
+                .iter()
+                .find(|attribute| attribute.key == annotation::CALL)
+                .and_then(|attribute| attribute.value.clone())
+        };
+        assert_eq!(
+            [marker(0), marker(1)],
+            [
+                Some(AnyValue {
+                    value: Some(Value::StringValue(annotation::COUNTED.into()))
+                }),
+                Some(AnyValue {
+                    value: Some(Value::StringValue(annotation::GATEWAY.into()))
+                }),
+            ]
+        );
+        genai.commit(pending, 100);
+        assert_eq!(
+            genai.uncounted(),
+            Uncounted {
+                gateway_calls: 1,
+                ..Uncounted::default()
+            }
         );
     }
 

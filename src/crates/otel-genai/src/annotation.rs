@@ -2,7 +2,7 @@
 //!
 //! A stored span that a rule recognised as a model call carries its [`Call`] under [`PREFIX`], in one vocabulary
 //! whatever dialect the producer speaks, and says whether the call counted. A query that lists the spans marked
-//! [`COUNTED`] lists the calls the charts count. A span recognised as one run of a tool carries its [`ToolCall`]
+//! [`COUNTED`] lists the calls the charts count; a call a gateway reported is marked [`GATEWAY`] instead. A span recognised as one run of a tool carries its [`ToolCall`]
 //! the same way; [`KIND`] tells the two apart.
 
 use crate::{Call, ToolCall};
@@ -19,12 +19,15 @@ pub const KIND: &str = "netdata.genai.kind";
 pub const KIND_CALL: &str = "call";
 pub const KIND_TOOL: &str = "tool";
 
-/// [`COUNTED`] or [`DUPLICATE`], on every span that is a model call.
+/// [`COUNTED`], [`DUPLICATE`] or [`GATEWAY`], on every span that is a model call.
 pub const CALL: &str = "netdata.genai.call";
 /// The span is the one its call counts by.
 pub const COUNTED: &str = "counted";
 /// The span is the second span of a call that another span counts.
 pub const DUPLICATE: &str = "duplicate";
+/// A gateway reported the call while forwarding it. The charts leave such calls out: the application behind the
+/// gateway may report the same call, and the gateway's own view shows what the gateway handled.
+pub const GATEWAY: &str = "gateway";
 
 /// The tool's name, on a tool span whose producer names the tool.
 pub const TOOL: &str = "netdata.genai.tool";
@@ -72,7 +75,8 @@ fn strip_under(attributes: &mut Vec<KeyValue>, prefix: &str) {
     });
 }
 
-/// Write `call` onto `span`, the span it was normalized from; `counted` is whether the call counts by this span.
+/// Write `call` onto `span`, the span it was normalized from; `counted` is whether the call counts by this span,
+/// and is ignored for a call a gateway reported.
 /// A count or time the call does not have is left out; a provider or model it does not have is named as the
 /// charts name it.
 pub fn annotate(span: &mut Span, call: &Call, counted: bool) {
@@ -86,7 +90,14 @@ pub fn annotate(span: &mut Span, call: &Call, counted: bool) {
     let text = |value: &str| Value::StringValue(value.to_string());
 
     add(KIND, text(KIND_CALL));
-    add(CALL, text(if counted { COUNTED } else { DUPLICATE }));
+    let status = if call.gateway {
+        GATEWAY
+    } else if counted {
+        COUNTED
+    } else {
+        DUPLICATE
+    };
+    add(CALL, text(status));
     add(OPERATION, text(&call.operation));
     add(PROVIDER, text(call.provider_label()));
     add(REQUEST_MODEL, text(call.request_model_label()));
@@ -210,6 +221,7 @@ mod tests {
             duration_seconds: 0.0,
             time_to_first_chunk_seconds: Some(0.25),
             response_id: None,
+            gateway: false,
         };
         strip(&mut span);
         annotate(&mut span, &call, false);

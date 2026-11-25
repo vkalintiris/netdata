@@ -20,7 +20,8 @@ if .scope.name == "litellm" && operation != null {
     "input_tokens": a."gen_ai.usage.input_tokens",
     "output_tokens": a."gen_ai.usage.output_tokens",
     "error": .status_code == 2 || exists(a."error.type"),
-    "response_id": a."gen_ai.response.id"
+    "response_id": a."gen_ai.response.id",
+    "gateway": true
   }
 } else {
   null

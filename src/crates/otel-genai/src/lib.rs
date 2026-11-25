@@ -9,6 +9,9 @@
 //! of a streamed answer, when the producer reports one: in seconds, or as the instant of the first chunk, which the
 //! host measures from the span's start.
 //!
+//! A gateway between applications and providers reports the calls it forwards: a rule for a gateway's spans marks
+//! its calls ([`Call::gateway`]), so the host can keep them apart from the calls applications report.
+//!
 //! Token counts follow the OpenTelemetry GenAI conventions: input includes cache reads and writes, output includes
 //! reasoning, and the cache and reasoning counts are parts of those totals, never additions to them.
 //!
@@ -159,6 +162,8 @@ pub struct Call {
     pub time_to_first_chunk_seconds: Option<f64>,
     /// The provider's id of the answer, which identifies one call across records.
     pub response_id: Option<String>,
+    /// Reported by a gateway that forwarded the call, not by the application that made it.
+    pub gateway: bool,
 }
 
 /// The label value of what the producer of a call did not report. A missing label cannot be filtered on; this
@@ -469,6 +474,7 @@ fn call(rule: &'static str, fields: &ObjectMap, times: Times) -> Result<Call, Ru
         duration_seconds,
         time_to_first_chunk_seconds,
         response_id: string(rule, fields, "response_id")?,
+        gateway: flag(rule, fields, "gateway")?,
     })
 }
 
@@ -647,6 +653,7 @@ mod tests {
             duration_seconds: 1.5,
             time_to_first_chunk_seconds: None,
             response_id: Some("msg_1".into()),
+            gateway: false,
         };
         assert_eq!(
             normalizer.span(None, &current).unwrap(),
