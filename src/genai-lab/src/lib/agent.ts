@@ -37,12 +37,29 @@ export function scopeLabels(filters: Filters | undefined): string | undefined {
   return parts.length ? parts.join('|') : undefined
 }
 
-export function dataUrl(q: DataQuery): string {
+// A trend over a window that follows "now", as whole steps that start on multiples of the step: a point covers the
+// same seconds in every request, so a refresh adds points at the end and leaves the earlier ones as they were.
+// Without this the Agent cuts the points back from the moment of each request, and the same data draws differently
+// every time. A one-point query (a total) and a fixed window are asked as they are.
+export function clockAligned(q: Pick<DataQuery, 'window' | 'points'>, now: number): { window: TimeWindow; points: number } {
+  const { window, points } = q
+  if (window.after >= 0 || points <= 1) return { window, points }
+  const end = window.before > 0 ? window.before : now + window.before
+  const step = Math.max(1, Math.ceil(-window.after / points))
+  // A window that reaches the current second is answered for the second before, which moves every point: end on
+  // the last step boundary that is at least two seconds old.
+  const before = Math.floor((end - 2) / step) * step
+  const whole = Math.max(1, Math.floor(-window.after / step))
+  return { window: { after: before - whole * step, before }, points: whole }
+}
+
+export function dataUrl(q: DataQuery, now = Math.floor(Date.now() / 1000)): string {
+  const { window, points } = clockAligned(q, now)
   const p = new URLSearchParams()
   p.set('scope_contexts', q.context)
-  p.set('after', String(q.window.after))
-  p.set('before', String(q.window.before))
-  p.set('points', String(q.points))
+  p.set('after', String(window.after))
+  p.set('before', String(window.before))
+  p.set('points', String(points))
   p.set('time_group', q.timeGroup)
   p.set('aggregation', q.aggregation)
   p.set('format', 'json2')

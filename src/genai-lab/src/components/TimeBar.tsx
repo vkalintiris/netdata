@@ -1,8 +1,8 @@
-import { ChevronLeft, ChevronRight, ZoomOut } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Pause, Play, ZoomOut } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { absolute, PRESETS, usePageState } from '@/lib/page-state'
+import { absolute, PRESETS, resetWindow, usePageState } from '@/lib/page-state'
 
 const timeFmt = new Intl.DateTimeFormat(undefined, {
   month: 'short',
@@ -35,6 +35,8 @@ export function TimeBar() {
   }
 
   const range = absolute(window)
+  // Following "now": the page refreshes and the window moves. Paused, the window is the fixed range it showed.
+  const live = isRelative && window.before === 0
 
   return (
     <div className="flex items-center gap-2">
@@ -43,6 +45,19 @@ export function TimeBar() {
           {timeFmt.format(range.after * 1000)} – {isRelative ? 'now' : timeFmt.format(range.before * 1000)}
         </span>
       )}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={() => setWindow(live ? range : resetWindow())}
+            aria-label={live ? 'Pause' : 'Play'}
+          >
+            {live ? <Pause /> : <Play />}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{live ? 'Pause: keep this time range' : 'Play: follow the latest data'}</TooltipContent>
+      </Tooltip>
       <Tooltip>
         <TooltipTrigger asChild>
           <Button variant="ghost" size="icon-sm" onClick={() => pan(-1)} aria-label="Earlier">
