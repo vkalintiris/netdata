@@ -5,9 +5,6 @@ config:
   adminAddr: 127.0.0.1:15100
   readinessAddr: 127.0.0.1:15121
   statsAddr: 127.0.0.1:15120
-  # Budgets keep their usage here (docker volume sjrg-agentgateway).
-  database:
-    url: /data/agentgateway.db
   # The team of the key a request came with, on every metric.
   metrics:
     fields:
@@ -41,19 +38,17 @@ frontendPolicies:
 llm:
   port: 3100
   policies:
-    # One key per team of the game, each with a monthly budget (budgets show at the admin API only).
+    # One key per team of the game; its team goes onto metrics, spans and access logs. (Budgets per key exist, but
+    # show only at agentgateway's admin API, which Netdata does not collect.)
     apiKey:
       mode: strict
       keys:
       - key: $AGW_KEY_SEARCH
-        metadata: {name: guess-search, team: search}
-        budgets: [{name: monthly, limit: {unit: USD, amount: 5}, window: {rolling: 30d}, onBudgetExceeded: Audit}]
+        metadata: {team: search}
       - key: $AGW_KEY_SUPPORT
-        metadata: {name: guess-support, team: support}
-        budgets: [{name: monthly, limit: {unit: USD, amount: 2}, window: {rolling: 30d}, onBudgetExceeded: Audit}]
+        metadata: {team: support}
       - key: $AGW_KEY_GROWTH
-        metadata: {name: guess-growth, team: growth}
-        budgets: [{name: monthly, limit: {unit: USD, amount: 0.5}, window: {rolling: 30d}, onBudgetExceeded: Audit}]
+        metadata: {team: growth}
   models:
   - name: deepseek-v4-flash
     provider: openAI

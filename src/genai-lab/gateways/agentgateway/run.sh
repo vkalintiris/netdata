@@ -24,10 +24,8 @@ set -a; source "$env_file"; set +a
    > "$local_dir/agentgateway-keys.json")
 
 docker rm -f sjrg-agentgateway >/dev/null 2>&1 || true
-# The image runs as uid 65532; a fresh named volume belongs to root.
-docker run --rm -v sjrg-agentgateway:/data alpine:3 chown 65532:65532 /data
 docker run -d --name sjrg-agentgateway --network host \
-  -v "$here/config.yaml:/config.yaml:ro" -v sjrg-agentgateway:/data \
+  -v "$here/config.yaml:/config.yaml:ro" \
   -e LITELLM_API_KEY -e AGW_KEY_SEARCH -e AGW_KEY_SUPPORT -e AGW_KEY_GROWTH \
   -e OTEL_SERVICE_NAME=agentgateway \
   "$image" -f /config.yaml >/dev/null
