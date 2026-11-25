@@ -18,7 +18,7 @@ pnpm dev            # http://127.0.0.1:8094/
 
 ## Pages
 
-- Both pages open with Service, Model and Provider panels: every value with its call count, scrollable, with a find
+- Every page opens with Service, Model and Provider panels: every value with its call count, scrollable, with a find
   box; clicking values selects several, and each panel ignores its own selection so it can be widened. The window
   and filters live in the URL.
 - Metrics (`/`): tiles, trends, latency and breakdowns from the `otel.derived_metrics.genai.*` charts; the panels count
@@ -27,3 +27,6 @@ pnpm dev            # http://127.0.0.1:8094/
 - Calls: model-call spans from the `otel-traces` Function; the panels count stored spans, plus an Outcome panel
   (this page only). A duration heatmap (a cell lists its calls) and a table; a row opens the call with its
   conversation, a summary and the trace.
+- Runs (`/runs`): the same model-call spans, one row per trace: calls and failures, models, providers, wall time
+  (first call's start to last call's end), time in calls, tokens summed. A row opens its calls; a call opens its
+  detail. Grouped in the browser from the calls loaded (200 per request), so the oldest runs listed can miss calls.

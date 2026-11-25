@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils'
 const TABS = [
   { to: '/', label: 'Metrics' },
   { to: '/calls', label: 'Calls' },
+  { to: '/runs', label: 'Runs' },
 ]
 
 export function AppShell({ children }: { children: ReactNode }) {
