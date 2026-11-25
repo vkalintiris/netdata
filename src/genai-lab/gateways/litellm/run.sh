@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Start (or restart) the lab's LiteLLM proxy and its database: proxy on 127.0.0.1:14000, Postgres on 127.0.0.1:15432.
-# Telemetry: Prometheus on the proxy's /metrics (scraped by go.d), OTLP traces and logs to the dev Agent.
+# Telemetry: Prometheus on the proxy's /metrics (scraped by go.d), OTLP traces to the dev Agent. LiteLLM's OTLP log
+# events stay off: they are one record per chat message, the content its spans already carry.
 # Secrets: LITELLM_API_KEY from the caller's environment (the upstream key), the rest from
 # <worktree>/.local/gateways/litellm.env (local throwaway values).
 set -euo pipefail
@@ -27,7 +28,6 @@ docker run -d --name sjrg-litellm --network host \
   -e DATABASE_URL="postgresql://litellm:$POSTGRES_PASSWORD@127.0.0.1:15432/litellm" \
   -e STORE_MODEL_IN_DB=False \
   -e OTEL_EXPORTER=otlp_grpc -e OTEL_ENDPOINT="$otlp" -e OTEL_SERVICE_NAME=litellm \
-  -e LITELLM_OTEL_INTEGRATION_ENABLE_EVENTS=true \
   "$image" --config /app/config.yaml --host 127.0.0.1 --port 14000 >/dev/null
 
 echo "waiting for the proxy"

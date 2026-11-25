@@ -159,10 +159,13 @@ export function TracePage() {
       { replace: true },
     )
 
-  // Back to the list with its window and filters; the open span and the trace's own time stay behind.
+  // Back to the list with its window and filters; the open span and the trace's own time stay behind. A trace opened
+  // from a gateway's page goes back there.
   const back = new URLSearchParams(params)
   back.delete('span')
   back.delete('at')
+  const gateway = back.get('from') === 'litellm'
+  back.delete('from')
 
   const start = spans?.length ? Math.min(...spans.map((s) => s.start_ns)) : null
   const end = spans?.length ? Math.max(...spans.map((s) => s.start_ns + s.duration_ns)) : null
@@ -180,11 +183,11 @@ export function TracePage() {
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <Link
-          to={{ pathname: '/traces', search: back.toString() ? `?${back}` : '' }}
+          to={{ pathname: gateway ? '/gateways/litellm' : '/traces', search: back.toString() ? `?${back}` : '' }}
           className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
         >
           <ArrowLeft className="size-4" />
-          Traces
+          {gateway ? 'LiteLLM' : 'Traces'}
         </Link>
         <h2 className="text-lg font-semibold">{first ? (field(first.fields, K.service) ?? 'Trace') : 'Trace'}</h2>
         {start != null && <span className="text-sm text-muted-foreground">{dateFmt.format(start / 1e6)}</span>}

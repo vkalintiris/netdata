@@ -31,3 +31,11 @@ export function formatInterval(seconds: number): string {
   if (seconds < 3600) return `${plain.format(seconds / 60)} min`
   return `${plain.format(seconds / 3600)} h`
 }
+
+// US dollars; small sums keep two significant digits, since one model call can cost a fraction of a cent.
+export function formatUsd(v: number | null | undefined): string {
+  if (v == null || Number.isNaN(v)) return '–'
+  if (v === 0) return '$0'
+  if (Math.abs(v) < 0.01) return `$${Number(v.toPrecision(2))}`
+  return `$${plain.format(v)}`
+}
