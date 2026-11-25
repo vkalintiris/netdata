@@ -16,12 +16,13 @@
 //! A tool rule maps the tool's name and whether the run failed; the host supplies the times. A span is a model call
 //! or a tool call, never both: the two lists read different markers.
 
+pub mod annotation;
 mod gate;
 mod pairs;
 mod value;
 
 use gate::Gate;
-pub use pairs::{Candidate, Pairs};
+pub use pairs::{Candidate, Pairs, Remembered};
 
 use opentelemetry_proto::tonic::common::v1::{InstrumentationScope, KeyValue};
 use opentelemetry_proto::tonic::trace::v1::Span;

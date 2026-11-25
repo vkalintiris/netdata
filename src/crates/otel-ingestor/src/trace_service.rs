@@ -94,13 +94,13 @@ struct StorableSpans {
 impl StorableSpans {
     /// Phase 1 for this group, lock-free: flatten its spans into one WAL
     /// frame, or leave it [`Payload::OutOfWindow`] when `bounds` rejects
-    /// every span. `visit` sees the kept spans after normalization (see
-    /// `ng_flatten::prepare_trace_frame_with`).
+    /// every span. `visit` sees the kept spans after normalization and may
+    /// add to them (see `ng_flatten::prepare_trace_frame_with`).
     fn flatten(
         &mut self,
         fallback_base_ns: u64,
         bounds: ng_flatten::TimeBounds,
-        visit: impl FnOnce(&ExportTraceServiceRequest),
+        visit: impl FnOnce(&mut ExportTraceServiceRequest),
     ) -> Result<Flattened, Status> {
         let Payload::Spans(request) = &mut self.payload else {
             tracing::error!("a span group was flattened twice");
@@ -380,7 +380,8 @@ impl NetdataTracesService {
         // Spans that passed the window check: the ones phase 2 writes.
         let mut kept: usize = 0;
         // Derived metrics see each group after normalization (kept spans,
-        // resolved times) and are counted only once the spans are durable.
+        // resolved times), mark the spans they recognise, and are counted
+        // only once the spans are durable.
         let mut derived_batch = self.derived_metrics.as_ref().and_then(|d| d.spans_batch());
 
         for s in &mut storable_spans {
@@ -748,6 +749,58 @@ mod tests {
         assert!(out.contains("CLABEL 'resource.attributes.service.name' 'unknown_service' 1"));
         assert_eq!(sum_of(&out, "accepted"), 3.0);
         assert_eq!(sum_of(&out, "rejected"), 2.0);
+    }
+
+    /// A model call that could not be stored is no duplicate of itself when
+    /// the sender sends it again.
+    #[tokio::test]
+    async fn a_model_call_refused_by_storage_counts_when_sent_again() {
+        use opentelemetry_proto::tonic::common::v1::any_value::Value;
+        use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue};
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        let tenant = TenantId::default_tenant();
+        let derived =
+            Arc::new(DerivedMetrics::new(otel_derived_metrics::Settings::default()).unwrap());
+        let tmp = tempfile::tempdir().unwrap();
+        let call = || {
+            let mut request = spans_req(1, now);
+            request.resource_spans[0].scope_spans[0].spans[0].attributes = [
+                ("gen_ai.operation.name", "chat"),
+                ("gen_ai.response.id", "msg_1"),
+            ]
+            .map(|(key, value)| KeyValue {
+                key: key.to_string(),
+                value: Some(AnyValue {
+                    value: Some(Value::StringValue(value.to_string())),
+                }),
+                ..Default::default()
+            })
+            .to_vec();
+            request
+        };
+
+        let blocked = tmp.path().join("not-a-dir");
+        std::fs::write(&blocked, b"").unwrap();
+        let mut service = test_service(blocked);
+        service.set_derived_metrics(Arc::clone(&derived));
+        assert!(service.export_traces(&tenant, call()).await.is_err());
+
+        let mut service = test_service(tmp.path().to_path_buf());
+        service.set_derived_metrics(Arc::clone(&derived));
+        service.export_traces(&tenant, call()).await.unwrap();
+        // Stored once, the answer is known: a third copy is a duplicate.
+        service.export_traces(&tenant, call()).await.unwrap();
+
+        let out = String::from_utf8(derived.emit(now / 1_000_000_000 + 13).concat()).unwrap();
+        let calls = out
+            .split("BEGIN ")
+            .find(|chart| chart.starts_with("otel.derived_metrics.genai.calls"))
+            .unwrap_or_else(|| panic!("no GenAI calls chart:\n{out}"));
+        assert_eq!(sum_of(calls, "success"), 1.0);
     }
 
     #[tokio::test]

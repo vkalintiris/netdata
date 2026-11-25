@@ -2,43 +2,44 @@
 import type { Filters, TimeWindow } from './agent'
 import { absolute, LABELS, OUTCOMES, type Outcome } from './page-state'
 
+// Span fields. The `netdata.genai.*` ones are what the plugin's GenAI rules made of the span when it arrived: the
+// same values the charts count, whatever conventions the producer speaks.
 export const K = {
   service: 'resource.attributes.service.name',
   name: 'name',
   status: 'status.code',
   statusMessage: 'status.message',
-  operation: 'attributes.gen_ai.operation.name',
-  requestModel: 'attributes.gen_ai.request.model',
-  responseModel: 'attributes.gen_ai.response.model',
-  provider: 'attributes.gen_ai.provider.name',
-  system: 'attributes.gen_ai.system',
-  inputTokens: 'attributes.gen_ai.usage.input_tokens',
-  outputTokens: 'attributes.gen_ai.usage.output_tokens',
-  cacheRead: 'attributes.gen_ai.usage.cache_read.input_tokens',
-  cacheWrite: 'attributes.gen_ai.usage.cache_creation.input_tokens',
-  reasoning: 'attributes.gen_ai.usage.reasoning.output_tokens',
+  call: 'attributes.netdata.genai.call',
+  operation: 'attributes.netdata.genai.operation',
+  requestModel: 'attributes.netdata.genai.request_model',
+  responseModel: 'attributes.netdata.genai.response_model',
+  provider: 'attributes.netdata.genai.provider',
+  outcome: 'attributes.netdata.genai.outcome',
+  inputTokens: 'attributes.netdata.genai.input_tokens',
+  outputTokens: 'attributes.netdata.genai.output_tokens',
+  cacheRead: 'attributes.netdata.genai.cache_read_tokens',
+  cacheWrite: 'attributes.netdata.genai.cache_write_tokens',
+  reasoning: 'attributes.netdata.genai.reasoning_tokens',
   finishReasons: 'attributes.gen_ai.response.finish_reasons',
   errorType: 'attributes.error.type',
 } as const
 
-export const MODEL_CALL_OPERATIONS = ['chat', 'text_completion', 'generate_content', 'embeddings']
+// The span a model call is counted by on the charts; a second span of the same call is marked `duplicate`.
+const COUNTED = 'counted'
 
 const ROW_COLUMNS = [
   K.service,
   K.name,
-  K.status,
-  K.operation,
   K.requestModel,
   K.responseModel,
   K.provider,
-  K.system,
+  K.outcome,
   K.inputTokens,
   K.outputTokens,
   K.errorType,
 ]
 
-// Page filters as span attributes. The provider matches `gen_ai.provider.name` only: conditions AND, so spans that
-// name their provider in the older `gen_ai.system` alone cannot match a provider filter.
+// Page filters as span fields.
 const SPAN_KEYS: Record<string, string> = {
   [LABELS.service]: K.service,
   [LABELS.model]: K.requestModel,
@@ -132,13 +133,13 @@ export function cellParam(c: CallCell): string {
 
 function conditions(filters: Filters, outcomes: Outcome[], cell?: CallCell | null) {
   const out: { key: string; op: string; values: (string | number)[] }[] = [
-    { key: K.operation, op: '=', values: MODEL_CALL_OPERATIONS },
+    { key: K.call, op: '=', values: [COUNTED] },
   ]
   for (const [label, values] of Object.entries(filters)) {
     const key = SPAN_KEYS[label]
     if (key && values.length) out.push({ key, op: '=', values })
   }
-  if (outcomes.length) out.push({ key: K.status, op: '=', values: outcomes.flatMap((o) => OUTCOMES[o]) })
+  if (outcomes.length) out.push({ key: K.outcome, op: '=', values: outcomes.map((o) => OUTCOMES[o]) })
   if (cell) {
     out.push({ key: 'duration', op: '>=', values: [Math.round(cell.min * 1e9)] })
     if (cell.max != null) out.push({ key: 'duration', op: '<', values: [Math.round(cell.max * 1e9)] })

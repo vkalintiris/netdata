@@ -39,30 +39,46 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const MAX_CHUNK_BYTES: usize = 1 << 20;
 
 /// The spans of one export request, recorded but not yet counted. Commit the
-/// batch once the spans are durable; a dropped batch counts nothing. It owns
+/// batch once the spans are durable; a dropped batch counts nothing and is
+/// forgotten, so the spans count when the sender sends them again. It owns
 /// what it needs, so the task that waits for the spans to be durable can
 /// carry it.
 pub struct SpansBatch {
     service_requests: Arc<ServiceRequests>,
-    batch: Batch,
     genai: Arc<GenAiCalls>,
-    genai_pending: genai_calls::Pending,
+    /// What was recorded; `None` once committed.
+    recorded: Option<(Batch, genai_calls::Pending)>,
 }
 
 impl SpansBatch {
     /// Record the requests among the spans of `export`, a normalized group of
-    /// an export request of `tenant`.
-    pub fn record(&mut self, tenant: &str, export: &ExportTraceServiceRequest) {
-        self.service_requests
-            .record(&mut self.batch, tenant, export);
-        self.genai.record(&mut self.genai_pending, tenant, export);
+    /// an export request of `tenant`, and write onto each span that is a model
+    /// call what the GenAI charts make of it: `export` is what gets stored.
+    pub fn record(&mut self, tenant: &str, export: &mut ExportTraceServiceRequest) {
+        let Some((batch, genai_pending)) = self.recorded.as_mut() else {
+            return;
+        };
+        self.service_requests.record(batch, tenant, export);
+        self.genai.record(genai_pending, tenant, export, unix_now());
     }
 
     /// Count the batch: its spans are durable.
-    pub fn commit(self) {
+    pub fn commit(mut self) {
+        let Some((batch, genai_pending)) = self.recorded.take() else {
+            return;
+        };
         let now = unix_now();
-        self.service_requests.commit(self.batch, now);
-        self.genai.commit(self.genai_pending, now);
+        self.service_requests.commit(batch, now);
+        self.genai.commit(genai_pending, now);
+    }
+}
+
+impl Drop for SpansBatch {
+    /// A batch dropped without a commit was not stored.
+    fn drop(&mut self) {
+        if let Some((_, genai_pending)) = self.recorded.take() {
+            self.genai.discard(genai_pending);
+        }
     }
 }
 
@@ -136,9 +152,11 @@ impl DerivedMetrics {
         let per_service = self.per_service.as_ref()?;
         Some(SpansBatch {
             service_requests: Arc::clone(&per_service.requests),
-            batch: per_service.requests.batch(),
             genai: Arc::clone(&per_service.genai),
-            genai_pending: genai_calls::Pending::default(),
+            recorded: Some((
+                per_service.requests.batch(),
+                genai_calls::Pending::default(),
+            )),
         })
     }
 
@@ -259,7 +277,7 @@ mod tests {
         let now = unix_now();
 
         let mut spans = derived.spans_batch().unwrap();
-        spans.record("default", &one_span(now));
+        spans.record("default", &mut one_span(now));
         spans.commit();
 
         let mut logs = derived.logs_batch().unwrap();
@@ -268,7 +286,7 @@ mod tests {
 
         // A request that failed drops its batch: never counted.
         let mut dropped = derived.spans_batch().unwrap();
-        dropped.record("default", &one_span(now));
+        dropped.record("default", &mut one_span(now));
         drop(dropped);
 
         // Past the services' 10 s lateness.

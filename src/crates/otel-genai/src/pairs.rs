@@ -70,6 +70,8 @@ pub struct Pairs<G> {
 
 struct State<G> {
     rotated_at: u64,
+    /// How many times the halves swapped.
+    generation: u64,
     current: Memory<G>,
     previous: Memory<G>,
 }
@@ -106,6 +108,7 @@ impl Failures {
 }
 
 /// A counted failure's time span.
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct Failure {
     start: u64,
     end: u64,
@@ -134,6 +137,7 @@ impl<G: Hash + Eq + Clone> Pairs<G> {
         Self {
             state: Mutex::new(State {
                 rotated_at: 0,
+                generation: 0,
                 current: Memory::default(),
                 previous: Memory::default(),
             }),
@@ -143,8 +147,24 @@ impl<G: Hash + Eq + Clone> Pairs<G> {
 
     /// The candidates of one export request that count, in their original order; `now` is Unix seconds.
     pub fn retain<T>(&self, now: u64, candidates: Vec<Candidate<G, T>>) -> Vec<Candidate<G, T>> {
+        let (keep, _) = self.decide(now, &candidates);
+        candidates
+            .into_iter()
+            .zip(keep)
+            .filter_map(|(candidate, keep)| keep.then_some(candidate))
+            .collect()
+    }
+
+    /// Whether each candidate of one export request counts, and what the memory took from the request; `now` is
+    /// Unix seconds. A caller that then fails to store the request gives the second value to [`Self::forget`].
+    pub fn decide<T>(
+        &self,
+        now: u64,
+        candidates: &[Candidate<G, T>],
+    ) -> (Vec<bool>, Remembered<G>) {
+        let mut remembered = Remembered::default();
         if candidates.is_empty() {
-            return candidates;
+            return (Vec::new(), remembered);
         }
         let mut state = self.state.lock().unwrap();
         if now.saturating_sub(state.rotated_at) >= MEMORY_SECONDS
@@ -152,8 +172,11 @@ impl<G: Hash + Eq + Clone> Pairs<G> {
         {
             state.previous = mem::take(&mut state.current);
             state.rotated_at = now;
+            state.generation += 1;
         }
         state.current.calls += candidates.len();
+        remembered.generation = state.generation;
+        remembered.calls = candidates.len();
 
         // Each candidate's own key and the key of the parent it names.
         let keys: Vec<(Option<SpanKey>, Option<SpanKey>)> = candidates
@@ -190,13 +213,17 @@ impl<G: Hash + Eq + Clone> Pairs<G> {
             if state.remembers_response(&key) || !seen.insert(key.clone()) {
                 keep[index] = false;
             }
-            state.current.response_ids.insert(key);
+            if state.current.response_ids.insert(key.clone()) {
+                remembered.response_ids.push(key);
+            }
         }
         // A dropped parent's answer is remembered too, but only now: its own child carries the same id.
         for (candidate, keep) in candidates.iter().zip(&keep) {
             if let (false, Some(response_id)) = (*keep, &candidate.call.response_id) {
                 let key = (self.hasher.hash_one(&candidate.group), response_id.clone());
-                state.current.response_ids.insert(key);
+                if state.current.response_ids.insert(key.clone()) {
+                    remembered.response_ids.push(key);
+                }
             }
         }
 
@@ -213,33 +240,123 @@ impl<G: Hash + Eq + Clone> Pairs<G> {
             };
             let own_trace = candidate.scope.starts_with(OWN_TRACE_SCOPE_PREFIX);
             let key = (candidate.group.clone(), call.request_model.clone());
-            if state.take_failure(&key, &failure, own_trace) {
+            if let Some((taken, current)) = state.take_failure(&key, &failure, own_trace) {
                 keep[index] = false;
+                remembered.failures_taken.push(TakenFailure {
+                    key,
+                    own_trace: !own_trace,
+                    failure: taken,
+                    current,
+                });
             } else {
-                let failures = state.current.failures.entry(key).or_default();
-                let remembered = failures.of(own_trace);
-                if remembered.len() == MAX_REMEMBERED_FAILURES {
-                    remembered.pop_front();
+                let failures = state.current.failures.entry(key.clone()).or_default();
+                let list = failures.of(own_trace);
+                if list.len() == MAX_REMEMBERED_FAILURES {
+                    list.pop_front();
                 }
-                remembered.push_back(failure);
+                list.push_back(failure);
+                remembered.failures.push((key, own_trace, failure));
             }
         }
 
         for ((own, parent), keep) in keys.iter().zip(&keep) {
-            if let Some(parent) = parent {
-                state.current.parents.insert(*parent);
+            if let Some(parent) = parent
+                && state.current.parents.insert(*parent)
+            {
+                remembered.parents.push(*parent);
             }
-            if let (true, Some(own)) = (*keep, own) {
-                state.current.counted.insert(*own);
+            if let (true, Some(own)) = (*keep, own)
+                && state.current.counted.insert(*own)
+            {
+                remembered.counted.push(*own);
             }
         }
-        drop(state);
+        (keep, remembered)
+    }
 
-        candidates
-            .into_iter()
-            .zip(keep)
-            .filter_map(|(candidate, keep)| keep.then_some(candidate))
-            .collect()
+    /// Take out of the memory what [`Self::decide`] put in for a request that was not stored: the sender sends the
+    /// request again, and its calls must find the memory as the first attempt found it. Another request decided in
+    /// between keeps the decisions it took against that memory.
+    pub fn forget(&self, remembered: Remembered<G>) {
+        let mut state = self.state.lock().unwrap();
+        let generation = state.generation;
+        // A failure this request paired with goes back to the half it was in.
+        for taken in remembered.failures_taken {
+            let age = generation - remembered.generation + u64::from(!taken.current);
+            if let Some(memory) = state.half(age) {
+                let failures = memory.failures.entry(taken.key).or_default();
+                failures.of(taken.own_trace).push_back(taken.failure);
+            }
+        }
+        let Some(memory) = state.half(generation - remembered.generation) else {
+            return;
+        };
+        memory.calls = memory.calls.saturating_sub(remembered.calls);
+        for key in &remembered.parents {
+            memory.parents.remove(key);
+        }
+        for key in &remembered.counted {
+            memory.counted.remove(key);
+        }
+        for key in &remembered.response_ids {
+            memory.response_ids.remove(key);
+        }
+        for (key, own_trace, failure) in remembered.failures {
+            if let Some(failures) = memory.failures.get_mut(&key) {
+                let list = failures.of(own_trace);
+                if let Some(position) = list.iter().rposition(|other| *other == failure) {
+                    list.remove(position);
+                }
+            }
+        }
+    }
+}
+
+/// What one export request added to the memory of a [`Pairs`], and the half it added it to.
+pub struct Remembered<G> {
+    /// The memory's generation when the request was decided: the current half's.
+    generation: u64,
+    calls: usize,
+    parents: Vec<SpanKey>,
+    counted: Vec<SpanKey>,
+    response_ids: Vec<(u64, String)>,
+    /// Failures added, by key and kind.
+    failures: Vec<((G, Option<String>), bool, Failure)>,
+    failures_taken: Vec<TakenFailure<G>>,
+}
+
+/// A remembered failure that a failure of the request paired with and so removed.
+struct TakenFailure<G> {
+    key: (G, Option<String>),
+    /// The kind of the removed failure.
+    own_trace: bool,
+    failure: Failure,
+    /// Whether it was in the current half; the previous one otherwise.
+    current: bool,
+}
+
+impl<G> Default for Remembered<G> {
+    fn default() -> Self {
+        Self {
+            generation: 0,
+            calls: 0,
+            parents: Vec::new(),
+            counted: Vec::new(),
+            response_ids: Vec::new(),
+            failures: Vec::new(),
+            failures_taken: Vec::new(),
+        }
+    }
+}
+
+impl<G> State<G> {
+    /// The half that was current `age` rotations ago, while it is remembered.
+    fn half(&mut self, age: u64) -> Option<&mut Memory<G>> {
+        match age {
+            0 => Some(&mut self.current),
+            1 => Some(&mut self.previous),
+            _ => None,
+        }
     }
 }
 
@@ -256,15 +373,16 @@ impl<G: Hash + Eq> State<G> {
         self.current.response_ids.contains(key) || self.previous.response_ids.contains(key)
     }
 
-    /// Forgets and reports a remembered failure of the other kind that `failure` is the other half of.
+    /// Forgets and returns a remembered failure of the other kind that `failure` is the other half of, and whether
+    /// it was in the current half.
     fn take_failure(
         &mut self,
         key: &(G, Option<String>),
         failure: &Failure,
         own_trace: bool,
-    ) -> bool {
+    ) -> Option<(Failure, bool)> {
         let within = |a: &Failure, b: &Failure| a.start >= b.start && a.end <= b.end;
-        for memory in [&mut self.current, &mut self.previous] {
+        for (memory, current) in [(&mut self.current, true), (&mut self.previous, false)] {
             let Some(failures) = memory.failures.get_mut(key) else {
                 continue;
             };
@@ -273,11 +391,10 @@ impl<G: Hash + Eq> State<G> {
                 .iter()
                 .position(|other| within(other, failure) || within(failure, other))
             {
-                others.remove(position);
-                return true;
+                return others.remove(position).map(|taken| (taken, current));
             }
         }
-        false
+        None
     }
 }
 
@@ -426,6 +543,70 @@ mod tests {
         assert_eq!(
             kept(&pairs.retain(110, vec![candidate(3, 0, 7, Some("msg_1"), 30)])),
             Vec::<u8>::new()
+        );
+    }
+
+    /// Whether each candidate counts, by its `data`.
+    fn decided(
+        pairs: &Pairs<&'static str>,
+        now: u64,
+        request: &[Candidate<&'static str, u8>],
+    ) -> Vec<(u8, bool)> {
+        let (keep, _) = pairs.decide(now, request);
+        request
+            .iter()
+            .map(|candidate| candidate.data)
+            .zip(keep)
+            .collect()
+    }
+
+    #[test]
+    fn a_forgotten_request_is_decided_again_the_same_way() {
+        let sdk = "com.anthropic.sdk.messages";
+        let request = || {
+            vec![
+                // A nested pair, an answer, and the SDK's half of a failure.
+                candidate(1, 0, 9, None, 20),
+                candidate(2, 1, 9, None, 10),
+                candidate(3, 0, 8, Some("msg_1"), 30),
+                failure(4, 7, sdk, 1_100, 1_900),
+            ]
+        };
+        let pairs = Pairs::new();
+        // The wrapper's half of the failure is remembered before the request.
+        assert_eq!(
+            decided(&pairs, 100, &[failure(5, 6, "wrapper", 1_000, 2_000)]),
+            vec![(5, true)]
+        );
+        let expected = vec![(1, false), (2, true), (3, true), (4, false)];
+
+        let (keep, remembered) = pairs.decide(100, &request());
+        assert_eq!(keep, vec![false, true, true, false]);
+        // Remembered, the same spans are duplicates of themselves.
+        assert_eq!(decided(&pairs, 100, &request())[2], (3, false));
+        let (_, again) = pairs.decide(100, &request());
+        pairs.forget(again);
+        pairs.forget(remembered);
+        assert_eq!(decided(&pairs, 100, &request()), expected);
+    }
+
+    #[test]
+    fn a_request_is_forgotten_after_the_memory_turned() {
+        let pairs = Pairs::new();
+        let (_, remembered) = pairs.decide(100, &[candidate(1, 0, 9, Some("msg_1"), 20)]);
+        // The halves swap: the request is in the previous half now.
+        assert_eq!(
+            decided(&pairs, 160, &[candidate(2, 0, 8, Some("msg_2"), 30)]),
+            vec![(2, true)]
+        );
+        pairs.forget(remembered);
+        assert_eq!(
+            decided(&pairs, 160, &[candidate(3, 0, 7, Some("msg_1"), 40)]),
+            vec![(3, true)]
+        );
+        assert_eq!(
+            decided(&pairs, 160, &[candidate(4, 0, 6, Some("msg_2"), 50)]),
+            vec![(4, false)]
         );
     }
 

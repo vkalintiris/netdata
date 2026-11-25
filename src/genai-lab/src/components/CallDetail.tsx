@@ -97,7 +97,7 @@ function Waterfall({ spans, selected }: { spans: TraceSpan[]; selected: string }
         const left = ((s.start_ns - start) / span) * 100
         const width = Math.max(0.5, (s.duration_ns / span) * 100)
         const error = field(s.fields, K.status) === 'ERROR'
-        const model = field(s.fields, K.operation) && MODEL_OPS.has(field(s.fields, K.operation)!)
+        const model = field(s.fields, K.call) !== undefined
         return (
           <li
             key={s.span_id}
@@ -132,8 +132,6 @@ function Waterfall({ spans, selected }: { spans: TraceSpan[]; selected: string }
   )
 }
 
-const MODEL_OPS = new Set(['chat', 'text_completion', 'generate_content', 'embeddings'])
-
 export function CallDetail({ id, onClose }: { id: string; onClose: () => void }) {
   const [traceId, spanId, startNs] = id.split(':')
   const trace = useQuery({
@@ -163,7 +161,7 @@ export function CallDetail({ id, onClose }: { id: string; onClose: () => void })
   const [showAll, setShowAll] = useState(false)
 
   const f = (...keys: string[]) => field(span?.fields, ...keys)
-  const error = f(K.status) === 'ERROR'
+  const error = f(K.outcome) === 'error'
   const finishReasons =
     f(K.finishReasons) ??
     (conversation?.messages
@@ -256,7 +254,7 @@ export function CallDetail({ id, onClose }: { id: string; onClose: () => void })
             <div className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3">
               <Fact label="Duration">{formatSeconds(span.duration_ns / 1e9)}</Fact>
               <Fact label="Operation">{f(K.operation)}</Fact>
-              <Fact label="Provider">{f(K.provider, K.system)}</Fact>
+              <Fact label="Provider">{f(K.provider)}</Fact>
               <Fact label="Requested model">{f(K.requestModel)}</Fact>
               <Fact label="Answering model">{f(K.responseModel)}</Fact>
               <Fact label="Finish reasons">{finishReasons}</Fact>

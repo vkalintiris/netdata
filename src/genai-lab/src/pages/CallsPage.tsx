@@ -34,15 +34,13 @@ const dayTimeFmt = new Intl.DateTimeFormat(undefined, {
 })
 
 function StatusBadge({ row }: { row: SpanRow }) {
-  const status = field(row.fields, K.status)
-  if (status === 'ERROR') {
+  if (field(row.fields, K.outcome) === 'error') {
     return (
       <Badge variant="destructive" title={field(row.fields, K.errorType)}>
         error
       </Badge>
     )
   }
-  // Instrumentations differ on marking success (OK or left unset); both mean the call did not fail.
   return <span className="text-xs text-muted-foreground">ok</span>
 }
 
@@ -165,10 +163,9 @@ export function CallsPage() {
       <p className="flex items-start gap-2 text-xs text-muted-foreground">
         <Info className="mt-px size-3.5 shrink-0" />
         <span>
-          Lists the spans that describe model calls in OpenTelemetry's GenAI conventions. A call reported by two
-          instrumentations appears twice; calls reported in other conventions are counted on Metrics but not
-          listed here. A span that names its provider only in the older gen_ai.system attribute shows as
-          [unset] under Provider, and a provider filter does not match it.
+          Lists the spans the Metrics tab counts model calls by, in any conventions. A call reported by two
+          instrumentations is listed once, by the span it is counted by. Spans stored before the plugin marked
+          them are not listed.
         </span>
       </p>
 
@@ -220,7 +217,7 @@ export function CallsPage() {
                           {field(row.fields, K.requestModel, K.responseModel) ?? '–'}
                         </TableCell>
                         <TableCell className="text-muted-foreground">
-                          {field(row.fields, K.provider, K.system) ?? '–'}
+                          {field(row.fields, K.provider) ?? '–'}
                         </TableCell>
                         <TableCell>
                           <StatusBadge row={row} />

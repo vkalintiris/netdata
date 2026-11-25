@@ -8,6 +8,9 @@
 //! measurement, charted for the streamed calls of the producers that report one.
 //!
 //! The same pass over the spans finds the tool calls, which [`crate::genai_tools`] counts in its own charts.
+//!
+//! The pass also writes each call onto its span ([`otel_genai::annotation`]), with whether it counts, before the
+//! span is stored: the stored spans marked as counted are the calls of the charts.
 
 use crate::genai_tools::{GenAiTools, PendingTool};
 use crate::service::{service_labels, service_settings};
@@ -18,7 +21,7 @@ use netdata_plugin_metrics::{
     Stats, columns,
 };
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
-use otel_genai::{Call, Candidate, Normalizer, Pairs};
+use otel_genai::{Call, Candidate, Normalizer, Pairs, Remembered, annotation};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Label sets (service, provider, operation and models) over this share the overflow entity.
@@ -58,12 +61,16 @@ columns! {
     }
 }
 
-/// The model calls and tool calls among the spans of one export request, normalized but not yet counted.
+/// The model calls and tool calls among the spans of one export request, normalized and paired but not yet counted.
 #[derive(Default)]
 pub(crate) struct Pending {
-    /// Not yet paired.
+    /// The calls that count, with their service labels and weight.
     calls: Vec<Candidate<Labels, f64>>,
+    /// Call spans that are the second span of a call.
+    duplicates: u64,
     tools: Vec<PendingTool>,
+    /// What pairing remembers of the request, to forget if the request is not stored.
+    remembered: Vec<Remembered<Labels>>,
 }
 
 pub(crate) struct GenAiCalls {
@@ -168,28 +175,33 @@ impl GenAiCalls {
         })
     }
 
-    /// Normalize the model calls and tool calls among the spans of `export` into `pending`.
+    /// Normalize the model calls and tool calls among the spans of `export` into `pending`, decide at `now` (Unix
+    /// seconds) which calls count, and write each call onto its span.
     pub(crate) fn record(
         &self,
         pending: &mut Pending,
         tenant: &str,
-        export: &ExportTraceServiceRequest,
+        export: &mut ExportTraceServiceRequest,
+        now: u64,
     ) {
-        for resource_spans in &export.resource_spans {
+        let mut candidates = Vec::new();
+        // Where each candidate's span is: its resource, scope and span indexes.
+        let mut places = Vec::new();
+        for (resource_index, resource_spans) in export.resource_spans.iter_mut().enumerate() {
             let mut service = None;
-            for scope_spans in &resource_spans.scope_spans {
+            let resource = resource_spans.resource.as_ref();
+            for (scope_index, scope_spans) in resource_spans.scope_spans.iter_mut().enumerate() {
                 let scope = scope_spans.scope.as_ref();
-                for span in &scope_spans.spans {
+                for (span_index, span) in scope_spans.spans.iter_mut().enumerate() {
+                    annotation::strip(span);
                     let mut service = || {
                         service
-                            .get_or_insert_with(|| {
-                                service_labels(tenant, resource_spans.resource.as_ref())
-                            })
+                            .get_or_insert_with(|| service_labels(tenant, resource))
                             .clone()
                     };
                     match self.normalizer.span(scope, span) {
                         Ok(Some(call)) => {
-                            pending.calls.push(Candidate {
+                            candidates.push(Candidate {
                                 call,
                                 trace_id: span.trace_id.clone(),
                                 span_id: span.span_id.clone(),
@@ -198,6 +210,7 @@ impl GenAiCalls {
                                 group: service(),
                                 data: adjusted_count(&span.trace_state),
                             });
+                            places.push((resource_index, scope_index, span_index));
                             continue;
                         }
                         Ok(None) => {}
@@ -218,24 +231,45 @@ impl GenAiCalls {
                 }
             }
         }
+        if candidates.is_empty() {
+            return;
+        }
+
+        let (keep, remembered) = self.pairs.decide(now, &candidates);
+        pending.remembered.push(remembered);
+        for ((candidate, place), keep) in candidates.into_iter().zip(places).zip(keep) {
+            let (resource_index, scope_index, span_index) = place;
+            let span = &mut export.resource_spans[resource_index].scope_spans[scope_index].spans
+                [span_index];
+            annotation::annotate(span, &candidate.call, keep);
+            if keep {
+                pending.calls.push(candidate);
+            } else {
+                pending.duplicates += 1;
+            }
+        }
     }
 
-    /// Pair and count `pending` at `now` (Unix seconds): its spans are durable.
+    /// Count `pending` at `now` (Unix seconds): its spans are durable.
     pub(crate) fn commit(&self, pending: Pending, now: u64) {
         self.tools.commit(pending.tools, now);
-        let pending = pending.calls;
-        if pending.is_empty() {
+        self.duplicates
+            .fetch_add(pending.duplicates, Ordering::Relaxed);
+        if pending.calls.is_empty() {
             return;
         }
         let mut batch = Batch::new(&self.metric_set);
-        let candidates = pending.len();
-        let counted = self.pairs.retain(now, pending);
-        self.duplicates
-            .fetch_add((candidates - counted.len()) as u64, Ordering::Relaxed);
-        for candidate in counted {
+        for candidate in pending.calls {
             self.count(&mut batch, candidate.group, &candidate.call, candidate.data);
         }
         self.aggregator.merge(batch, now);
+    }
+
+    /// Drop `pending`: its spans were not stored, and the sender sends them again.
+    pub(crate) fn discard(&self, pending: Pending) {
+        for remembered in pending.remembered {
+            self.pairs.forget(remembered);
+        }
     }
 
     pub(crate) fn uncounted(&self) -> Uncounted {
@@ -383,9 +417,10 @@ mod tests {
                 ..Default::default()
             }],
         };
+        let mut export = export;
         let genai = GenAiCalls::new(10, 10).unwrap();
         let mut pending = Pending::default();
-        genai.record(&mut pending, "default", &export);
+        genai.record(&mut pending, "default", &mut export, 100);
         genai.commit(pending, 100);
         let mut chunks = Vec::new();
         genai.emit(115, &mut chunks);
@@ -466,7 +501,7 @@ mod tests {
             text("gen_ai.operation.name", "chat"),
             int("gen_ai.usage.input_tokens", -1),
         ];
-        let export = ExportTraceServiceRequest {
+        let mut export = ExportTraceServiceRequest {
             resource_spans: vec![ResourceSpans {
                 scope_spans: vec![ScopeSpans {
                     // A nested pair, and a call whose rule fails on a negative count.
@@ -481,7 +516,7 @@ mod tests {
             }],
         };
         let mut pending = Pending::default();
-        genai.record(&mut pending, "default", &export);
+        genai.record(&mut pending, "default", &mut export, 100);
         genai.commit(pending, 100);
         assert_eq!(
             genai.uncounted(),
@@ -489,6 +524,109 @@ mod tests {
                 duplicates: 1,
                 failed_rules: 1
             }
+        );
+    }
+
+    /// The marker of each span of `export`, by the first byte of its span id.
+    fn markers(export: &ExportTraceServiceRequest) -> Vec<(u8, Option<String>)> {
+        let mut markers = Vec::new();
+        for span in &export.resource_spans[0].scope_spans[0].spans {
+            let marker = span.attributes.iter().find_map(|attribute| {
+                match (
+                    attribute.key.as_str(),
+                    attribute.value.as_ref()?.value.as_ref()?,
+                ) {
+                    (annotation::CALL, Value::StringValue(marker)) => Some(marker.clone()),
+                    _ => None,
+                }
+            });
+            markers.push((span.span_id[0], marker));
+        }
+        markers
+    }
+
+    fn export_of(spans: Vec<Span>) -> ExportTraceServiceRequest {
+        ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                scope_spans: vec![ScopeSpans {
+                    spans,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }
+    }
+
+    #[test]
+    fn marks_each_call_span_as_counted_or_duplicate() {
+        let genai = GenAiCalls::new(10, 10).unwrap();
+        // A wrapper's span around the SDK's, a span that is no call, and one that only claims to be counted.
+        let mut export = export_of(vec![
+            call(1, 0, chat_attributes()),
+            call(2, 1, chat_attributes()),
+            call(3, 0, vec![text("http.request.method", "POST")]),
+            call(4, 0, vec![text(annotation::CALL, annotation::COUNTED)]),
+        ]);
+        let mut pending = Pending::default();
+        genai.record(&mut pending, "default", &mut export, 100);
+        assert_eq!(
+            markers(&export),
+            vec![
+                (1, Some(annotation::DUPLICATE.to_string())),
+                (2, Some(annotation::COUNTED.to_string())),
+                (3, None),
+                (4, None),
+            ]
+        );
+        let written: Vec<&str> = export.resource_spans[0].scope_spans[0].spans[1].attributes
+            [chat_attributes().len()..]
+            .iter()
+            .map(|attribute| attribute.key.as_str())
+            .collect();
+        assert_eq!(
+            written,
+            vec![
+                annotation::CALL,
+                annotation::OPERATION,
+                annotation::PROVIDER,
+                annotation::REQUEST_MODEL,
+                annotation::RESPONSE_MODEL,
+                annotation::OUTCOME,
+                annotation::INPUT_TOKENS,
+                annotation::OUTPUT_TOKENS,
+                annotation::CACHE_READ_TOKENS,
+                annotation::CACHE_WRITE_TOKENS,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_discarded_request_counts_when_it_comes_again() {
+        let genai = GenAiCalls::new(10, 10).unwrap();
+        let mut answered = chat_attributes();
+        answered.push(text("gen_ai.response.id", "msg_1"));
+        let request = || export_of(vec![call(1, 0, answered.clone())]);
+
+        let mut pending = Pending::default();
+        genai.record(&mut pending, "default", &mut request(), 100);
+        genai.discard(pending);
+
+        let mut again = request();
+        let mut pending = Pending::default();
+        genai.record(&mut pending, "default", &mut again, 100);
+        assert_eq!(
+            markers(&again),
+            vec![(1, Some(annotation::COUNTED.to_string()))]
+        );
+        genai.commit(pending, 100);
+        assert_eq!(genai.uncounted(), Uncounted::default());
+
+        // Stored, the same answer is a duplicate from then on.
+        let mut third = request();
+        genai.record(&mut Pending::default(), "default", &mut third, 100);
+        assert_eq!(
+            markers(&third),
+            vec![(1, Some(annotation::DUPLICATE.to_string()))]
         );
     }
 

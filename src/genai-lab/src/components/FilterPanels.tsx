@@ -166,12 +166,12 @@ function FilterPanel({ name, label, source }: { name: FilterName; label: string;
   )
 }
 
-// Span status has no metric label, so outcome is a Calls-only filter.
+// The outcome is no label of the charts' filters, so it is a Calls-only filter.
 function OutcomePanel() {
   const { window, filters, outcomes, toggleOutcome, clearFilter } = usePageState()
   const spans = useQuery({
-    queryKey: ['span-values', window, filters, [], K.status],
-    queryFn: ({ signal }) => spanStack(window, filters, [], K.status, signal),
+    queryKey: ['span-values', window, filters, [], K.outcome],
+    queryFn: ({ signal }) => spanStack(window, filters, [], K.outcome, signal),
     refetchInterval: window.after < 0 ? 10_000 : false,
     placeholderData: (prev) => prev,
   })
@@ -180,7 +180,7 @@ function OutcomePanel() {
     if (!t) return undefined
     return (Object.keys(OUTCOMES) as Outcome[]).map((o) => ({
       value: o,
-      count: OUTCOMES[o].reduce((sum, code) => sum + (t.values[code] ?? 0), 0),
+      count: t.values[OUTCOMES[o]] ?? 0,
     }))
   }, [spans.data])
 
