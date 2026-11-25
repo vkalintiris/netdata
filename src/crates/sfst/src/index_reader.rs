@@ -1458,7 +1458,14 @@ impl<'a> IndexReader<'a> {
                         loaded = Some((b, batch));
                     }
                     let (_, batch) = loaded.as_ref().expect("loaded above");
-                    for id in batch.row((position % batch_size) as usize) {
+                    let row = (position % batch_size) as usize;
+                    if row >= batch.num_rows() {
+                        return Err(crate::Error::CorruptIndex(format!(
+                            "sums: position {position} row {row} >= batch {b} length {}",
+                            batch.num_rows()
+                        )));
+                    }
+                    for id in batch.row(row) {
                         let Some(local) = id.0.checked_sub(base) else {
                             continue;
                         };

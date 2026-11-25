@@ -760,7 +760,8 @@ pub struct ExploreSumWire {
     pub unset: i64,
     /// Of every counted span, each once.
     pub total: i64,
-    /// Values of the key that are not integers, left out.
+    /// Values of the key that are not integers, left out; a span with
+    /// several such values counts each.
     pub skipped: u64,
 }
 
