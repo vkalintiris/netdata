@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router'
 import { FilterBar } from '@/components/FilterPanels'
 import { SpanDetail } from '@/components/SpanDetail'
 import { SpanList, spanKey } from '@/components/SpanList'
-import { TraceList } from '@/components/TraceList'
+import { TraceList, traceLink } from '@/components/TraceList'
 import { Button } from '@/components/ui/button'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { formatSeconds } from '@/lib/format'
@@ -82,7 +82,14 @@ export function TracesPage() {
       {bySpan ? (
         <div className={cn('grid gap-4', selected && 'xl:grid-cols-[minmax(0,1fr)_560px]')}>
           <SpanList cell={cell} selected={selected} onSelect={select} live={live} />
-          {selected && <SpanDetail key={selected} id={selected} onClose={() => select(null)} />}
+          {selected && (
+            <SpanDetail
+              key={selected}
+              id={selected}
+              onClose={() => select(null)}
+              traceHref={traceLink(selected.split(':')[0], Number(selected.split(':')[2]), params)}
+            />
+          )}
         </div>
       ) : (
         <TraceList live={live} />

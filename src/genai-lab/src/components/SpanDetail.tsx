@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { ChevronRight, Wrench, X } from 'lucide-react'
 import { useMemo, useState, type ReactNode } from 'react'
+import { Link } from 'react-router'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -151,7 +152,8 @@ export function Waterfall({
   )
 }
 
-export function SpanDetail({ id, onClose }: { id: string; onClose: () => void }) {
+// `traceHref`: where the span's whole trace opens; left out on the trace's own page.
+export function SpanDetail({ id, onClose, traceHref }: { id: string; onClose: () => void; traceHref?: string }) {
   const [traceId, spanId, startNs] = id.split(':')
   const trace = useQuery({
     queryKey: ['trace', traceId, startNs],
@@ -201,6 +203,11 @@ export function SpanDetail({ id, onClose }: { id: string; onClose: () => void })
             </p>
           )}
         </div>
+        {traceHref && (
+          <Button variant="outline" size="sm" asChild>
+            <Link to={traceHref}>Open the trace</Link>
+          </Button>
+        )}
         <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="Close">
           <X />
         </Button>
