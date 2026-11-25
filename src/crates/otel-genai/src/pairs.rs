@@ -105,6 +105,15 @@ impl Failures {
             &mut self.joined
         }
     }
+
+    /// Add `failure` to its kind, forgetting the oldest of that kind first when the list is full.
+    fn remember(&mut self, own_trace: bool, failure: Failure) {
+        let list = self.of(own_trace);
+        while list.len() >= MAX_REMEMBERED_FAILURES {
+            list.pop_front();
+        }
+        list.push_back(failure);
+    }
 }
 
 /// A counted failure's time span.
@@ -250,11 +259,7 @@ impl<G: Hash + Eq + Clone> Pairs<G> {
                 });
             } else {
                 let failures = state.current.failures.entry(key.clone()).or_default();
-                let list = failures.of(own_trace);
-                if list.len() == MAX_REMEMBERED_FAILURES {
-                    list.pop_front();
-                }
-                list.push_back(failure);
+                failures.remember(own_trace, failure);
                 remembered.failures.push((key, own_trace, failure));
             }
         }
@@ -275,8 +280,13 @@ impl<G: Hash + Eq + Clone> Pairs<G> {
     }
 
     /// Take out of the memory what [`Self::decide`] put in for a request that was not stored: the sender sends the
-    /// request again, and its calls must find the memory as the first attempt found it. Another request decided in
-    /// between keeps the decisions it took against that memory.
+    /// request again, and its calls must find the memory as the first attempt found it.
+    ///
+    /// This is exact for a request that fails before anything else is decided against what it added, which covers
+    /// every failure answered before the sender can send again. It is not for a request whose write fails late, while
+    /// the sender already sent it again: the second copy was marked a duplicate of the first, and stays so. Such a
+    /// call can then be stored without being counted, or counted beside its pair. A failure the full list pushed
+    /// out to make room is not brought back either.
     pub fn forget(&self, remembered: Remembered<G>) {
         let mut state = self.state.lock().unwrap();
         let generation = state.generation;
@@ -285,7 +295,7 @@ impl<G: Hash + Eq + Clone> Pairs<G> {
             let age = generation - remembered.generation + u64::from(!taken.current);
             if let Some(memory) = state.half(age) {
                 let failures = memory.failures.entry(taken.key).or_default();
-                failures.of(taken.own_trace).push_back(taken.failure);
+                failures.remember(taken.own_trace, taken.failure);
             }
         }
         let Some(memory) = state.half(generation - remembered.generation) else {
@@ -687,6 +697,34 @@ mod tests {
                 .retain(100, vec![failure(3, 9, sdk, 1_010, 1_090)])
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_failure_put_back_keeps_the_bound() {
+        let sdk = "com.anthropic.sdk.python";
+        let pairs = Pairs::new();
+        // A full list of wrapper failures; an SDK failure takes the first, the list fills again, and the SDK's
+        // request is not stored.
+        let wrapper = |index: u64| failure(1, 8, "wrapper", index * 1_000, index * 1_000 + 100);
+        pairs.decide(
+            100,
+            &(0..MAX_REMEMBERED_FAILURES as u64)
+                .map(wrapper)
+                .collect::<Vec<_>>(),
+        );
+        let (_, remembered) = pairs.decide(100, &[failure(2, 9, sdk, 10, 90)]);
+        pairs.decide(100, &[wrapper(MAX_REMEMBERED_FAILURES as u64)]);
+        pairs.forget(remembered);
+        pairs.decide(100, &[wrapper(MAX_REMEMBERED_FAILURES as u64 + 1)]);
+
+        let state = pairs.state.lock().unwrap();
+        let longest = state
+            .current
+            .failures
+            .values()
+            .map(|failures| failures.joined.len())
+            .max();
+        assert_eq!(longest, Some(MAX_REMEMBERED_FAILURES));
     }
 
     #[test]

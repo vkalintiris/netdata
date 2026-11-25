@@ -176,7 +176,8 @@ impl GenAiCalls {
     }
 
     /// Normalize the model calls and tool calls among the spans of `export` into `pending`, decide at `now` (Unix
-    /// seconds) which calls count, and write each call onto its span.
+    /// seconds) which calls count, and write each call onto its span. `export` is one group of an export request:
+    /// calls of the same request in another group pair as calls of another request do.
     pub(crate) fn record(
         &self,
         pending: &mut Pending,
@@ -267,7 +268,8 @@ impl GenAiCalls {
 
     /// Drop `pending`: its spans were not stored, and the sender sends them again.
     pub(crate) fn discard(&self, pending: Pending) {
-        for remembered in pending.remembered {
+        // Newest first: a later group may have paired with what an earlier one added.
+        for remembered in pending.remembered.into_iter().rev() {
             self.pairs.forget(remembered);
         }
     }

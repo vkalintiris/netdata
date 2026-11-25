@@ -9,7 +9,8 @@ use opentelemetry_proto::tonic::common::v1::any_value::Value;
 use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue};
 use opentelemetry_proto::tonic::trace::v1::Span;
 
-/// The namespace of the attributes this module writes. No attribute a sender puts under it is stored.
+/// The namespace of the attributes this module writes. Where spans are annotated, no attribute a sender puts under
+/// it is stored.
 pub const PREFIX: &str = "netdata.genai.";
 
 /// [`COUNTED`] or [`DUPLICATE`], on every span that is a model call.
@@ -37,8 +38,30 @@ pub const TIME_TO_FIRST_CHUNK: &str = "netdata.genai.time_to_first_chunk";
 
 /// Remove the attributes of `span` under [`PREFIX`]: the namespace holds only what [`annotate`] writes.
 pub fn strip(span: &mut Span) {
-    span.attributes
-        .retain(|attribute| !attribute.key.starts_with(PREFIX));
+    strip_under(&mut span.attributes, PREFIX);
+}
+
+/// Remove from `attributes` what is stored under a key that starts with `prefix`. The keys inside a nested value
+/// are stored joined to its own key with a dot, so a leading part of the prefix can be an attribute's key and the
+/// rest be spelled inside its value.
+fn strip_under(attributes: &mut Vec<KeyValue>, prefix: &str) {
+    attributes.retain_mut(|attribute| {
+        if attribute.key.starts_with(prefix) {
+            return false;
+        }
+        let rest = prefix
+            .strip_prefix(attribute.key.as_str())
+            .and_then(|rest| rest.strip_prefix('.'));
+        if let Some(rest) = rest
+            && let Some(Value::KvlistValue(nested)) = attribute
+                .value
+                .as_mut()
+                .and_then(|value| value.value.as_mut())
+        {
+            strip_under(&mut nested.values, rest);
+        }
+        true
+    });
 }
 
 /// Write `call` onto `span`, the span it was normalized from; `counted` is whether the call counts by this span.
@@ -100,6 +123,40 @@ mod tests {
 
     fn text(key: &str, value: &str) -> KeyValue {
         attribute(key, Value::StringValue(value.to_string()))
+    }
+
+    #[test]
+    fn strips_the_namespace_spelled_as_nested_values() {
+        use opentelemetry_proto::tonic::common::v1::KeyValueList;
+
+        let list = |values: Vec<KeyValue>| Value::KvlistValue(KeyValueList { values });
+        let mut span = Span {
+            attributes: vec![
+                // All of these flatten to keys under `netdata.genai.`.
+                attribute(
+                    "netdata",
+                    list(vec![text("genai.call", COUNTED), text("other", "kept")]),
+                ),
+                attribute(
+                    "netdata",
+                    list(vec![attribute("genai", list(vec![text("call", COUNTED)]))]),
+                ),
+                attribute("netdata.genai", list(vec![text("call", COUNTED)])),
+                text("netdata.genaix", "kept"),
+            ],
+            ..Default::default()
+        };
+        strip(&mut span);
+        assert_eq!(
+            span.attributes,
+            vec![
+                // The emptied values stay: their own keys are outside the namespace.
+                attribute("netdata", list(vec![text("other", "kept")])),
+                attribute("netdata", list(vec![attribute("genai", list(vec![]))])),
+                attribute("netdata.genai", list(vec![])),
+                text("netdata.genaix", "kept"),
+            ]
+        );
     }
 
     #[test]

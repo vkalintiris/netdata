@@ -10,8 +10,8 @@ export const LABELS = {
 
 export type FilterName = keyof typeof LABELS
 
-// The outcome filter matches span status, which no metric carries as a label: it applies on the Calls page only.
-// Instrumentations differ on marking success (OK or left unset); both mean the call did not fail.
+// The outcome filter matches the outcome the plugin stored on the span; the Metrics page's charts carry it as a
+// dimension, not a label, so it applies on the Calls page only.
 export const OUTCOMES = { succeeded: 'success', failed: 'error' } as const
 
 export type Outcome = keyof typeof OUTCOMES
