@@ -7,7 +7,7 @@
 Every game picks one of game.MODELS, and every process a user and their team (resource attributes `team` and
 `user.id`). Pauses cap the spend while nobody watches; `rotate` plays one game at a time.
 Env: LITELLM_API_KEY (required), GUESS_VENVS (the root of the venvs below), GUESS_GAME_PAUSE, GUESS_TURN_PAUSE,
-GUESS_MODELS, GUESS_BASE_URL, GUESS_TEAM_KEYS (a {team: key} file, for a gateway that accounts per team), plus
+GUESS_MODELS, GUESS_BASE_URL, GUESS_MCP_URL, GUESS_TEAM_KEYS (a {team: key} file, for a gateway that accounts per team), plus
 OTEL_EXPORTER_OTLP_ENDPOINT.
 """
 
@@ -30,6 +30,8 @@ VERSIONS = {
     "logfire": ("libs/venvs/logfire", "chat", "logfire"),
     "pydantic-ai": ("frameworks/venvs/pydantic-ai", "frameworks", "pydantic_ai"),
     "openai-agents": ("frameworks/venvs/openai-agents", "frameworks", "openai_agents"),
+    # Its tools over MCP through a gateway (GUESS_MCP_URL).
+    "openai-agents-mcp": ("frameworks/venvs/openai-agents", "frameworks", "openai_agents_mcp"),
     "langgraph": ("frameworks/venvs/langchain", "frameworks", "langgraph"),
     "llama-index": ("frameworks/venvs/llama-index", "frameworks", "llama_index"),
     "crewai": ("frameworks/venvs/crewai", "frameworks", "crewai"),
@@ -38,6 +40,9 @@ VERSIONS = {
     "agno": ("frameworks/venvs/agno", "frameworks", "agno"),
     "dspy": ("frameworks/venvs/dspy", "frameworks", "dspy"),
 }
+
+# Versions that need a gateway's MCP route; `rotate` without names leaves them out.
+NEEDS_GATEWAY = {"openai-agents-mcp"}
 
 GAME_PAUSE = float(os.environ.get("GUESS_GAME_PAUSE", "20"))
 
@@ -108,7 +113,7 @@ def main(argv):
     if not argv or argv[0] == "list":
         print("\n".join(VERSIONS))
     elif argv[0] == "rotate":
-        rotate(argv[1:] or list(VERSIONS))
+        rotate(argv[1:] or [v for v in VERSIONS if v not in NEEDS_GATEWAY])
     elif argv[0] in VERSIONS:
         games = int(argv[2]) if len(argv) > 2 and argv[1] == "--games" else None
         play(argv[0], games)

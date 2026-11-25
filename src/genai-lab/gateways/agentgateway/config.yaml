@@ -35,6 +35,31 @@ frontendPolicies:
       host: 172.17.0.1:44317
       protocol: grpc
 
+# MCP: the game's tools (src/genai-lab/generator/mcp_server.py on 127.0.0.1:3200) on port 3101, with the same keys.
+binds:
+- port: 3101
+  listeners:
+  - name: mcp
+    protocol: HTTP
+    routes:
+    - name: guessing-game
+      policies:
+        apiKey:
+          mode: strict
+          keys:
+          - key: $AGW_KEY_SEARCH
+            metadata: {team: search}
+          - key: $AGW_KEY_SUPPORT
+            metadata: {team: support}
+          - key: $AGW_KEY_GROWTH
+            metadata: {team: growth}
+      backends:
+      - mcp:
+          targets:
+          - name: game
+            mcp:
+              host: http://127.0.0.1:3200/mcp
+
 llm:
   port: 3100
   policies:

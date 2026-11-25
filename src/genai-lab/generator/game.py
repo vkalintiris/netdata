@@ -38,6 +38,12 @@ def guesses():
     return _guesses
 
 
+def set_guesses(n):
+    """For a player whose guesses are checked elsewhere (the MCP server), so the count is reported the same way."""
+    global _guesses
+    _guesses = n
+
+
 def check_guess(number: int) -> str:
     """Check a guess for the secret number between 1 and 100. Returns 'higher', 'lower' or 'correct'."""
     global _guesses

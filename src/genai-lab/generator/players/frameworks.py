@@ -56,6 +56,29 @@ def play_openai_agents(model):
     asyncio.run(Runner.run(agent, game.AGENT_PROMPT, max_turns=STEPS))
 
 
+# --- OpenAI Agents SDK with the game's tools over MCP, through a gateway (GUESS_MCP_URL) ---
+
+setup_openai_agents_mcp = setup_openai_agents
+
+
+def play_openai_agents_mcp(model):
+    from agents import Agent, OpenAIChatCompletionsModel, Runner
+    from agents.mcp import MCPServerStreamableHttp
+
+    async def run():
+        params = {"url": os.environ["GUESS_MCP_URL"], "headers": {"Authorization": "Bearer " + game.api_key()}}
+        async with MCPServerStreamableHttp(params=params, name="guessing-game") as tools:
+            # The secret lives on the MCP server; the agent names its game in every guess.
+            game_id = (await tools.call_tool("new_game", {})).content[0].text
+            agent = Agent(name="guesser", instructions=game.AGENT_SYSTEM, mcp_servers=[tools],
+                          model=OpenAIChatCompletionsModel(model=model, openai_client=_openai_async()))
+            prompt = f"{game.AGENT_PROMPT} The game id is {game_id}; pass it to check_guess with every guess."
+            result = await Runner.run(agent, prompt, max_turns=STEPS)
+            game.set_guesses(sum(1 for item in result.new_items if item.type == "tool_call_item"))
+
+    asyncio.run(run())
+
+
 # --- LangGraph through LangChain's create_agent (OpenInference) ---
 
 def setup_langgraph(config):

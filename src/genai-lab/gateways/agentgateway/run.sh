@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Start (or restart) the lab's agentgateway: LLM routes on 127.0.0.1:3100, Prometheus on 127.0.0.1:15120/metrics
-# (scraped by go.d), admin API on 127.0.0.1:15100, OTLP traces and access logs to the dev Agent.
+# (scraped by go.d), admin API on 127.0.0.1:15100, MCP route on 127.0.0.1:3101/mcp (needs the game's MCP server on
+# 127.0.0.1:3200), OTLP traces and access logs to the dev Agent.
 # Secrets: LITELLM_API_KEY from the caller's environment (the upstream key); the teams' keys are local throwaway
 # values generated once into <worktree>/.local/gateways/agentgateway.env and agentgateway-keys.json (for the game).
 set -euo pipefail
