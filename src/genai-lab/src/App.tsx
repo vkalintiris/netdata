@@ -1,5 +1,6 @@
 import { Route, Routes } from 'react-router'
 import { AppShell } from '@/components/AppShell'
+import { AgentgatewayPage } from '@/pages/AgentgatewayPage'
 import { BreakdownPage } from '@/pages/BreakdownPage'
 import { LiteLLMPage } from '@/pages/LiteLLMPage'
 import { MetricsPage } from '@/pages/MetricsPage'
@@ -15,6 +16,7 @@ export default function App() {
         <Route path="/traces" element={<TracesPage />} />
         <Route path="/traces/:traceId" element={<TracePage />} />
         <Route path="/gateways/litellm" element={<LiteLLMPage />} />
+        <Route path="/gateways/agentgateway" element={<AgentgatewayPage />} />
       </Routes>
     </AppShell>
   )

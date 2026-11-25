@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatCount, formatSeconds } from '@/lib/format'
+import { GATEWAY_PAGES } from '@/lib/gateways'
 import { fetchTrace, field, K, type TraceSpan } from '@/lib/traces'
 import { transcriptOf, type CallStep, type Step, type ToolStep } from '@/lib/transcript'
 import { cn } from '@/lib/utils'
@@ -164,7 +165,7 @@ export function TracePage() {
   const back = new URLSearchParams(params)
   back.delete('span')
   back.delete('at')
-  const gateway = back.get('from') === 'litellm'
+  const gateway = GATEWAY_PAGES[back.get('from') ?? '']
   back.delete('from')
 
   const start = spans?.length ? Math.min(...spans.map((s) => s.start_ns)) : null
@@ -183,11 +184,11 @@ export function TracePage() {
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <Link
-          to={{ pathname: gateway ? '/gateways/litellm' : '/traces', search: back.toString() ? `?${back}` : '' }}
+          to={{ pathname: gateway?.path ?? '/traces', search: back.toString() ? `?${back}` : '' }}
           className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
         >
           <ArrowLeft className="size-4" />
-          {gateway ? 'LiteLLM' : 'Traces'}
+          {gateway?.label ?? 'Traces'}
         </Link>
         <h2 className="text-lg font-semibold">{first ? (field(first.fields, K.service) ?? 'Trace') : 'Trace'}</h2>
         {start != null && <span className="text-sm text-muted-foreground">{dateFmt.format(start / 1e6)}</span>}
@@ -248,7 +249,7 @@ export function TracePage() {
                       <p className="flex items-start gap-2 text-xs text-muted-foreground">
                         <Info className="mt-px size-3.5 shrink-0" />
                         {withContent === 0
-                          ? 'The application sent no message content for this trace, so the steps show without their text.'
+                          ? 'No message content was sent for this trace, so the steps show without their text.'
                           : `${formatCount(calls.length - withContent)} of ${formatCount(calls.length)} calls carry no message content.`}
                       </p>
                     )}

@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { NavLink, useLocation } from 'react-router'
 import { Button } from '@/components/ui/button'
 import { TimeBar } from '@/components/TimeBar'
+import { GATEWAY_PAGES } from '@/lib/gateways'
 import { useTheme } from '@/lib/theme'
 import { cn } from '@/lib/utils'
 
@@ -16,7 +17,13 @@ const MENU = [
       { to: '/traces', label: 'Traces' },
     ],
   },
-  { group: 'Gateways', items: [{ to: '/gateways/litellm', label: 'LiteLLM' }] },
+  {
+    group: 'Gateways',
+    items: [
+      { to: '/gateways/litellm', label: 'LiteLLM' },
+      { to: '/gateways/agentgateway', label: 'agentgateway' },
+    ],
+  },
 ]
 
 // What is open belongs to its page: other pages keep only the window, and the OTel GenAI pages their filters too.
@@ -24,7 +31,8 @@ const PAGE_PARAMS = ['span', 'cell', 'at', 'rows', 'by', 'measure', 'from', 'gw_
 
 // The menu entry a page belongs to: a trace opened from a gateway's page stays under that gateway.
 function activeEntry(pathname: string, search: string): string {
-  if (pathname.startsWith('/traces/') && new URLSearchParams(search).get('from') === 'litellm') return '/gateways/litellm'
+  const from = new URLSearchParams(search).get('from')
+  if (pathname.startsWith('/traces/') && from && GATEWAY_PAGES[from]) return GATEWAY_PAGES[from].path
   if (pathname.startsWith('/traces')) return '/traces'
   return pathname
 }

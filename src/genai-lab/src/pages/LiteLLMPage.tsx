@@ -12,18 +12,8 @@ import { Badge } from '@/components/ui/badge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { totals, type DataQuery, type Series } from '@/lib/agent'
 import { formatCount, formatNumber, formatPercent, formatSeconds, formatUsd } from '@/lib/format'
-import {
-  bucketTotals,
-  C,
-  deploymentState,
-  exploreRequests,
-  L,
-  latest,
-  NARROW,
-  quantileLines,
-  S,
-  type Narrow,
-} from '@/lib/litellm'
+import { bucketTotals, latest, quantileLines } from '@/lib/charts'
+import { C, deploymentState, exploreRequests, L, NARROW, S, type Narrow } from '@/lib/litellm'
 import { absolute, POINTS, useChartNav, usePageState } from '@/lib/page-state'
 import { quantile } from '@/lib/quantile'
 import { useSeries } from '@/lib/queries'

@@ -1,8 +1,6 @@
 // The LiteLLM proxy as Netdata sees it: the charts go.d's stock LiteLLM profile builds from the proxy's Prometheus
 // metrics (contexts `prometheus.litellm.*`), and the spans the proxy sends over OTLP, one `litellm_request` span per
 // call it forwards, which the plugin marks `netdata.genai.call = gateway`.
-import type { Series } from './agent'
-import { quantile } from './quantile'
 import { absolute } from './page-state'
 import { K, postTraces, type Condition, type ExploreAnswer } from './traces'
 import type { TimeWindow } from './agent'
@@ -79,47 +77,6 @@ export function exploreRequests(
     ? { explore: { conditions: where, anchor, rows } }
     : { explore: { after, before, conditions: where, rows } }
   return postTraces<ExploreAnswer>(body, signal)
-}
-
-// Per-bucket histogram charts (one dimension per upper bound) as one quantile line each, point by point.
-export function quantileLines(q: number, hists: { label: string; series: Series | undefined }[]): Series | undefined {
-  const first = hists.find((h) => h.series)?.series
-  if (!first) return undefined
-  const values = hists.map(({ series }) =>
-    first.times.map((t) => {
-      if (!series) return null
-      const j = series.times.indexOf(t)
-      if (j < 0) return null
-      const buckets: Record<string, number> = {}
-      series.labels.forEach((le, i) => (buckets[le] = series.values[i][j] ?? 0))
-      return quantile(q, buckets)
-    }),
-  )
-  return { ...first, labels: hists.map((h) => h.label), values, units: 'seconds' }
-}
-
-// Window total of a per-bucket histogram chart, as buckets.
-export function bucketTotals(s: Series | undefined): Record<string, number> | undefined {
-  if (!s) return undefined
-  const out: Record<string, number> = {}
-  s.labels.forEach((le, i) => (out[le] = s.values[i].reduce<number>((sum, v) => sum + (v ?? 0), 0)))
-  return out
-}
-
-// The newest value of each series: the current reading of a gauge.
-export function latest(s: Series | undefined): Record<string, number> {
-  const out: Record<string, number> = {}
-  if (!s) return out
-  s.labels.forEach((label, i) => {
-    for (let j = s.values[i].length - 1; j >= 0; j--) {
-      const v = s.values[i][j]
-      if (v != null) {
-        out[label] = v
-        return
-      }
-    }
-  })
-  return out
 }
 
 // LiteLLM's deployment state gauge: 0 healthy, 1 partial outage, 2 complete outage.

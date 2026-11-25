@@ -1,4 +1,4 @@
-// Chart pieces the Metrics tab's sections share.
+// Chart pieces the pages share: latency lines, quantiles and totals from histogram charts, gauge readings.
 import type { SeriesStyle } from '@/components/TimeChart'
 import type { Series } from './agent'
 import { quantile } from './quantile'
@@ -35,4 +35,45 @@ export function latencyLines(hist: Series | undefined, max: Series | undefined):
     values: [p50, p95, hist.times.map((t) => maxAt.get(t) ?? null)],
     units: 'seconds',
   }
+}
+
+// Per-bucket histogram charts (one dimension per upper bound) as one quantile line each, point by point.
+export function quantileLines(q: number, hists: { label: string; series: Series | undefined }[]): Series | undefined {
+  const first = hists.find((h) => h.series)?.series
+  if (!first) return undefined
+  const values = hists.map(({ series }) =>
+    first.times.map((t) => {
+      if (!series) return null
+      const j = series.times.indexOf(t)
+      if (j < 0) return null
+      const buckets: Record<string, number> = {}
+      series.labels.forEach((le, i) => (buckets[le] = series.values[i][j] ?? 0))
+      return quantile(q, buckets)
+    }),
+  )
+  return { ...first, labels: hists.map((h) => h.label), values, units: 'seconds' }
+}
+
+// Window total of a per-bucket histogram chart, as buckets.
+export function bucketTotals(s: Series | undefined): Record<string, number> | undefined {
+  if (!s) return undefined
+  const out: Record<string, number> = {}
+  s.labels.forEach((le, i) => (out[le] = s.values[i].reduce<number>((sum, v) => sum + (v ?? 0), 0)))
+  return out
+}
+
+// The newest value of each series: the current reading of a gauge.
+export function latest(s: Series | undefined): Record<string, number> {
+  const out: Record<string, number> = {}
+  if (!s) return out
+  s.labels.forEach((label, i) => {
+    for (let j = s.values[i].length - 1; j >= 0; j--) {
+      const v = s.values[i][j]
+      if (v != null) {
+        out[label] = v
+        return
+      }
+    }
+  })
+  return out
 }
