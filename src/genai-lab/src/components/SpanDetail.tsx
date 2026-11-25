@@ -5,9 +5,10 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { conversationOfSpan, type Message, type Part } from '@/lib/conversation'
+import type { Message, Part } from '@/lib/conversation'
 import { formatCount, formatSeconds } from '@/lib/format'
 import { fetchTrace, field, K, type TraceSpan } from '@/lib/traces'
+import { conversationFor } from '@/lib/transcript'
 import { cn } from '@/lib/utils'
 
 const dateFmt = new Intl.DateTimeFormat(undefined, {
@@ -75,7 +76,7 @@ const ROLE_STYLE: Record<string, string> = {
   tool: 'border-l-[var(--chart-3)]',
 }
 
-function MessageView({ message }: { message: Message }) {
+export function MessageView({ message }: { message: Message }) {
   // Some instrumentations send a tool's result as a user message; it reads as the tool speaking.
   const toolOnly = message.parts.length > 0 && message.parts.every((p) => p.kind === 'toolResult')
   const role = toolOnly ? 'tool' : (message.role ?? (message.section === 'output' ? 'assistant' : 'input'))
@@ -94,7 +95,15 @@ function MessageView({ message }: { message: Message }) {
   )
 }
 
-function Waterfall({ spans, selected }: { spans: TraceSpan[]; selected: string }) {
+export function Waterfall({
+  spans,
+  selected,
+  onSelect,
+}: {
+  spans: TraceSpan[]
+  selected: string
+  onSelect?: (span: TraceSpan) => void
+}) {
   const sorted = spans
   const start = Math.min(...sorted.map((s) => s.start_ns))
   const end = Math.max(...sorted.map((s) => s.start_ns + s.duration_ns))
@@ -109,9 +118,11 @@ function Waterfall({ spans, selected }: { spans: TraceSpan[]; selected: string }
         return (
           <li
             key={s.span_id}
+            onClick={onSelect && (() => onSelect(s))}
             className={cn(
               'grid grid-cols-[200px_1fr_72px] items-center gap-2 rounded px-1 text-xs',
               s.span_id === selected && 'bg-muted',
+              onSelect && 'cursor-pointer hover:bg-muted/60',
             )}
           >
             <span
@@ -147,25 +158,10 @@ export function SpanDetail({ id, onClose }: { id: string; onClose: () => void })
     queryFn: ({ signal }) => fetchTrace(traceId, Number(startNs), signal),
   })
   const span = trace.data?.spans.find((s) => s.span_id === spanId)
-  // A call recorded by two instrumentations is two spans, and often only one of them carries the messages; an
-  // overlapping span of the same trace that has them stands in.
-  const { conversation, source } = useMemo(() => {
-    if (!span || !trace.data) return { conversation: null, source: null }
-    const own = conversationOfSpan(span)
-    if (own) return { conversation: own, source: null }
-    const end = span.start_ns + span.duration_ns
-    let best: { c: ReturnType<typeof conversationOfSpan>; s: TraceSpan } | null = null
-    for (const other of trace.data.spans) {
-      if (other.span_id === span.span_id) continue
-      if (other.start_ns > end || other.start_ns + other.duration_ns < span.start_ns) continue
-      const c = conversationOfSpan(other)
-      if (!c) continue
-      if (!best || Math.abs(other.start_ns - span.start_ns) < Math.abs(best.s.start_ns - span.start_ns)) {
-        best = { c, s: other }
-      }
-    }
-    return best ? { conversation: best.c, source: best.s } : { conversation: null, source: null }
-  }, [span, trace.data])
+  const { conversation, source } = useMemo(
+    () => (span && trace.data ? conversationFor(span, trace.data.spans) : { conversation: null, source: null }),
+    [span, trace.data],
+  )
   const [showAll, setShowAll] = useState(false)
 
   const f = (...keys: string[]) => field(span?.fields, ...keys)

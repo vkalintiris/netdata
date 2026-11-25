@@ -1,6 +1,7 @@
 import { useCallback, useMemo } from 'react'
+import { useNavigate, useSearchParams } from 'react-router'
 import { Distribution } from '@/components/Distribution'
-import { Heatmap, type HeatmapData } from '@/components/Heatmap'
+import { Heatmap, type HeatCell, type HeatmapData } from '@/components/Heatmap'
 import { FilterPanels } from '@/components/FilterPanels'
 import { Panel, SectionTitle } from '@/components/Panel'
 import { Ranking, type RankRow } from '@/components/Ranking'
@@ -13,6 +14,7 @@ import { formatCount, formatInterval, formatNumber, formatPercent, formatSeconds
 import { absolute, LABELS, POINTS, resetWindow, usePageState, type FilterName } from '@/lib/page-state'
 import { quantile } from '@/lib/quantile'
 import { useSeries } from '@/lib/queries'
+import { cellParam } from '@/lib/traces'
 
 const C = {
   calls: 'otel.derived_metrics.genai.calls',
@@ -48,6 +50,21 @@ function rankRows(s: Series | undefined): RankRow[] {
 
 export function MetricsPage() {
   const { window, filters, setWindow, selected, toggleFilter } = usePageState()
+  const navigate = useNavigate()
+  const [params] = useSearchParams()
+
+  // The calls behind a heatmap cell, on the Traces tab. The chart counts a call when it ends and the list finds it
+  // by its start, so the time range reaches back by the longest duration of the cell.
+  const listCalls = (c: HeatCell, d: HeatmapData) => {
+    const row = d.rows[c.row]
+    const before = d.times[c.col] + d.step
+    const after = d.times[c.col] - Math.ceil(row.upper ?? 600)
+    const next = new URLSearchParams(params)
+    next.delete('kind')
+    next.append('kind', 'model call')
+    next.set('cell', cellParam({ after, before, min: row.lower, max: row.upper }))
+    navigate(`/traces?${next}`)
+  }
 
   const base = useMemo(() => ({ window, filters }), [window, filters])
   const total = (context: string, extra: Partial<DataQuery> = {}): DataQuery => ({
@@ -191,7 +208,13 @@ export function MetricsPage() {
       <SectionTitle>Latency</SectionTitle>
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
         <Panel title="Call duration heatmap" subtitle="calls per time and duration" className="lg:col-span-2">
-          <Heatmap data={durationHeat} height={180} formatBound={formatSeconds} />
+          <Heatmap
+            data={durationHeat}
+            height={180}
+            formatBound={formatSeconds}
+            onCell={listCalls}
+            cellHint="Click to list the calls of about this time and duration"
+          />
         </Panel>
         <Panel title="Call duration distribution" subtitle="calls per duration">
           <Distribution buckets={durationBuckets} />

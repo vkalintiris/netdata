@@ -8,17 +8,18 @@ import { cn } from '@/lib/utils'
 
 const TABS = [
   { to: '/', label: 'Metrics' },
-  { to: '/spans', label: 'Spans' },
   { to: '/traces', label: 'Traces' },
 ]
 
 export function AppShell({ children }: { children: ReactNode }) {
   const [theme, toggle] = useTheme()
   const { search } = useLocation()
-  // The open span belongs to its page; other tabs keep only the window and filters.
+  // What is open belongs to its page; other tabs keep only the window and filters.
   const shared = new URLSearchParams(search)
   shared.delete('span')
   shared.delete('cell')
+  shared.delete('at')
+  shared.delete('rows')
   const sharedSearch = shared.toString() ? `?${shared}` : ''
   return (
     <div className="min-h-screen">
@@ -33,7 +34,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               <NavLink
                 key={t.to}
                 to={{ pathname: t.to, search: sharedSearch }}
-                end
+                end={t.to === '/'}
                 className={({ isActive }) =>
                   cn(
                     'rounded-md px-2.5 py-1 text-sm text-muted-foreground hover:text-foreground',

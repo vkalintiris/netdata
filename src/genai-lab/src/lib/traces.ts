@@ -1,7 +1,7 @@
 // The otel-traces Function: the GenAI spans the plugin recognised (model calls and tool calls) for the Spans and
 // Traces pages, and whole traces for the span detail.
-import type { Filters, TimeWindow } from './agent'
-import { absolute, KINDS, LABELS, OUTCOMES, type Kind, type Outcome } from './page-state'
+import type { TimeWindow } from './agent'
+import { absolute, KINDS, LABELS, OUTCOMES, type Kind, type SpanQuery } from './page-state'
 
 // Span fields. The `netdata.genai.*` ones are what the plugin's GenAI rules made of the span when it arrived: the
 // same values the charts count, whatever conventions the producer speaks.
@@ -135,9 +135,11 @@ export function cellParam(c: CallCell): string {
   return [c.after, c.before, c.min, c.max ?? ''].join(':')
 }
 
-function conditions(filters: Filters, outcomes: Outcome[], kinds: Kind[], cell?: CallCell | null) {
+export type Condition = { key: string; op: string; values: (string | number)[] }
+
+export function conditions({ filters, outcomes, kinds, where }: SpanQuery, cell?: CallCell | null): Condition[] {
   const all = Object.keys(KINDS) as Kind[]
-  const out: { key: string; op: string; values: (string | number)[] }[] = [
+  const out: Condition[] = [
     { key: K.kind, op: '=', values: (kinds.length ? kinds : all).map((k) => KINDS[k]) },
     { key: K.call, op: '!=', values: [DUPLICATE] },
   ]
@@ -146,6 +148,7 @@ function conditions(filters: Filters, outcomes: Outcome[], kinds: Kind[], cell?:
     if (key && values.length) out.push({ key, op: '=', values })
   }
   if (outcomes.length) out.push({ key: K.outcome, op: '=', values: outcomes.map((o) => OUTCOMES[o]) })
+  for (const [key, values] of Object.entries(where)) out.push({ key, op: '=', values })
   if (cell) {
     out.push({ key: 'duration', op: '>=', values: [Math.round(cell.min * 1e9)] })
     if (cell.max != null) out.push({ key: 'duration', op: '<', values: [Math.round(cell.max * 1e9)] })
@@ -157,9 +160,7 @@ export const ROWS_PAGE = 100
 
 export function exploreSpans(
   w: TimeWindow,
-  filters: Filters,
-  outcomes: Outcome[],
-  kinds: Kind[],
+  query: SpanQuery,
   anchor: string | undefined,
   signal?: AbortSignal,
   cell?: CallCell | null,
@@ -167,7 +168,7 @@ export function exploreSpans(
 ): Promise<ExploreAnswer> {
   const { after, before } = cell ?? absolute(w)
   const rows = { limit: rowLimit, columns: ROW_COLUMNS }
-  const where = conditions(filters, outcomes, kinds, cell)
+  const where = conditions(query, cell)
   const body = anchor
     ? { explore: { conditions: where, anchor, rows } }
     : { explore: { after, before, conditions: where, histogram: { stack: K.requestModel }, rows } }
@@ -228,9 +229,7 @@ function stackTotals(a: ExploreAnswer | undefined): StackTotals | undefined {
 // include services whose metrics are older than the Agent keeps.
 export async function spanStack(
   w: TimeWindow,
-  filters: Filters,
-  outcomes: Outcome[],
-  kinds: Kind[],
+  query: SpanQuery,
   key: string,
   signal?: AbortSignal,
 ): Promise<StackTotals> {
@@ -240,7 +239,7 @@ export async function spanStack(
       explore: {
         after,
         before,
-        conditions: conditions(filters, outcomes, kinds),
+        conditions: conditions(query),
         histogram: { stack: key },
         rows: { limit: 1, columns: [key] },
       },

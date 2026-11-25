@@ -1,8 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
-import { Check, Search } from 'lucide-react'
+import { Check, ChevronDown, Search, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
+import type React from 'react'
 import { Panel } from '@/components/Panel'
 import { Button } from '@/components/ui/button'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Skeleton } from '@/components/ui/skeleton'
 import { totals, type Filters } from '@/lib/agent'
 import { formatCount } from '@/lib/format'
@@ -113,7 +115,7 @@ function ChoiceList({
 }
 
 function FilterPanel({ name, label, source }: { name: FilterName; label: string; source: Source }) {
-  const { window, filters, outcomes, kinds, selected, toggleFilter, clearFilter } = usePageState()
+  const { window, filters, spanQuery, selected, toggleFilter, clearFilter } = usePageState()
   const key = LABELS[name]
   const chosen = selected(name)
   // Each panel honours the other filters, not its own, so a selection can be widened.
@@ -131,8 +133,9 @@ function FilterPanel({ name, label, source }: { name: FilterName; label: string;
       : null,
   )
   const spans = useQuery({
-    queryKey: ['span-values', window, filters, outcomes, kinds, key],
-    queryFn: ({ signal }) => spanStack(window, without(filters, key), outcomes, kinds, SPAN_KEY_OF[key], signal),
+    queryKey: ['span-values', window, spanQuery, key],
+    queryFn: ({ signal }) =>
+      spanStack(window, { ...spanQuery, filters: without(filters, key) }, SPAN_KEY_OF[key], signal),
     enabled: source === 'spans',
     refetchInterval: window.after < 0 ? 10_000 : false,
     placeholderData: (prev) => prev,
@@ -168,10 +171,10 @@ function FilterPanel({ name, label, source }: { name: FilterName; label: string;
 
 // What a span is: a model call or one run of a tool. The Metrics page charts the two apart, so it has no such filter.
 function KindPanel() {
-  const { window, filters, outcomes, kinds, toggleKind, clearFilter } = usePageState()
+  const { window, spanQuery, kinds, toggleKind, clearFilter } = usePageState()
   const spans = useQuery({
-    queryKey: ['span-values', window, filters, outcomes, [], K.kind],
-    queryFn: ({ signal }) => spanStack(window, filters, outcomes, [], K.kind, signal),
+    queryKey: ['span-values', window, { ...spanQuery, kinds: [] }, K.kind],
+    queryFn: ({ signal }) => spanStack(window, { ...spanQuery, kinds: [] }, K.kind, signal),
     refetchInterval: window.after < 0 ? 10_000 : false,
     placeholderData: (prev) => prev,
   })
@@ -194,10 +197,10 @@ function KindPanel() {
 
 // The outcome is no label of the charts' filters, so the Metrics page has no such filter.
 function OutcomePanel() {
-  const { window, filters, outcomes, kinds, toggleOutcome, clearFilter } = usePageState()
+  const { window, spanQuery, outcomes, toggleOutcome, clearFilter } = usePageState()
   const spans = useQuery({
-    queryKey: ['span-values', window, filters, [], kinds, K.outcome],
-    queryFn: ({ signal }) => spanStack(window, filters, [], kinds, K.outcome, signal),
+    queryKey: ['span-values', window, { ...spanQuery, outcomes: [] }, K.outcome],
+    queryFn: ({ signal }) => spanStack(window, { ...spanQuery, outcomes: [] }, K.outcome, signal),
     refetchInterval: window.after < 0 ? 10_000 : false,
     placeholderData: (prev) => prev,
   })
@@ -245,6 +248,63 @@ export function FilterPanels({ source }: { source: Source }) {
       ))}
       {source === 'spans' && <KindPanel />}
       {source === 'spans' && <OutcomePanel />}
+    </div>
+  )
+}
+
+function BarButton({ label, count, children }: { label: string; count: number; children: React.ReactNode }) {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button variant="outline" size="sm" className={cn('gap-1.5', count > 0 && 'border-primary/60')}>
+          {label}
+          {count > 0 && <span className="rounded bg-primary/15 px-1 font-mono text-xs tabular-nums">{count}</span>}
+          <ChevronDown className="size-3.5 text-muted-foreground" />
+        </Button>
+      </PopoverTrigger>
+      {/* The panel asks for its values only while it is open. */}
+      <PopoverContent align="start" className="w-80 p-0 [&>section]:border-0">
+        {children}
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+// The same filters as one row of buttons, for the pages whose subject is a list: each opens its panel of values.
+export function FilterBar() {
+  const { selected, kinds, outcomes, where, removeWhere } = usePageState()
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {PANELS.map((p) => (
+        <BarButton key={p.name} label={p.label} count={selected(p.name).length}>
+          <FilterPanel {...p} source="spans" />
+        </BarButton>
+      ))}
+      <BarButton label="Kind" count={kinds.length}>
+        <KindPanel />
+      </BarButton>
+      <BarButton label="Outcome" count={outcomes.length}>
+        <OutcomePanel />
+      </BarButton>
+      {Object.entries(where).flatMap(([key, values]) =>
+        values.map((value) => (
+          <span
+            key={`${key}=${value}`}
+            className="flex items-center gap-1 rounded-md border border-primary/60 py-1 pr-1 pl-2 text-xs"
+          >
+            <span className="text-muted-foreground">{key.replace(/^(resource\.)?attributes\./, '')}</span>
+            <span className="font-medium">{value}</span>
+            <button
+              type="button"
+              aria-label="Remove this filter"
+              className="rounded p-0.5 hover:bg-muted"
+              onClick={() => removeWhere(key, value)}
+            >
+              <X className="size-3" />
+            </button>
+          </span>
+        )),
+      )}
     </div>
   )
 }

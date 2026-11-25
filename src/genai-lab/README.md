@@ -18,17 +18,16 @@ pnpm dev            # http://127.0.0.1:8094/
 
 ## Pages
 
-- Every page opens with Service, Model and Provider panels: every value with its call count, scrollable, with a find
-  box; clicking values selects several, and each panel ignores its own selection so it can be widened. The window
-  and filters live in the URL.
+- The window and the filters (Service, Model, Provider; on Traces also Kind and Outcome) live in the URL and
+  carry from tab to tab. Metrics shows them as panels of values with their call counts; Traces as a row of
+  buttons that open the same panels.
 - Metrics (`/`): tiles, trends, latency and breakdowns from the `otel.derived_metrics.genai.*` charts; the panels count
   from the same charts. Drag a chart to pan, Shift + drag to zoom the whole page, double-click to return to the last
   relative window.
-- Spans (`/spans`): the spans the plugin recognised, from the `otel-traces` Function: model calls and tool calls
-  (`netdata.genai.kind`), each model call once. The panels count stored spans, plus a Kind and an Outcome panel.
-  A duration heatmap (a cell lists its spans) and a table; a row opens the span with its conversation, a summary
-  and the trace.
-- Traces (`/traces`): the same spans, one row per trace: model calls and tool calls with their failures, models,
-  providers, wall time (first span's start to last span's end), time in model calls, tokens summed. A row opens
-  its spans in order; a span opens its detail. Grouped in the browser from the spans loaded (200 per request), so
-  the oldest traces listed can miss spans.
+- Traces (`/traces`): the list to find one trace or one call, from the `otel-traces` Function. Rows are traces
+  (the model calls and tool calls the plugin recognised, added up per trace in the browser from the spans loaded,
+  200 per request, so the oldest traces listed can miss spans) or calls (one row per model call or tool call; a
+  row opens its detail). A cell of the Metrics duration heatmap opens the calls of that time and duration here.
+- A trace (`/traces/<id>`): read as one chat. Model calls and tool calls in order; each call shows the messages
+  that are new since the call it continues, then its answer, with its tokens and duration. A second tab holds the
+  waterfall of every span; a step or a span opens its detail.
