@@ -1,0 +1,24 @@
+# agentgateway, a gateway: every call it reports is one it forwarded, so every call is marked as a gateway's. Its
+# server span carries the call in the GenAI conventions, plus its own name for reasoning tokens and its measured
+# time to the first chunk in seconds; the client span to the provider carries none of it and is not a call.
+a = .attributes
+operation = a."gen_ai.operation.name"
+if .scope.name == "agentgateway" && includes(["chat", "text_completion", "generate_content", "embeddings"], operation) {
+  {
+    "operation": operation,
+    "provider": a."gen_ai.provider.name" || a."gen_ai.system",
+    "request_model": a."gen_ai.request.model",
+    "response_model": a."gen_ai.response.model",
+    "input_tokens": a."gen_ai.usage.input_tokens",
+    "output_tokens": a."gen_ai.usage.output_tokens",
+    "cache_read_tokens": a."gen_ai.usage.cache_read.input_tokens",
+    "cache_write_tokens": a."gen_ai.usage.cache_write.input_tokens" || a."gen_ai.usage.cache_creation.input_tokens",
+    "reasoning_tokens": a."gen_ai.usage.reasoning_tokens" || a."gen_ai.usage.reasoning.output_tokens",
+    "error": .status_code == 2 || exists(a."error.type"),
+    "time_to_first_chunk_seconds": a."agw.ai.time_to_first_token",
+    "response_id": a."gen_ai.response.id",
+    "gateway": true
+  }
+} else {
+  null
+}

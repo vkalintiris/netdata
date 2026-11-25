@@ -62,6 +62,12 @@ const RULES: &[RuleSource] = &[
         ),
     },
     RuleSource {
+        name: "agentgateway",
+        source: include_str!("../rules/agentgateway.vrl"),
+        gate: Gate::scope_in(&["agentgateway"])
+            .and_attribute_in("gen_ai.operation.name", CALL_OPERATIONS),
+    },
+    RuleSource {
         name: "anthropic_raw_input",
         source: include_str!("../rules/anthropic_raw_input.vrl"),
         // OpenLIT's error span has no attributes: the scope is all there is to go by.

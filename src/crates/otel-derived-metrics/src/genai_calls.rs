@@ -701,6 +701,30 @@ mod tests {
     }
 
     #[test]
+    fn every_call_agentgateway_reports_is_a_gateways() {
+        let genai = GenAiCalls::new(10, 10).unwrap();
+        let mut export = ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                scope_spans: vec![ScopeSpans {
+                    scope: Some(InstrumentationScope {
+                        name: "agentgateway".into(),
+                        ..Default::default()
+                    }),
+                    spans: vec![call(1, 0, chat_attributes())],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        let mut pending = Pending::default();
+        genai.record(&mut pending, "default", &mut export, 100);
+        assert_eq!(
+            markers(&export),
+            vec![(1, Some(annotation::GATEWAY.to_string()))]
+        );
+    }
+
+    #[test]
     fn the_litellm_sdk_inside_an_application_is_counted() {
         let genai = GenAiCalls::new(10, 10).unwrap();
         // The proxy's tracer name, but no route served: the SDK making the call itself.
