@@ -221,11 +221,14 @@ impl GenAiCalls {
                         }
                     }
                     match self.normalizer.tool_span(scope, span) {
-                        Ok(Some(tool)) => pending.tools.push(PendingTool {
-                            service: service(),
-                            tool,
-                            weight: adjusted_count(&span.trace_state),
-                        }),
+                        Ok(Some(tool)) => {
+                            annotation::annotate_tool(span, &tool);
+                            pending.tools.push(PendingTool {
+                                service: service(),
+                                tool,
+                                weight: adjusted_count(&span.trace_state),
+                            });
+                        }
                         Ok(None) => {}
                         Err(error) => self.log_rule_error(&error),
                     }
@@ -575,12 +578,20 @@ mod tests {
     #[test]
     fn marks_each_call_span_as_counted_or_duplicate() {
         let genai = GenAiCalls::new(10, 10).unwrap();
-        // A wrapper's span around the SDK's, a span that is no call, and one that only claims to be counted.
+        // A wrapper's span around the SDK's, a span that is no call, one that only claims to be counted, and a tool.
         let mut export = export_of(vec![
             call(1, 0, chat_attributes()),
             call(2, 1, chat_attributes()),
             call(3, 0, vec![text("http.request.method", "POST")]),
             call(4, 0, vec![text(annotation::CALL, annotation::COUNTED)]),
+            call(
+                5,
+                0,
+                vec![
+                    text("gen_ai.operation.name", "execute_tool"),
+                    text("gen_ai.tool.name", "get_weather"),
+                ],
+            ),
         ]);
         let mut pending = Pending::default();
         genai.record(&mut pending, "default", &mut export, 100);
@@ -591,7 +602,16 @@ mod tests {
                 (2, Some(annotation::COUNTED.to_string())),
                 (3, None),
                 (4, None),
+                (5, None),
             ]
+        );
+        let tool: Vec<&str> = export.resource_spans[0].scope_spans[0].spans[4].attributes[2..]
+            .iter()
+            .map(|attribute| attribute.key.as_str())
+            .collect();
+        assert_eq!(
+            tool,
+            vec![annotation::KIND, annotation::TOOL, annotation::OUTCOME]
         );
         let written: Vec<&str> = export.resource_spans[0].scope_spans[0].spans[1].attributes
             [chat_attributes().len()..]
@@ -601,6 +621,7 @@ mod tests {
         assert_eq!(
             written,
             vec![
+                annotation::KIND,
                 annotation::CALL,
                 annotation::OPERATION,
                 annotation::PROVIDER,

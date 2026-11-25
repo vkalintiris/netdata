@@ -2,9 +2,10 @@
 //!
 //! A stored span that a rule recognised as a model call carries its [`Call`] under [`PREFIX`], in one vocabulary
 //! whatever dialect the producer speaks, and says whether the call counted. A query that lists the spans marked
-//! [`COUNTED`] lists the calls the charts count.
+//! [`COUNTED`] lists the calls the charts count. A span recognised as one run of a tool carries its [`ToolCall`]
+//! the same way; [`KIND`] tells the two apart.
 
-use crate::Call;
+use crate::{Call, ToolCall};
 use opentelemetry_proto::tonic::common::v1::any_value::Value;
 use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue};
 use opentelemetry_proto::tonic::trace::v1::Span;
@@ -13,6 +14,11 @@ use opentelemetry_proto::tonic::trace::v1::Span;
 /// it is stored.
 pub const PREFIX: &str = "netdata.genai.";
 
+/// [`KIND_CALL`] or [`KIND_TOOL`], on every span a rule recognised.
+pub const KIND: &str = "netdata.genai.kind";
+pub const KIND_CALL: &str = "call";
+pub const KIND_TOOL: &str = "tool";
+
 /// [`COUNTED`] or [`DUPLICATE`], on every span that is a model call.
 pub const CALL: &str = "netdata.genai.call";
 /// The span is the one its call counts by.
@@ -20,6 +26,8 @@ pub const COUNTED: &str = "counted";
 /// The span is the second span of a call that another span counts.
 pub const DUPLICATE: &str = "duplicate";
 
+/// The tool's name, on a tool span whose producer names the tool.
+pub const TOOL: &str = "netdata.genai.tool";
 pub const OPERATION: &str = "netdata.genai.operation";
 pub const PROVIDER: &str = "netdata.genai.provider";
 pub const REQUEST_MODEL: &str = "netdata.genai.request_model";
@@ -77,6 +85,7 @@ pub fn annotate(span: &mut Span, call: &Call, counted: bool) {
     };
     let text = |value: &str| Value::StringValue(value.to_string());
 
+    add(KIND, text(KIND_CALL));
     add(CALL, text(if counted { COUNTED } else { DUPLICATE }));
     add(OPERATION, text(&call.operation));
     add(PROVIDER, text(call.provider_label()));
@@ -101,6 +110,26 @@ pub fn annotate(span: &mut Span, call: &Call, counted: bool) {
     if let Some(seconds) = call.time_to_first_chunk_seconds {
         add(TIME_TO_FIRST_CHUNK, Value::DoubleValue(seconds));
     }
+}
+
+/// Write `tool` onto `span`, the span it was normalized from. A tool the producer does not name gets no name, as
+/// on the charts.
+pub fn annotate_tool(span: &mut Span, tool: &ToolCall) {
+    let mut add = |key: &str, value: &str| {
+        span.attributes.push(KeyValue {
+            key: key.to_string(),
+            value: Some(AnyValue {
+                value: Some(Value::StringValue(value.to_string())),
+            }),
+            ..Default::default()
+        });
+    };
+
+    add(KIND, KIND_TOOL);
+    if let Some(name) = &tool.name {
+        add(TOOL, name);
+    }
+    add(OUTCOME, if tool.error { ERROR } else { SUCCESS });
 }
 
 #[cfg(test)]
@@ -188,6 +217,7 @@ mod tests {
             span.attributes,
             vec![
                 text("llm.model_name", "gpt-5"),
+                text(KIND, KIND_CALL),
                 text(CALL, DUPLICATE),
                 text(OPERATION, "chat"),
                 text(PROVIDER, "openai"),
@@ -199,6 +229,34 @@ mod tests {
                 attribute(CACHE_READ_TOKENS, Value::IntValue(29)),
                 attribute(TIME_TO_FIRST_CHUNK, Value::DoubleValue(0.25)),
             ]
+        );
+    }
+
+    #[test]
+    fn writes_a_tool_call_with_or_without_its_name() {
+        let tool = |name: Option<&str>, error| ToolCall {
+            name: name.map(str::to_string),
+            error,
+            end_time_unix_nano: 0,
+            duration_seconds: 0.0,
+        };
+
+        let mut named = Span::default();
+        annotate_tool(&mut named, &tool(Some("get_weather"), true));
+        assert_eq!(
+            named.attributes,
+            vec![
+                text(KIND, KIND_TOOL),
+                text(TOOL, "get_weather"),
+                text(OUTCOME, ERROR),
+            ]
+        );
+
+        let mut unnamed = Span::default();
+        annotate_tool(&mut unnamed, &tool(None, false));
+        assert_eq!(
+            unnamed.attributes,
+            vec![text(KIND, KIND_TOOL), text(OUTCOME, SUCCESS)]
         );
     }
 }
