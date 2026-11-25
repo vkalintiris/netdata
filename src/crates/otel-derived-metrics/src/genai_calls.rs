@@ -661,6 +661,7 @@ mod tests {
         let mut export = export_of(vec![call(1, 0, chat_attributes())]);
         let mut gateway_attributes = chat_attributes();
         gateway_attributes[0] = text("gen_ai.operation.name", "acompletion");
+        gateway_attributes.push(text("http.route", "/v1/chat/completions"));
         export.resource_spans[0].scope_spans.push(ScopeSpans {
             scope: Some(InstrumentationScope {
                 name: "litellm".into(),
@@ -696,6 +697,33 @@ mod tests {
                 gateway_calls: 1,
                 ..Uncounted::default()
             }
+        );
+    }
+
+    #[test]
+    fn the_litellm_sdk_inside_an_application_is_counted() {
+        let genai = GenAiCalls::new(10, 10).unwrap();
+        // The proxy's tracer name, but no route served: the SDK making the call itself.
+        let mut attributes = chat_attributes();
+        attributes[0] = text("gen_ai.operation.name", "acompletion");
+        let mut export = ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                scope_spans: vec![ScopeSpans {
+                    scope: Some(InstrumentationScope {
+                        name: "litellm".into(),
+                        ..Default::default()
+                    }),
+                    spans: vec![call(1, 0, attributes)],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        let mut pending = Pending::default();
+        genai.record(&mut pending, "default", &mut export, 100);
+        assert_eq!(
+            markers(&export),
+            vec![(1, Some(annotation::COUNTED.to_string()))]
         );
     }
 

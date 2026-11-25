@@ -1,5 +1,7 @@
 # LiteLLM, both dialects: by default it puts its call type (`acompletion`, ...) into `gen_ai.operation.name` and the
 # provider into `gen_ai.system`. Cache and reasoning counts exist only inside a Python repr, which is not read.
+# The LiteLLM proxy, a gateway, and the LiteLLM SDK inside an application use the same tracer; only the proxy writes
+# the route it served onto the call span, so only those calls are marked as a gateway's.
 a = .attributes
 call_type = a."gen_ai.operation.name"
 operation = if includes(["chat", "completion", "acompletion"], call_type) {
@@ -21,7 +23,7 @@ if .scope.name == "litellm" && operation != null {
     "output_tokens": a."gen_ai.usage.output_tokens",
     "error": .status_code == 2 || exists(a."error.type"),
     "response_id": a."gen_ai.response.id",
-    "gateway": true
+    "gateway": exists(a."http.route")
   }
 } else {
   null
