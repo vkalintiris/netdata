@@ -100,7 +100,7 @@ export function AgentgatewayPage() {
   const ttftH = useSeries(total(C.ttft))
   const durationTrendH = useSeries(trend(C.duration))
   const upstreamTrendH = useSeries(trend(C.upstream, { filters: { [L.subtype]: ['Llm'] } }))
-  const mcpByTool = useSeries(total(C.mcp, { groupByLabels: [L.mcpServer, L.mcpResource] }))
+  const mcpByTool = useSeries(total(C.mcp, { groupByLabels: [L.mcpServer, L.mcpResource], filters: { [L.mcpMethod]: ['tools/call'] } }))
   const mcpByMethod = useSeries(total(C.mcp, { groupByLabels: [L.mcpMethod] }))
 
   const statusCounts = byStatus.data ? totals(byStatus.data) : undefined
@@ -236,7 +236,7 @@ export function AgentgatewayPage() {
 
       <SectionTitle>MCP tools</SectionTitle>
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-        <Panel title="Tool calls by server and tool" subtitle="MCP requests through the gateway">
+        <Panel title="Tool calls by server and tool" subtitle="MCP tools/call requests through the gateway">
           <Ranking rows={mcpRows} format={formatCount} empty="No MCP traffic in this window" selected={[]} onSelect={() => {}} />
         </Panel>
         <Panel title="MCP requests by method" subtitle="tools/call, tools/list, initialize, ...">
@@ -329,7 +329,7 @@ function AccessLog({ narrow, onClear }: { narrow: Narrow; onClear: (name: keyof 
                   )}
                 </TableCell>
                 <TableCell>{r[F.team] ?? '–'}</TableCell>
-                <TableCell className="font-medium">{r[F.model] ?? r[F.tool] ?? r[F.mcpTarget] ?? '–'}</TableCell>
+                <TableCell className="font-medium">{r[F.model] ?? r[F.tool] ?? r[F.mcpMethod] ?? '–'}</TableCell>
                 <TableCell className="font-mono text-xs text-muted-foreground">{r[F.path] ?? '–'}</TableCell>
                 <TableCell className={NUM}>{formatSeconds(durationSeconds(r[F.duration]))}</TableCell>
                 <TableCell className={NUM}>{r[F.inputTokens] ? formatCount(Number(r[F.inputTokens])) : '–'}</TableCell>

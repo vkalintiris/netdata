@@ -43,6 +43,7 @@ export const F = {
   client: 'attributes.client.address',
   traceId: 'attributes.trace.id',
   mcpTarget: 'attributes.mcp.target',
+  mcpMethod: 'attributes.mcp.method.name',
   tool: 'attributes.gen_ai.tool.name',
   cursor: 'cursor',
   timestamp: 'timestamp',
