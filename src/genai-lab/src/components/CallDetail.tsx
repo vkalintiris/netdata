@@ -175,7 +175,7 @@ export function CallDetail({ id, onClose }: { id: string; onClose: () => void })
       <header className="flex items-start gap-2 border-b p-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <h3 className="truncate font-medium">{f(K.requestModel, K.responseModel) ?? 'Model call'}</h3>
+            <h3 className="truncate font-medium">{f(K.requestModel) ?? 'Model call'}</h3>
             {error && <Badge variant="destructive">error</Badge>}
           </div>
           <p className="truncate text-xs text-muted-foreground">

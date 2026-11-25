@@ -65,7 +65,8 @@ fn strip_under(attributes: &mut Vec<KeyValue>, prefix: &str) {
 }
 
 /// Write `call` onto `span`, the span it was normalized from; `counted` is whether the call counts by this span.
-/// A value the call does not have is left out.
+/// A count or time the call does not have is left out; a provider or model it does not have is named as the
+/// charts name it.
 pub fn annotate(span: &mut Span, call: &Call, counted: bool) {
     let mut add = |key: &str, value: Value| {
         span.attributes.push(KeyValue {
@@ -78,15 +79,9 @@ pub fn annotate(span: &mut Span, call: &Call, counted: bool) {
 
     add(CALL, text(if counted { COUNTED } else { DUPLICATE }));
     add(OPERATION, text(&call.operation));
-    for (key, value) in [
-        (PROVIDER, &call.provider),
-        (REQUEST_MODEL, &call.request_model),
-        (RESPONSE_MODEL, &call.response_model),
-    ] {
-        if let Some(value) = value {
-            add(key, text(value));
-        }
-    }
+    add(PROVIDER, text(call.provider_label()));
+    add(REQUEST_MODEL, text(call.request_model_label()));
+    add(RESPONSE_MODEL, text(call.response_model_label()));
     add(OUTCOME, text(if call.error { ERROR } else { SUCCESS }));
     let tokens = call.tokens;
     for (key, count) in [
@@ -197,6 +192,7 @@ mod tests {
                 text(OPERATION, "chat"),
                 text(PROVIDER, "openai"),
                 text(REQUEST_MODEL, "gpt-5"),
+                text(RESPONSE_MODEL, crate::UNKNOWN),
                 text(OUTCOME, ERROR),
                 attribute(INPUT_TOKENS, Value::IntValue(49)),
                 attribute(OUTPUT_TOKENS, Value::IntValue(17)),

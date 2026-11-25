@@ -214,7 +214,7 @@ export function CallsPage() {
                         </TableCell>
                         <TableCell className="max-w-56 truncate">{field(row.fields, K.service)}</TableCell>
                         <TableCell className="max-w-56 truncate font-medium">
-                          {field(row.fields, K.requestModel, K.responseModel) ?? '–'}
+                          {field(row.fields, K.requestModel) ?? '–'}
                         </TableCell>
                         <TableCell className="text-muted-foreground">
                           {field(row.fields, K.provider) ?? '–'}

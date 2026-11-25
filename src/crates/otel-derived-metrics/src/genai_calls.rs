@@ -291,15 +291,9 @@ impl GenAiCalls {
     fn count(&self, batch: &mut Batch, service: Labels, call: &Call, weight: f64) {
         let mut labels = service;
         labels.insert("gen_ai.operation.name", &call.operation);
-        for (key, value) in [
-            ("gen_ai.provider.name", &call.provider),
-            ("gen_ai.request.model", &call.request_model),
-            ("gen_ai.response.model", &call.response_model),
-        ] {
-            if let Some(value) = value {
-                labels.insert(key, value);
-            }
-        }
+        labels.insert("gen_ai.provider.name", call.provider_label());
+        labels.insert("gen_ai.request.model", call.request_model_label());
+        labels.insert("gen_ai.response.model", call.response_model_label());
         let outcome = if call.error {
             Outcome::Error
         } else {
@@ -469,6 +463,25 @@ mod tests {
             "CLABEL 'gen_ai.request.model' 'claude-sonnet-4-5' 1",
             "CLABEL 'gen_ai.response.model' 'claude-sonnet-4-5-20250929' 1",
             "CLABEL 'resource.attributes.service.name' 'assistant' 1",
+        ] {
+            assert!(out.contains(label), "{label} missing:\n{out}");
+        }
+    }
+
+    #[test]
+    fn charts_a_call_whose_producer_names_one_model() {
+        let out = render(vec![call(
+            1,
+            0,
+            vec![
+                text("gen_ai.operation.name", "chat"),
+                text("gen_ai.response.model", "qwen3.8-flash"),
+            ],
+        )]);
+        for label in [
+            "CLABEL 'gen_ai.provider.name' 'unknown' 1",
+            "CLABEL 'gen_ai.request.model' 'qwen3.8-flash' 1",
+            "CLABEL 'gen_ai.response.model' 'qwen3.8-flash' 1",
         ] {
             assert!(out.contains(label), "{label} missing:\n{out}");
         }

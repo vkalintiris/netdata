@@ -31,7 +31,6 @@ const ROW_COLUMNS = [
   K.service,
   K.name,
   K.requestModel,
-  K.responseModel,
   K.provider,
   K.outcome,
   K.inputTokens,

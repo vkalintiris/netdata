@@ -142,8 +142,12 @@ pub const CALL_OPERATIONS: &[&str] = &["chat", "text_completion", "generate_cont
 pub struct Call {
     /// One of [`CALL_OPERATIONS`].
     pub operation: String,
+    /// `None` when the producer does not report it; [`Self::provider_label`] is what the charts show.
     pub provider: Option<String>,
+    /// `None` when the producer does not report it; [`Self::request_model_label`] is what the charts show.
     pub request_model: Option<String>,
+    /// `None` when the producer does not report it or no answer came; [`Self::response_model_label`] is what the
+    /// charts show.
     pub response_model: Option<String>,
     pub tokens: Tokens,
     pub error: bool,
@@ -155,6 +159,33 @@ pub struct Call {
     pub time_to_first_chunk_seconds: Option<f64>,
     /// The provider's id of the answer, which identifies one call across records.
     pub response_id: Option<String>,
+}
+
+/// The label value of what the producer of a call did not report. A missing label cannot be filtered on; this
+/// value can.
+pub const UNKNOWN: &str = "unknown";
+
+impl Call {
+    /// The provider, as a label of the charts and on the stored span.
+    pub fn provider_label(&self) -> &str {
+        self.provider.as_deref().unwrap_or(UNKNOWN)
+    }
+
+    /// The requested model, as a label of the charts and on the stored span. A producer that reports one model
+    /// name and not which model was requested reports, in every capture, the name that was asked for: that name
+    /// stands in.
+    pub fn request_model_label(&self) -> &str {
+        self.request_model
+            .as_deref()
+            .or(self.response_model.as_deref())
+            .unwrap_or(UNKNOWN)
+    }
+
+    /// The answering model, as a label of the charts and on the stored span. The requested model does not stand
+    /// in: a call can end without an answer.
+    pub fn response_model_label(&self) -> &str {
+        self.response_model.as_deref().unwrap_or(UNKNOWN)
+    }
 }
 
 /// Token counts of one call; `None` is absent, not zero.
@@ -634,6 +665,34 @@ mod tests {
             string("gen_ai.response.id", "msg_1"),
         ]);
         assert_eq!(normalizer.span(None, &old).unwrap(), Some(expected));
+    }
+
+    #[test]
+    fn labels_name_what_the_producer_left_out() {
+        let normalizer = Normalizer::new().unwrap();
+        let labels = |attributes: Vec<KeyValue>| {
+            let call = normalizer.span(None, &span(attributes)).unwrap().unwrap();
+            [
+                call.provider_label().to_string(),
+                call.request_model_label().to_string(),
+                call.response_model_label().to_string(),
+            ]
+        };
+        let chat = || string("gen_ai.operation.name", "chat");
+        assert_eq!(labels(vec![chat()]), ["unknown", "unknown", "unknown"]);
+        // The one model name a producer reports stands in for the requested model, not for the answering one.
+        assert_eq!(
+            labels(vec![chat(), string("gen_ai.response.model", "gpt-5")]),
+            ["unknown", "gpt-5", "gpt-5"]
+        );
+        assert_eq!(
+            labels(vec![
+                chat(),
+                string("gen_ai.provider.name", "openai"),
+                string("gen_ai.request.model", "gpt-5"),
+            ]),
+            ["openai", "gpt-5", "unknown"]
+        );
     }
 
     #[test]
