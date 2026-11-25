@@ -27,8 +27,9 @@ export const K = {
   errorType: 'attributes.error.type',
 } as const
 
-// A second span of a model call that another span counts; the pages list each call once.
-const DUPLICATE = 'duplicate'
+// Model-call spans the charts do not count: the second span of a call another span counts, and a gateway's span of a
+// call it forwarded (the Gateways pages show those). The pages list each call once.
+export const NOT_COUNTED = ['duplicate', 'gateway']
 
 const ROW_COLUMNS = [
   K.service,
@@ -151,7 +152,7 @@ export function conditions({ filters, outcomes, kinds, where }: SpanQuery, cell?
   const all = Object.keys(KINDS) as Kind[]
   const out: Condition[] = [
     { key: K.kind, op: '=', values: (kinds.length ? kinds : all).map((k) => KINDS[k]) },
-    { key: K.call, op: '!=', values: [DUPLICATE] },
+    { key: K.call, op: '!=', values: NOT_COUNTED },
   ]
   for (const [label, values] of Object.entries(filters)) {
     const key = SPAN_KEYS[label]

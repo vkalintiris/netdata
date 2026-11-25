@@ -57,6 +57,21 @@ describe('transcriptOf', () => {
     ])
   })
 
+  it("reads a gateway's calls only when the application reported none", () => {
+    const gateway = (id: string, startS: number, input: Wire[], output: Wire[]): TraceSpan => {
+      const span = call(id, startS, input, output)
+      return { ...span, fields: span.fields.map(([k, v]) => [k, k === K.call ? 'gateway' : v]) }
+    }
+    // The application's call and, inside it, the gateway's span of the same call.
+    expect(shown([call('1', 10, [system, ask], [fifty]), gateway('g1', 10, [system, ask], [fifty])])).toEqual([
+      { call: '1', added: ['system: Guess the number.', 'user: Your first guess?'], answer: ['assistant: 50'], startsOver: false },
+    ])
+    // Only the gateway reported the call.
+    expect(shown([gateway('g1', 10, [system, ask], [fifty])])).toEqual([
+      { call: 'g1', added: ['system: Guess the number.', 'user: Your first guess?'], answer: ['assistant: 50'], startsOver: false },
+    ])
+  })
+
   it('shows the whole input of a call that continues no earlier one', () => {
     const other = [text('system', 'Summarize.'), text('user', 'The game so far.')]
     expect(shown([call('1', 10, [system, ask], [fifty]), call('2', 20, other, [text('assistant', 'Done.')])])).toEqual([

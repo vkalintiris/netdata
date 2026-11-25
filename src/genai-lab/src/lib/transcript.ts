@@ -1,7 +1,7 @@
 // A trace read as one chat: its model calls and tool calls in order, each call showing only the messages that are
 // new since the call it continues.
 import { conversationOfSpan, type Conversation, type Message } from './conversation'
-import { field, K, type TraceSpan } from './traces'
+import { field, K, NOT_COUNTED, type TraceSpan } from './traces'
 
 export type CallStep = {
   kind: 'call'
@@ -26,9 +26,14 @@ export function isToolSpan(span: TraceSpan): boolean {
   return field(span.fields, K.kind) === 'tool'
 }
 
-// A model call the charts count: the second span of a call that two instrumentations report is left out.
+// A model call the charts count: the second span of a call that two instrumentations report is left out, and so is
+// a gateway's span of a call it forwarded.
 export function isCallSpan(span: TraceSpan): boolean {
-  return field(span.fields, K.kind) === 'call' && field(span.fields, K.call) !== 'duplicate'
+  return field(span.fields, K.kind) === 'call' && !NOT_COUNTED.includes(field(span.fields, K.call) ?? '')
+}
+
+export function isGatewayCallSpan(span: TraceSpan): boolean {
+  return field(span.fields, K.kind) === 'call' && field(span.fields, K.call) === 'gateway'
 }
 
 // A call recorded by two instrumentations is two spans, and often only one of them carries the messages; an
@@ -61,7 +66,9 @@ function key(message: Message): string {
 }
 
 export function transcriptOf(spans: TraceSpan[]): Step[] {
-  const ordered = spans.filter((s) => isCallSpan(s) || isToolSpan(s)).sort((a, b) => a.start_ns - b.start_ns)
+  // A trace only a gateway reported (the application behind it sends nothing) reads from the gateway's calls.
+  const isStepCall = spans.some(isCallSpan) ? isCallSpan : isGatewayCallSpan
+  const ordered = spans.filter((s) => isStepCall(s) || isToolSpan(s)).sort((a, b) => a.start_ns - b.start_ns)
   const steps: Step[] = []
   // The input of every earlier call, as message keys.
   const earlier: string[][] = []
