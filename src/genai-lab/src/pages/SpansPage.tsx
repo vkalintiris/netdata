@@ -2,7 +2,7 @@ import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { Info, X } from 'lucide-react'
 import { useMemo } from 'react'
 import { useSearchParams } from 'react-router'
-import { CallDetail } from '@/components/CallDetail'
+import { SpanDetail } from '@/components/SpanDetail'
 import { FilterPanels } from '@/components/FilterPanels'
 import { Panel } from '@/components/Panel'
 import { Badge } from '@/components/ui/badge'
@@ -14,7 +14,7 @@ import { absolute, usePageState } from '@/lib/page-state'
 import { Heatmap, type HeatCell, type HeatmapData } from '@/components/Heatmap'
 import {
   cellParam,
-  exploreCalls,
+  exploreSpans,
   field,
   K,
   parseCell,
@@ -71,25 +71,25 @@ export function cellOf(c: HeatCell, d: HeatmapData): CallCell {
 
 const cellTime = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 
-export function CallsPage() {
-  const { window, filters, outcomes } = usePageState()
+export function SpansPage() {
+  const { window, filters, outcomes, kinds } = usePageState()
   const [params, setParams] = useSearchParams()
-  const selected = params.get('call')
+  const selected = params.get('span')
   const cell = parseCell(params.get('cell'))
   const live = window.after < 0 && !selected && !cell
 
   // The list follows the selected heatmap cell; the heatmap keeps showing the whole window.
   const query = useInfiniteQuery({
-    queryKey: ['calls', window, filters, outcomes, cell],
-    queryFn: ({ pageParam, signal }) => exploreCalls(window, filters, outcomes, pageParam, signal, cell),
+    queryKey: ['spans', window, filters, outcomes, kinds, cell],
+    queryFn: ({ pageParam, signal }) => exploreSpans(window, filters, outcomes, kinds, pageParam, signal, cell),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last) => last.rows.anchor?.next,
     refetchInterval: live ? 10_000 : false,
     placeholderData: (prev) => prev,
   })
   const overview = useQuery({
-    queryKey: ['calls-overview', window, filters, outcomes],
-    queryFn: ({ signal }) => exploreCalls(window, filters, outcomes, undefined, signal, null, 1),
+    queryKey: ['spans-overview', window, filters, outcomes, kinds],
+    queryFn: ({ signal }) => exploreSpans(window, filters, outcomes, kinds, undefined, signal, null, 1),
     enabled: cell != null,
     refetchInterval: window.after < 0 && !selected ? 10_000 : false,
     placeholderData: (prev) => prev,
@@ -111,15 +111,15 @@ export function CallsPage() {
       const next = new URLSearchParams(prev)
       if (c) next.set('cell', cellParam(c))
       else next.delete('cell')
-      next.delete('call')
+      next.delete('span')
       return next
     })
 
   const select = (row: SpanRow | null) =>
     setParams((prev) => {
       const next = new URLSearchParams(prev)
-      if (row) next.set('call', `${row.trace_id}:${row.span_id}:${row.start_ns}`)
-      else next.delete('call')
+      if (row) next.set('span', `${row.trace_id}:${row.span_id}:${row.start_ns}`)
+      else next.delete('span')
       return next
     })
 
@@ -131,11 +131,11 @@ export function CallsPage() {
       <FilterPanels source="spans" />
 
       <Panel
-        title="Call duration heatmap"
+        title="Span duration heatmap"
         subtitle={
           whole
-            ? `${formatCount(whole.rows.matched)} spans per time and duration; click a cell to list its calls`
-            : 'spans per time and duration; click a cell to list its calls'
+            ? `${formatCount(whole.rows.matched)} spans per time and duration; click a cell to list its spans`
+            : 'spans per time and duration; click a cell to list its spans'
         }
       >
         <Heatmap
@@ -143,7 +143,7 @@ export function CallsPage() {
           formatBound={formatSeconds}
           selected={selectedCell}
           onCell={(c, d) => setCell(cellOf(c, d))}
-          cellHint="Click to list these calls"
+          cellHint="Click to list these spans"
         />
       </Panel>
 
@@ -163,9 +163,9 @@ export function CallsPage() {
       <p className="flex items-start gap-2 text-xs text-muted-foreground">
         <Info className="mt-px size-3.5 shrink-0" />
         <span>
-          Lists the spans the Metrics tab counts model calls by, in any conventions. A call reported by two
-          instrumentations is listed once, by the span it is counted by. Spans stored before the plugin marked
-          them are not listed.
+          Lists the spans the Metrics tab counts: model calls and tool calls, in any conventions. A model call
+          reported by two instrumentations is listed once, by the span it is counted by. Other spans of a trace
+          (agent steps, framework and application spans) show in the trace of a span, not here.
         </span>
       </p>
 
@@ -180,7 +180,7 @@ export function CallsPage() {
               ))}
             </div>
           ) : rows.length === 0 ? (
-            <p className="p-6 text-center text-sm text-muted-foreground">No model calls match in this window.</p>
+            <p className="p-6 text-center text-sm text-muted-foreground">No spans match in this window.</p>
           ) : (
             <>
               <Table>
@@ -188,7 +188,8 @@ export function CallsPage() {
                   <TableRow>
                     <TableHead className={withDay ? 'w-36' : 'w-24'}>Time</TableHead>
                     <TableHead>Service</TableHead>
-                    <TableHead>Model</TableHead>
+                    <TableHead>Kind</TableHead>
+                    <TableHead>Model or tool</TableHead>
                     <TableHead>Provider</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead className="text-right">Duration</TableHead>
@@ -200,6 +201,7 @@ export function CallsPage() {
                   {rows.map((row) => {
                     const id = `${row.trace_id}:${row.span_id}:${row.start_ns}`
                     const active = selected === id
+                    const tool = field(row.fields, K.kind) === 'tool'
                     const tokensIn = field(row.fields, K.inputTokens)
                     const tokensOut = field(row.fields, K.outputTokens)
                     return (
@@ -213,8 +215,11 @@ export function CallsPage() {
                           {(withDay ? dayTimeFmt : timeFmt).format(row.start_ns / 1e6)}
                         </TableCell>
                         <TableCell className="max-w-56 truncate">{field(row.fields, K.service)}</TableCell>
+                        <TableCell className="text-xs whitespace-nowrap text-muted-foreground">
+                          {tool ? 'tool call' : 'model call'}
+                        </TableCell>
                         <TableCell className="max-w-56 truncate font-medium">
-                          {field(row.fields, K.requestModel) ?? '–'}
+                          {(tool ? field(row.fields, K.tool, K.name) : field(row.fields, K.requestModel)) ?? '–'}
                         </TableCell>
                         <TableCell className="text-muted-foreground">
                           {field(row.fields, K.provider) ?? '–'}
@@ -254,7 +259,7 @@ export function CallsPage() {
             </>
           )}
         </div>
-        {selected && <CallDetail key={selected} id={selected} onClose={() => select(null)} />}
+        {selected && <SpanDetail key={selected} id={selected} onClose={() => select(null)} />}
       </div>
     </div>
   )

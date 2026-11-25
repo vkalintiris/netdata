@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { totals, type Filters } from '@/lib/agent'
 import { formatCount } from '@/lib/format'
-import { LABELS, OUTCOMES, usePageState, type FilterName, type Outcome } from '@/lib/page-state'
+import { KINDS, LABELS, OUTCOMES, usePageState, type FilterName, type Kind, type Outcome } from '@/lib/page-state'
 import { useSeries } from '@/lib/queries'
 import { K, SPAN_KEY_OF, spanStack } from '@/lib/traces'
 import { cn } from '@/lib/utils'
@@ -21,7 +21,7 @@ const PANELS: { name: FilterName; label: string }[] = [
   { name: 'provider', label: 'Provider' },
 ]
 
-const UNSET = 'The attribute is missing on these calls'
+const UNSET = 'The attribute is missing on these calls or spans'
 const OTHER = 'Values past the query limit, added up; type a value to filter by it'
 
 function without(filters: Filters, key: string): Filters {
@@ -113,7 +113,7 @@ function ChoiceList({
 }
 
 function FilterPanel({ name, label, source }: { name: FilterName; label: string; source: Source }) {
-  const { window, filters, outcomes, selected, toggleFilter, clearFilter } = usePageState()
+  const { window, filters, outcomes, kinds, selected, toggleFilter, clearFilter } = usePageState()
   const key = LABELS[name]
   const chosen = selected(name)
   // Each panel honours the other filters, not its own, so a selection can be widened.
@@ -131,8 +131,8 @@ function FilterPanel({ name, label, source }: { name: FilterName; label: string;
       : null,
   )
   const spans = useQuery({
-    queryKey: ['span-values', window, filters, outcomes, key],
-    queryFn: ({ signal }) => spanStack(window, without(filters, key), outcomes, SPAN_KEY_OF[key], signal),
+    queryKey: ['span-values', window, filters, outcomes, kinds, key],
+    queryFn: ({ signal }) => spanStack(window, without(filters, key), outcomes, kinds, SPAN_KEY_OF[key], signal),
     enabled: source === 'spans',
     refetchInterval: window.after < 0 ? 10_000 : false,
     placeholderData: (prev) => prev,
@@ -158,7 +158,7 @@ function FilterPanel({ name, label, source }: { name: FilterName; label: string;
   return (
     <Panel
       title={label}
-      subtitle="calls"
+      subtitle={source === 'metrics' ? 'calls' : 'spans'}
       action={chosen.length > 0 && <ClearButton onClick={() => clearFilter(name)} />}
     >
       <ChoiceList label={label} choices={choices} chosen={chosen} onToggle={(v) => toggleFilter(name, v)} searchable />
@@ -166,12 +166,38 @@ function FilterPanel({ name, label, source }: { name: FilterName; label: string;
   )
 }
 
-// The outcome is no label of the charts' filters, so it is a Calls-only filter.
-function OutcomePanel() {
-  const { window, filters, outcomes, toggleOutcome, clearFilter } = usePageState()
+// What a span is: a model call or one run of a tool. The Metrics page charts the two apart, so it has no such filter.
+function KindPanel() {
+  const { window, filters, outcomes, kinds, toggleKind, clearFilter } = usePageState()
   const spans = useQuery({
-    queryKey: ['span-values', window, filters, [], K.outcome],
-    queryFn: ({ signal }) => spanStack(window, filters, [], K.outcome, signal),
+    queryKey: ['span-values', window, filters, outcomes, [], K.kind],
+    queryFn: ({ signal }) => spanStack(window, filters, outcomes, [], K.kind, signal),
+    refetchInterval: window.after < 0 ? 10_000 : false,
+    placeholderData: (prev) => prev,
+  })
+  const choices = useMemo((): Choice[] | undefined => {
+    const t = spans.data
+    if (!t) return undefined
+    return (Object.keys(KINDS) as Kind[]).map((k) => ({ value: k, count: t.values[KINDS[k]] ?? 0 }))
+  }, [spans.data])
+
+  return (
+    <Panel
+      title="Kind"
+      subtitle="spans"
+      action={kinds.length > 0 && <ClearButton onClick={() => clearFilter('kind')} />}
+    >
+      <ChoiceList label="Kind" choices={choices} chosen={kinds} onToggle={(v) => toggleKind(v as Kind)} searchable={false} />
+    </Panel>
+  )
+}
+
+// The outcome is no label of the charts' filters, so the Metrics page has no such filter.
+function OutcomePanel() {
+  const { window, filters, outcomes, kinds, toggleOutcome, clearFilter } = usePageState()
+  const spans = useQuery({
+    queryKey: ['span-values', window, filters, [], kinds, K.outcome],
+    queryFn: ({ signal }) => spanStack(window, filters, [], kinds, K.outcome, signal),
     refetchInterval: window.after < 0 ? 10_000 : false,
     placeholderData: (prev) => prev,
   })
@@ -187,7 +213,7 @@ function OutcomePanel() {
   return (
     <Panel
       title="Outcome"
-      subtitle="calls"
+      subtitle="spans"
       action={outcomes.length > 0 && <ClearButton onClick={() => clearFilter('outcome')} />}
     >
       <ChoiceList
@@ -209,14 +235,15 @@ function ClearButton({ onClick }: { onClick: () => void }) {
   )
 }
 
-// The page filters as panels of values with their call counts: from the GenAI charts on Metrics, from the
-// stored spans on Calls, so a panel offers only values its page can show.
+// The page filters as panels of values with their counts: calls from the GenAI charts on Metrics, stored spans on
+// Spans and Traces, so a panel offers only values its page can show.
 export function FilterPanels({ source }: { source: Source }) {
   return (
-    <div className={cn('grid grid-cols-1 gap-3 md:grid-cols-3', source === 'spans' && 'xl:grid-cols-4')}>
+    <div className={cn('grid grid-cols-1 gap-3 md:grid-cols-3', source === 'spans' && 'xl:grid-cols-5')}>
       {PANELS.map((p) => (
         <FilterPanel key={p.name} {...p} source={source} />
       ))}
+      {source === 'spans' && <KindPanel />}
       {source === 'spans' && <OutcomePanel />}
     </div>
   )

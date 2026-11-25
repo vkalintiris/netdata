@@ -140,7 +140,7 @@ function Waterfall({ spans, selected }: { spans: TraceSpan[]; selected: string }
   )
 }
 
-export function CallDetail({ id, onClose }: { id: string; onClose: () => void }) {
+export function SpanDetail({ id, onClose }: { id: string; onClose: () => void }) {
   const [traceId, spanId, startNs] = id.split(':')
   const trace = useQuery({
     queryKey: ['trace', traceId, startNs],
@@ -170,6 +170,7 @@ export function CallDetail({ id, onClose }: { id: string; onClose: () => void })
 
   const f = (...keys: string[]) => field(span?.fields, ...keys)
   const error = f(K.outcome) === 'error'
+  const tool = f(K.kind) === 'tool'
   const finishReasons =
     f(K.finishReasons) ??
     (conversation?.messages
@@ -183,7 +184,10 @@ export function CallDetail({ id, onClose }: { id: string; onClose: () => void })
       <header className="flex items-start gap-2 border-b p-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <h3 className="truncate font-medium">{f(K.requestModel) ?? 'Model call'}</h3>
+            <h3 className="truncate font-medium">
+              {tool ? (f(K.tool, K.name) ?? 'Tool call') : (f(K.requestModel) ?? 'Model call')}
+            </h3>
+            {tool && <Badge variant="outline">tool</Badge>}
             {error && <Badge variant="destructive">error</Badge>}
           </div>
           <p className="truncate text-xs text-muted-foreground">
@@ -192,9 +196,11 @@ export function CallDetail({ id, onClose }: { id: string; onClose: () => void })
           {span && (
             <p className="mt-1 flex flex-wrap gap-x-3 font-mono text-xs tabular-nums">
               <span>{formatSeconds(span.duration_ns / 1e9)}</span>
-              <span>
-                {count(f(K.inputTokens)) ?? '–'} in · {count(f(K.outputTokens)) ?? '–'} out
-              </span>
+              {!tool && (
+                <span>
+                  {count(f(K.inputTokens)) ?? '–'} in · {count(f(K.outputTokens)) ?? '–'} out
+                </span>
+              )}
               {finishReasons && <span className="text-muted-foreground">{finishReasons}</span>}
             </p>
           )}
@@ -252,8 +258,9 @@ export function CallDetail({ id, onClose }: { id: string; onClose: () => void })
               </div>
             ) : (
               <p className="text-sm text-muted-foreground">
-                This call carries no messages. Most instrumentations record them only when content capture is turned
-                on.
+                {tool
+                  ? 'A tool call has no conversation of its own; its input and output, when the producer records them, are among the attributes on the Summary tab.'
+                  : 'This call carries no messages. Most instrumentations record them only when content capture is turned on.'}
               </p>
             )}
           </TabsContent>
@@ -261,16 +268,21 @@ export function CallDetail({ id, onClose }: { id: string; onClose: () => void })
           <TabsContent value="summary" className="min-h-0 overflow-y-auto p-3">
             <div className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3">
               <Fact label="Duration">{formatSeconds(span.duration_ns / 1e9)}</Fact>
-              <Fact label="Operation">{f(K.operation)}</Fact>
-              <Fact label="Provider">{f(K.provider)}</Fact>
-              <Fact label="Requested model">{f(K.requestModel)}</Fact>
-              <Fact label="Answering model">{f(K.responseModel)}</Fact>
-              <Fact label="Finish reasons">{finishReasons}</Fact>
-              <Fact label="Input tokens">{count(f(K.inputTokens))}</Fact>
-              <Fact label="Output tokens">{count(f(K.outputTokens))}</Fact>
-              <Fact label="Reasoning tokens">{count(f(K.reasoning))}</Fact>
-              <Fact label="Cache read">{count(f(K.cacheRead))}</Fact>
-              <Fact label="Cache write">{count(f(K.cacheWrite))}</Fact>
+              {tool && <Fact label="Tool">{f(K.tool)}</Fact>}
+              {!tool && (
+                <>
+                  <Fact label="Operation">{f(K.operation)}</Fact>
+                  <Fact label="Provider">{f(K.provider)}</Fact>
+                  <Fact label="Requested model">{f(K.requestModel)}</Fact>
+                  <Fact label="Answering model">{f(K.responseModel)}</Fact>
+                  <Fact label="Finish reasons">{finishReasons}</Fact>
+                  <Fact label="Input tokens">{count(f(K.inputTokens))}</Fact>
+                  <Fact label="Output tokens">{count(f(K.outputTokens))}</Fact>
+                  <Fact label="Reasoning tokens">{count(f(K.reasoning))}</Fact>
+                  <Fact label="Cache read">{count(f(K.cacheRead))}</Fact>
+                  <Fact label="Cache write">{count(f(K.cacheWrite))}</Fact>
+                </>
+              )}
               {error && <Fact label="Error">{f(K.errorType, K.statusMessage)}</Fact>}
             </div>
             <button

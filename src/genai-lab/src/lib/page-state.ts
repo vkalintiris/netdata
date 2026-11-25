@@ -11,13 +11,22 @@ export const LABELS = {
 export type FilterName = keyof typeof LABELS
 
 // The outcome filter matches the outcome the plugin stored on the span; the Metrics page's charts carry it as a
-// dimension, not a label, so it applies on the Calls page only.
+// dimension, not a label, so it applies on the Spans and Traces pages only.
 export const OUTCOMES = { succeeded: 'success', failed: 'error' } as const
 
 export type Outcome = keyof typeof OUTCOMES
 
 function isOutcome(v: string): v is Outcome {
   return v in OUTCOMES
+}
+
+// What the plugin recognised a span as, as it stored it on the span.
+export const KINDS = { 'model call': 'call', 'tool call': 'tool' } as const
+
+export type Kind = keyof typeof KINDS
+
+function isKind(v: string): v is Kind {
+  return v in KINDS
 }
 
 export const PRESETS = [
@@ -70,6 +79,7 @@ export function usePageState() {
   }, [params])
 
   const outcomes: Outcome[] = useMemo(() => params.getAll('outcome').filter(isOutcome), [params])
+  const kinds: Kind[] = useMemo(() => params.getAll('kind').filter(isKind), [params])
 
   const update = useCallback(
     (fn: (p: URLSearchParams) => void) =>
@@ -105,24 +115,26 @@ export function usePageState() {
     [update],
   )
 
-  const toggleOutcome = useCallback(
-    (value: Outcome) =>
+  const toggleChoice = useCallback(
+    (name: 'outcome' | 'kind', value: string) =>
       update((p) => {
-        const values = p.getAll('outcome')
-        p.delete('outcome')
+        const values = p.getAll(name)
+        p.delete(name)
         for (const v of values.includes(value) ? values.filter((v) => v !== value) : [...values, value]) {
-          p.append('outcome', v)
+          p.append(name, v)
         }
       }),
     [update],
   )
+  const toggleOutcome = useCallback((value: Outcome) => toggleChoice('outcome', value), [toggleChoice])
+  const toggleKind = useCallback((value: Kind) => toggleChoice('kind', value), [toggleChoice])
 
   // One URL update per clear: react-router does not chain functional updates made in the same event.
-  const clearFilter = useCallback((name: FilterName | 'outcome') => update((p) => p.delete(name)), [update])
+  const clearFilter = useCallback((name: FilterName | 'outcome' | 'kind') => update((p) => p.delete(name)), [update])
 
   const selected = useCallback((name: FilterName) => params.getAll(name), [params])
 
-  return { window, filters, outcomes, setWindow, toggleFilter, toggleOutcome, clearFilter, selected }
+  return { window, filters, outcomes, kinds, setWindow, toggleFilter, toggleOutcome, toggleKind, clearFilter, selected }
 }
 
 // Absolute bounds of a window, for panning and zooming relative presets.

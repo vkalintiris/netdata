@@ -24,9 +24,11 @@ pnpm dev            # http://127.0.0.1:8094/
 - Metrics (`/`): tiles, trends, latency and breakdowns from the `otel.derived_metrics.genai.*` charts; the panels count
   from the same charts. Drag a chart to pan, Shift + drag to zoom the whole page, double-click to return to the last
   relative window.
-- Calls: model-call spans from the `otel-traces` Function; the panels count stored spans, plus an Outcome panel
-  (this page only). A duration heatmap (a cell lists its calls) and a table; a row opens the call with its
-  conversation, a summary and the trace.
-- Runs (`/runs`): the same model-call spans, one row per trace: calls and failures, models, providers, wall time
-  (first call's start to last call's end), time in calls, tokens summed. A row opens its calls; a call opens its
-  detail. Grouped in the browser from the calls loaded (200 per request), so the oldest runs listed can miss calls.
+- Spans (`/spans`): the spans the plugin recognised, from the `otel-traces` Function: model calls and tool calls
+  (`netdata.genai.kind`), each model call once. The panels count stored spans, plus a Kind and an Outcome panel.
+  A duration heatmap (a cell lists its spans) and a table; a row opens the span with its conversation, a summary
+  and the trace.
+- Traces (`/traces`): the same spans, one row per trace: model calls and tool calls with their failures, models,
+  providers, wall time (first span's start to last span's end), time in model calls, tokens summed. A row opens
+  its spans in order; a span opens its detail. Grouped in the browser from the spans loaded (200 per request), so
+  the oldest traces listed can miss spans.

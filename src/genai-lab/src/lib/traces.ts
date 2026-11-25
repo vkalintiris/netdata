@@ -1,6 +1,7 @@
-// The otel-traces Function: model-call spans for the Calls page and whole traces for the call detail.
+// The otel-traces Function: the GenAI spans the plugin recognised (model calls and tool calls) for the Spans and
+// Traces pages, and whole traces for the span detail.
 import type { Filters, TimeWindow } from './agent'
-import { absolute, LABELS, OUTCOMES, type Outcome } from './page-state'
+import { absolute, KINDS, LABELS, OUTCOMES, type Kind, type Outcome } from './page-state'
 
 // Span fields. The `netdata.genai.*` ones are what the plugin's GenAI rules made of the span when it arrived: the
 // same values the charts count, whatever conventions the producer speaks.
@@ -9,7 +10,9 @@ export const K = {
   name: 'name',
   status: 'status.code',
   statusMessage: 'status.message',
+  kind: 'attributes.netdata.genai.kind',
   call: 'attributes.netdata.genai.call',
+  tool: 'attributes.netdata.genai.tool',
   operation: 'attributes.netdata.genai.operation',
   requestModel: 'attributes.netdata.genai.request_model',
   responseModel: 'attributes.netdata.genai.response_model',
@@ -24,12 +27,14 @@ export const K = {
   errorType: 'attributes.error.type',
 } as const
 
-// The span a model call is counted by on the charts; a second span of the same call is marked `duplicate`.
-const COUNTED = 'counted'
+// A second span of a model call that another span counts; the pages list each call once.
+const DUPLICATE = 'duplicate'
 
 const ROW_COLUMNS = [
   K.service,
   K.name,
+  K.kind,
+  K.tool,
   K.requestModel,
   K.provider,
   K.outcome,
@@ -130,9 +135,11 @@ export function cellParam(c: CallCell): string {
   return [c.after, c.before, c.min, c.max ?? ''].join(':')
 }
 
-function conditions(filters: Filters, outcomes: Outcome[], cell?: CallCell | null) {
+function conditions(filters: Filters, outcomes: Outcome[], kinds: Kind[], cell?: CallCell | null) {
+  const all = Object.keys(KINDS) as Kind[]
   const out: { key: string; op: string; values: (string | number)[] }[] = [
-    { key: K.call, op: '=', values: [COUNTED] },
+    { key: K.kind, op: '=', values: (kinds.length ? kinds : all).map((k) => KINDS[k]) },
+    { key: K.call, op: '!=', values: [DUPLICATE] },
   ]
   for (const [label, values] of Object.entries(filters)) {
     const key = SPAN_KEYS[label]
@@ -148,10 +155,11 @@ function conditions(filters: Filters, outcomes: Outcome[], cell?: CallCell | nul
 
 export const ROWS_PAGE = 100
 
-export function exploreCalls(
+export function exploreSpans(
   w: TimeWindow,
   filters: Filters,
   outcomes: Outcome[],
+  kinds: Kind[],
   anchor: string | undefined,
   signal?: AbortSignal,
   cell?: CallCell | null,
@@ -159,7 +167,7 @@ export function exploreCalls(
 ): Promise<ExploreAnswer> {
   const { after, before } = cell ?? absolute(w)
   const rows = { limit: rowLimit, columns: ROW_COLUMNS }
-  const where = conditions(filters, outcomes, cell)
+  const where = conditions(filters, outcomes, kinds, cell)
   const body = anchor
     ? { explore: { conditions: where, anchor, rows } }
     : { explore: { after, before, conditions: where, histogram: { stack: K.requestModel }, rows } }
@@ -198,7 +206,7 @@ export async function fetchTrace(id: string, aroundNs: number, signal?: AbortSig
   return { trace_id: raw.trace_id, spans: ordered }
 }
 
-// Model-call spans per value of one attribute in a histogram answer; `other` holds the values past the Function's
+// Spans per value of one attribute in a histogram answer; `other` holds the values past the Function's
 // stack limit and `unset` the spans without the attribute.
 export type StackTotals = { values: Record<string, number>; other: number; unset: number }
 
@@ -216,12 +224,13 @@ function stackTotals(a: ExploreAnswer | undefined): StackTotals | undefined {
   }
 }
 
-// Model-call spans per value of one span attribute: the Calls page's breakdowns and filter choices, which must
+// GenAI spans per value of one span attribute: the filter choices of the Spans and Traces pages, which must
 // include services whose metrics are older than the Agent keeps.
 export async function spanStack(
   w: TimeWindow,
   filters: Filters,
   outcomes: Outcome[],
+  kinds: Kind[],
   key: string,
   signal?: AbortSignal,
 ): Promise<StackTotals> {
@@ -231,7 +240,7 @@ export async function spanStack(
       explore: {
         after,
         before,
-        conditions: conditions(filters, outcomes),
+        conditions: conditions(filters, outcomes, kinds),
         histogram: { stack: key },
         rows: { limit: 1, columns: [key] },
       },
