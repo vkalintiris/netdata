@@ -53,6 +53,13 @@ def pick_model():
 
 
 def api_key():
+    """The key of the game's team when GUESS_TEAM_KEYS names a {team: key} file (a gateway that accounts per team),
+    else LITELLM_API_KEY."""
+    keys_file = os.environ.get("GUESS_TEAM_KEYS")
+    if keys_file:
+        import json
+        with open(keys_file) as f:
+            return json.load(f)[os.environ["GUESS_TEAM"]]
     return os.environ["LITELLM_API_KEY"]
 
 

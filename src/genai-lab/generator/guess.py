@@ -7,7 +7,8 @@
 Every game picks one of game.MODELS, and every process a user and their team (resource attributes `team` and
 `user.id`). Pauses cap the spend while nobody watches; `rotate` plays one game at a time.
 Env: LITELLM_API_KEY (required), GUESS_VENVS (the root of the venvs below), GUESS_GAME_PAUSE, GUESS_TURN_PAUSE,
-GUESS_MODELS, GUESS_BASE_URL, plus OTEL_EXPORTER_OTLP_ENDPOINT.
+GUESS_MODELS, GUESS_BASE_URL, GUESS_TEAM_KEYS (a {team: key} file, for a gateway that accounts per team), plus
+OTEL_EXPORTER_OTLP_ENDPOINT.
 """
 
 import os
@@ -57,6 +58,7 @@ def play(version, games):
     team = next(team for team, users in TEAMS.items() if user in users)
     given = os.environ.get("OTEL_RESOURCE_ATTRIBUTES")
     os.environ["OTEL_RESOURCE_ATTRIBUTES"] = ",".join(filter(None, [given, f"team={team},user.id={user}"]))
+    os.environ["GUESS_TEAM"] = team
     # Message content on the spans, for the instrumentations that read these.
     os.environ.setdefault("OTEL_SEMCONV_STABILITY_OPT_IN", "gen_ai_latest_experimental")
     os.environ.setdefault("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "SPAN_ONLY")
