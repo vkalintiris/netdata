@@ -115,7 +115,7 @@ function ChoiceList({
 }
 
 function FilterPanel({ name, label, source }: { name: FilterName; label: string; source: Source }) {
-  const { window, filters, spanQuery, selected, toggleFilter, clearFilter } = usePageState()
+  const { window, filters, spanQuery, kinds, selected, toggleFilter, clearFilter } = usePageState()
   const key = LABELS[name]
   const chosen = selected(name)
   // Each panel honours the other filters, not its own, so a selection can be widened.
@@ -132,10 +132,18 @@ function FilterPanel({ name, label, source }: { name: FilterName; label: string;
         }
       : null,
   )
+  // Model calls unless the Kind filter asks for tool runs too, as on Metrics; tool runs carry no model or provider.
+  const query = useMemo(
+    () => ({
+      ...spanQuery,
+      kinds: spanQuery.kinds.length ? spanQuery.kinds : (['model call'] as Kind[]),
+      filters: without(filters, key),
+    }),
+    [spanQuery, filters, key],
+  )
   const spans = useQuery({
-    queryKey: ['span-values', window, spanQuery, key],
-    queryFn: ({ signal }) =>
-      spanStack(window, { ...spanQuery, filters: without(filters, key) }, SPAN_KEY_OF[key], signal),
+    queryKey: ['span-values', window, query, key],
+    queryFn: ({ signal }) => spanStack(window, query, SPAN_KEY_OF[key], signal),
     enabled: source === 'spans',
     refetchInterval: window.after < 0 ? 10_000 : false,
     placeholderData: (prev) => prev,
@@ -161,7 +169,7 @@ function FilterPanel({ name, label, source }: { name: FilterName; label: string;
   return (
     <Panel
       title={label}
-      subtitle={source === 'metrics' ? 'calls' : 'spans'}
+      subtitle={source === 'metrics' || kinds.length === 0 ? 'calls' : 'spans'}
       action={chosen.length > 0 && <ClearButton onClick={() => clearFilter(name)} />}
     >
       <ChoiceList label={label} choices={choices} chosen={chosen} onToggle={(v) => toggleFilter(name, v)} searchable />
@@ -238,16 +246,15 @@ function ClearButton({ onClick }: { onClick: () => void }) {
   )
 }
 
-// The page filters as panels of values with their counts: calls from the GenAI charts on Metrics, stored spans on
-// Spans and Traces, so a panel offers only values its page can show.
+// The header every OTel GenAI tab opens with: Service, Model and Provider as panels of values with their counts.
+// Counts come from the tab's own source, calls from the GenAI charts on Metrics and stored spans on Breakdown and
+// Traces, so a panel offers only values its tab can show.
 export function FilterPanels({ source }: { source: Source }) {
   return (
-    <div className={cn('grid grid-cols-1 gap-3 md:grid-cols-3', source === 'spans' && 'xl:grid-cols-5')}>
+    <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
       {PANELS.map((p) => (
         <FilterPanel key={p.name} {...p} source={source} />
       ))}
-      {source === 'spans' && <KindPanel />}
-      {source === 'spans' && <OutcomePanel />}
     </div>
   )
 }
@@ -270,16 +277,11 @@ function BarButton({ label, count, children }: { label: string; count: number; c
   )
 }
 
-// The same filters as one row of buttons, for the pages whose subject is a list: each opens its panel of values.
-export function FilterBar() {
-  const { selected, kinds, outcomes, where, removeWhere } = usePageState()
+// The span-only filters, as buttons among a list tab's own controls: Kind, Outcome and conditions set elsewhere.
+export function SpanFilterBar() {
+  const { kinds, outcomes, where, removeWhere } = usePageState()
   return (
     <div className="flex flex-wrap items-center gap-2">
-      {PANELS.map((p) => (
-        <BarButton key={p.name} label={p.label} count={selected(p.name).length}>
-          <FilterPanel {...p} source="spans" />
-        </BarButton>
-      ))}
       <BarButton label="Kind" count={kinds.length}>
         <KindPanel />
       </BarButton>

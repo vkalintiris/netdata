@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Check, ChevronDown, Info } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
-import { FilterBar } from '@/components/FilterPanels'
+import { FilterPanels, SpanFilterBar } from '@/components/FilterPanels'
 import { NUM } from '@/components/ListFrame'
 import { Panel } from '@/components/Panel'
 import { TimeChart, type SeriesStyle } from '@/components/TimeChart'
@@ -202,6 +202,7 @@ export function BreakdownPage() {
   const named = keyName(key)
   return (
     <div className="flex flex-col gap-3">
+      <FilterPanels source="spans" />
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <KeyPicker value={key} onChange={(k) => set('by', k === DEFAULT_KEY ? null : k)} />
         <ToggleGroup
@@ -217,7 +218,7 @@ export function BreakdownPage() {
             </ToggleGroupItem>
           ))}
         </ToggleGroup>
-        <FilterBar />
+        <SpanFilterBar />
       </div>
 
       {all.error ? (

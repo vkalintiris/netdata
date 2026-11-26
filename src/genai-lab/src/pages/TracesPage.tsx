@@ -1,6 +1,6 @@
 import { X } from 'lucide-react'
 import { useSearchParams } from 'react-router'
-import { FilterBar } from '@/components/FilterPanels'
+import { FilterPanels, SpanFilterBar } from '@/components/FilterPanels'
 import { SpanDetail } from '@/components/SpanDetail'
 import { SpanList, spanKey } from '@/components/SpanList'
 import { TraceList, traceLink } from '@/components/TraceList'
@@ -46,6 +46,7 @@ export function TracesPage() {
 
   return (
     <div className="flex flex-col gap-3">
+      <FilterPanels source="spans" />
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <ToggleGroup
           type="single"
@@ -61,7 +62,7 @@ export function TracesPage() {
             Calls
           </ToggleGroupItem>
         </ToggleGroup>
-        <FilterBar />
+        <SpanFilterBar />
         {cell && (
           <span className="flex items-center gap-1 rounded-md border border-primary/60 py-1 pr-1 pl-2 text-xs">
             {cellTime.format(cell.after * 1000)}–{cellTime.format(cell.before * 1000)}, lasting{' '}
