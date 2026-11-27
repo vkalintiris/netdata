@@ -1,6 +1,8 @@
 import { useCallback, useMemo } from 'react'
 import { useLocation, useSearchParams } from 'react-router'
-import type { Filters, TimeWindow } from './agent'
+import { POINTS, type Filters, type TimeWindow } from './agent'
+
+export { POINTS }
 
 export const LABELS = {
   service: 'resource.attributes.service.name',
@@ -85,10 +87,6 @@ export const PRESETS = [
 ]
 
 const DEFAULT_AFTER = -3600
-
-// Points per trend chart. A fixed window is stretched to points × a whole step, which the Agent answers as asked;
-// any other length it widens to whole steps, and the charts would then cover more time than the tiles.
-export const POINTS = 120
 
 export function snap(w: TimeWindow): TimeWindow {
   if (w.after <= 0) return w

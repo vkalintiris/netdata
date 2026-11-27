@@ -18,9 +18,14 @@ describe('clockAligned', () => {
     })
   })
 
-  it('leaves totals and fixed windows as asked', () => {
-    const total = { window: { after: -900, before: 0 }, points: 1 }
-    expect(clockAligned(total, 1_000_003)).toEqual(total)
+  it('asks a total for the seconds its trend covers', () => {
+    expect(clockAligned({ window: { after: -900, before: 0 }, points: 1 }, 1_000_003)).toEqual({
+      window: { after: 1_000_000 - 896, before: 1_000_000 },
+      points: 1,
+    })
+  })
+
+  it('leaves fixed windows as asked', () => {
     const fixed = { window: { after: 1_000_000, before: 1_000_960 }, points: 120 }
     expect(clockAligned(fixed, 2_000_000)).toEqual(fixed)
   })

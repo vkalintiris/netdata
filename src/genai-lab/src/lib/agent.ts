@@ -37,20 +37,26 @@ export function scopeLabels(filters: Filters | undefined): string | undefined {
   return parts.length ? parts.join('|') : undefined
 }
 
+// Points per trend chart. A fixed window is stretched to points × a whole step, which the Agent answers as asked;
+// any other length it widens to whole steps, and the charts would then cover more time than the tiles.
+export const POINTS = 120
+
 // A trend over a window that follows "now", as whole steps that start on multiples of the step: a point covers the
 // same seconds in every request, so a refresh adds points at the end and leaves the earlier ones as they were.
 // Without this the Agent cuts the points back from the moment of each request, and the same data draws differently
-// every time. A one-point query (a total) and a fixed window are asked as they are.
+// every time. A one-point query (a total) covers the seconds of its page's trends, so a tile is the sum of the chart
+// under it. A fixed window is asked as it is.
 export function clockAligned(q: Pick<DataQuery, 'window' | 'points'>, now: number): { window: TimeWindow; points: number } {
   const { window, points } = q
-  if (window.after >= 0 || points <= 1) return { window, points }
+  if (window.after >= 0) return { window, points }
+  const total = points <= 1
   const end = window.before > 0 ? window.before : now + window.before
-  const step = Math.max(1, Math.ceil(-window.after / points))
+  const step = Math.max(1, Math.ceil(-window.after / (total ? POINTS : points)))
   // A window that reaches the current second is answered for the second before, which moves every point: end on
   // the last step boundary that is at least two seconds old.
   const before = Math.floor((end - 2) / step) * step
   const whole = Math.max(1, Math.floor(-window.after / step))
-  return { window: { after: before - whole * step, before }, points: whole }
+  return { window: { after: before - whole * step, before }, points: total ? 1 : whole }
 }
 
 export function dataUrl(q: DataQuery, now = Math.floor(Date.now() / 1000)): string {
