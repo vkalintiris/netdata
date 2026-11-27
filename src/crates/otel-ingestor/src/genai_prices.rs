@@ -13,8 +13,9 @@ const REFRESH_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 /// How long after a failed download the next one is tried.
 const RETRY_AFTER: Duration = Duration::from_secs(60 * 60);
 
-/// How long one download may take.
-const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long one download may take: enough for the table over a link of a few kilobytes a second. Nothing waits
+/// for it.
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// The largest body read: the published table is under 1 MiB.
 const MAX_TABLE_BYTES: usize = 16 * 1024 * 1024;
