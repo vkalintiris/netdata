@@ -196,9 +196,13 @@ async fn run_ingestor(
     let derived_metrics =
         Arc::new(DerivedMetrics::new(derived_settings).context("declaring the derived metrics")?);
 
-    let genai_prices_handle = (derived_settings.genai_price_refresh
-        && derived_metrics.prices_genai_calls())
-    .then(|| tokio::spawn(genai_prices::refresh(Arc::clone(&derived_metrics))));
+    let genai_prices_handle =
+        (derived_settings.genai_price_refresh && derived_metrics.prices_genai_calls()).then(|| {
+            tokio::spawn(genai_prices::refresh(
+                Arc::clone(&derived_metrics),
+                genai_prices::stored_table_path(),
+            ))
+        });
 
     // Arc-shared: the gRPC server and the OTLP/HTTP router both hold the
     // metrics service (chart emission is transport-agnostic).
