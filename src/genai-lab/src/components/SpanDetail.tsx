@@ -221,7 +221,11 @@ export function SpanDetail({ id, onClose, traceHref }: { id: string; onClose: ()
           <Skeleton className="h-40 w-full" />
         </div>
       ) : !span ? (
-        <p className="p-4 text-sm text-muted-foreground">This span is no longer in the trace answer.</p>
+        <p className="p-4 text-sm text-muted-foreground">
+          {trace.data.cut
+            ? 'The Agent answered only the earliest part of this trace, which is past its size limit; this span comes later.'
+            : 'This span is no longer in the trace answer.'}
+        </p>
       ) : (
         <Tabs defaultValue={conversation ? 'conversation' : 'summary'} className="min-h-0 flex-1 gap-0">
           <TabsList className="mx-3 mt-3">

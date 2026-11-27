@@ -7,10 +7,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { formatCount, formatSeconds } from '@/lib/format'
 import { absolute, unitOf, usePageState } from '@/lib/page-state'
 import { groupTraces, type TraceRow } from '@/lib/trace-list'
-import { exploreSpans } from '@/lib/traces'
-
-// The most rows the Function returns per request.
-const SPANS_PAGE = 200
+import { exploreSpans, ROWS_MAX, spansOfTraces } from '@/lib/traces'
 
 function Failed({ count }: { count: number }) {
   if (count === 0) return null
@@ -30,20 +27,26 @@ export function traceLink(traceId: string, startNs: number, search: URLSearchPar
   return `/traces/${traceId}?${next}`
 }
 
-// One row per trace: its model calls and tool calls added up. Grouped here, from the spans loaded.
+// One row per trace that holds a call matching the page's filters, newest matches first. A row adds up every model
+// call and tool call of its trace, as the trace's page does: the filters choose the traces, not what a row counts.
 export function TraceList({ live }: { live: boolean }) {
   const { window, spanQuery } = usePageState()
   const [params] = useSearchParams()
   const navigate = useNavigate()
   const query = useInfiniteQuery({
     queryKey: ['traces', window, spanQuery],
-    queryFn: ({ pageParam, signal }) => exploreSpans(window, spanQuery, pageParam, signal, SPANS_PAGE),
+    queryFn: async ({ pageParam, signal }) => {
+      const matching = await exploreSpans(window, spanQuery, pageParam, signal, ROWS_MAX)
+      const ids = [...new Set(matching.rows.items.map((row) => row.trace_id))]
+      return { matching, spans: await spansOfTraces(window, ids, signal) }
+    },
     initialPageParam: undefined as string | undefined,
-    getNextPageParam: (last) => last.rows.anchor?.next,
+    getNextPageParam: (last) => last.matching.rows.anchor?.next,
     refetchInterval: live ? 10_000 : false,
     placeholderData: (prev) => prev,
   })
-  const spans = useMemo(() => query.data?.pages.flatMap((p) => p.rows.items) ?? [], [query.data])
+  const matching = query.data?.pages.reduce((n, p) => n + p.matching.rows.items.length, 0) ?? 0
+  const spans = useMemo(() => query.data?.pages.flatMap((p) => p.spans) ?? [], [query.data])
   const traces = useMemo(() => groupTraces(spans), [spans])
   const fmt = listTimeFormat(absolute(window))
 
@@ -54,9 +57,8 @@ export function TraceList({ live }: { live: boolean }) {
       empty={traces.length === 0}
       summary={
         <>
-          {formatCount(traces.length)} traces from the latest {formatCount(spans.length)} of{' '}
-          {formatCount(query.data?.pages[0]?.rows.matched)} {unitOf(spanQuery.kinds)}
-          {query.hasNextPage && '; the oldest traces listed may miss their earlier spans'}
+          {formatCount(traces.length)} traces, each whole, that hold the latest {formatCount(matching)} of{' '}
+          {formatCount(query.data?.pages[0]?.matching.rows.matched)} {unitOf(spanQuery.kinds)} matching the filters
         </>
       }
       hasMore={query.hasNextPage}
@@ -66,14 +68,20 @@ export function TraceList({ live }: { live: boolean }) {
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead className="w-36">Started</TableHead>
+            <TableHead className="w-36" title="When the trace's first model call or tool call started">
+              First call
+            </TableHead>
             <TableHead>Service</TableHead>
             <TableHead className="text-right">Model calls</TableHead>
             <TableHead className="text-right">Tool calls</TableHead>
             <TableHead>Models</TableHead>
             <TableHead>Providers</TableHead>
-            <TableHead className="text-right">Duration</TableHead>
-            <TableHead className="text-right">In model calls</TableHead>
+            <TableHead className="text-right" title="From the first model call or tool call to the end of the last">
+              First to last call
+            </TableHead>
+            <TableHead className="text-right" title="Added up; calls made in parallel count each">
+              In model calls
+            </TableHead>
             <TableHead className="text-right">Tokens in</TableHead>
             <TableHead className="text-right">Tokens out</TableHead>
           </TableRow>

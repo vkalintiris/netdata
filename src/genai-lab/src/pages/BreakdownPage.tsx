@@ -190,6 +190,8 @@ export function BreakdownPage() {
     const next = new URLSearchParams(params)
     next.delete('by')
     next.delete('measure')
+    // The row counted this tab's kinds; Traces reads an empty Kind filter more widely.
+    if (!next.has('kind')) for (const kind of query.kinds) next.append('kind', kind)
     const name = (Object.keys(LABELS) as FilterName[]).find((n) => SPAN_KEY_OF[LABELS[n]] === key)
     if (name) {
       if (!next.getAll(name).includes(row.value)) next.append(name, row.value)

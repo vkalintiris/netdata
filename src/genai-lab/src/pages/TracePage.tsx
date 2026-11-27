@@ -228,8 +228,20 @@ export function TracePage() {
             <StatTile
               label="Time in model calls"
               value={formatSeconds(calls.reduce((t, c) => t + c.span.duration_ns, 0) / 1e9)}
+              detail="added up; parallel calls overlap"
             />
           </div>
+
+          {trace.data?.cut && (
+            <p className="flex items-start gap-2 rounded-lg border border-[var(--error)]/50 px-3 py-2 text-sm">
+              <Info className="mt-0.5 size-4 shrink-0" />
+              <span>
+                This trace is past the size limit of one answer: the Agent sent its earliest {formatCount(spans.length)}{' '}
+                spans only. The numbers above and the steps below cover that part, up to{' '}
+                {dateFmt.format(Math.max(...spans.map((s) => s.start_ns)) / 1e6)}; the Traces list counts the whole trace.
+              </span>
+            </p>
+          )}
 
           <div className={cn('grid gap-4', selected && 'xl:grid-cols-[minmax(0,1fr)_560px]')}>
             <Tabs defaultValue="conversation" className="min-w-0 gap-3">

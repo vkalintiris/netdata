@@ -1,7 +1,7 @@
 // The otel-traces Function: the GenAI spans the plugin recognised (model calls and tool calls) for the Spans and
 // Traces pages, and whole traces for the span detail.
 import type { TimeWindow } from './agent'
-import { absolute, KINDS, LABELS, OUTCOMES, type SpanQuery } from './page-state'
+import { absolute, ALL_KINDS, KINDS, LABELS, OUTCOMES, type SpanQuery } from './page-state'
 
 // Span fields. The `netdata.genai.*` ones are what the plugin's GenAI rules made of the span when it arrived: the
 // same values the charts count, whatever conventions the producer speaks.
@@ -23,7 +23,8 @@ export const K = {
   cacheRead: 'attributes.netdata.genai.cache_read_tokens',
   cacheWrite: 'attributes.netdata.genai.cache_write_tokens',
   reasoning: 'attributes.netdata.genai.reasoning_tokens',
-  finishReasons: 'attributes.gen_ai.response.finish_reasons',
+  // A trace answer names a field with several values with a `[]` suffix.
+  finishReasons: 'attributes.gen_ai.response.finish_reasons[]',
   errorType: 'attributes.error.type',
 } as const
 
@@ -94,7 +95,9 @@ export type TraceSpan = {
   events?: { name?: string; time_unix_nano?: number; attributes?: Fields }[]
 }
 
-export type TraceAnswer = { trace_id: string; spans: TraceSpan[] }
+// `cut` is set when the Function's answer holds only the earliest spans of the trace: it passed the answer's size
+// limit.
+export type TraceAnswer = { trace_id: string; spans: TraceSpan[]; cut: boolean }
 
 export function field(fields: Fields | undefined, ...keys: string[]): string | undefined {
   if (!fields) return undefined
@@ -175,12 +178,47 @@ export function exploreSpans(
   return postTraces<ExploreAnswer>(body, signal)
 }
 
+// The most rows the Function returns per request, and the most values one condition takes.
+export const ROWS_MAX = 200
+const VALUES_MAX = 64
+
+// How far outside the page's window a listed trace's other calls are looked for, in seconds.
+const TRACE_REACH = 3600
+
+// Every model call and tool call of the given traces, whatever the page's filters: a trace row adds up its whole
+// trace, the same calls its page shows, not only the ones that brought it into the list.
+export async function spansOfTraces(w: TimeWindow, traceIds: string[], signal?: AbortSignal): Promise<SpanRow[]> {
+  const { after, before } = absolute(w)
+  const rows = { limit: ROWS_MAX, columns: ROW_COLUMNS }
+  const out: SpanRow[] = []
+  for (let at = 0; at < traceIds.length; at += VALUES_MAX) {
+    const where = conditions({
+      filters: {},
+      outcomes: [],
+      kinds: ALL_KINDS,
+      where: { trace_id: traceIds.slice(at, at + VALUES_MAX) },
+      cell: null,
+    })
+    let anchor: string | undefined
+    do {
+      const body = anchor
+        ? { explore: { conditions: where, anchor, rows } }
+        : { explore: { after: after - TRACE_REACH, before: before + TRACE_REACH, conditions: where, rows } }
+      const answer: ExploreAnswer = await postTraces<ExploreAnswer>(body, signal)
+      out.push(...answer.rows.items)
+      anchor = answer.rows.anchor?.next
+    } while (anchor)
+  }
+  return out
+}
+
 type RawTrace = {
   trace_id: string
   roots?: number[]
   children?: number[][]
   resources?: { attributes?: Fields }[]
   spans?: (TraceSpan & { resource?: number })[]
+  status?: { partial?: string[] }
 }
 
 export async function fetchTrace(id: string, aroundNs: number, signal?: AbortSignal): Promise<TraceAnswer> {
@@ -204,7 +242,7 @@ export async function fetchTrace(id: string, aroundNs: number, signal?: AbortSig
   for (const r of raw.roots ?? []) walk(r, 0)
   // Spans whose parent is missing from the answer still show, at the top level.
   spans.forEach((_, i) => walk(i, 0))
-  return { trace_id: raw.trace_id, spans: ordered }
+  return { trace_id: raw.trace_id, spans: ordered, cut: raw.status?.partial?.includes('byte_budget') ?? false }
 }
 
 // Spans per time bucket and per value of `key`, with `sums` of numeric fields per value when asked; no rows. The
