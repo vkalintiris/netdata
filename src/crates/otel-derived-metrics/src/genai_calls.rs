@@ -7,6 +7,10 @@
 //! at its end time, weighted like a request by its sampling threshold. The time to first chunk is the producer's own
 //! measurement, charted for the streamed calls of the producers that report one.
 //!
+//! Each call that reports tokens is priced from a table of published prices ([`otel_genai::Prices`]): the cost
+//! chart adds up the calls the table knows, and a second chart counts the calls it knows and the calls it does not,
+//! so a cost that leaves calls out says so.
+//!
 //! The same pass over the spans finds the tool calls, which [`crate::genai_tools`] counts in its own charts.
 //!
 //! The pass also writes each call onto its span ([`otel_genai::annotation`]), with whether it counts, before the
@@ -24,7 +28,7 @@ use netdata_plugin_metrics::{
     Stats, columns,
 };
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
-use otel_genai::{Call, Candidate, Normalizer, Pairs, Remembered, annotation};
+use otel_genai::{Call, Candidate, Normalizer, Pairs, Price, Prices, Remembered, annotation};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Label sets (service, provider, operation and models) over this share the overflow entity.
@@ -64,11 +68,34 @@ columns! {
     }
 }
 
+columns! {
+    /// What the priced calls cost.
+    enum Cost {
+        Cost = "cost",
+    }
+}
+
+columns! {
+    /// Whether the price table knows the model of a call that reports tokens.
+    enum Priced {
+        Priced = "priced",
+        Unpriced = "unpriced",
+    }
+}
+
+/// What a counted call carries besides itself.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Counted {
+    /// The call's sampling weight.
+    weight: f64,
+    price: Option<Price>,
+}
+
 /// The model calls and tool calls among the spans of one export request, normalized and paired but not yet counted.
 #[derive(Default)]
 pub(crate) struct Pending {
     /// The calls that count, with their service labels and weight.
-    calls: Vec<Candidate<Labels, f64>>,
+    calls: Vec<Candidate<Labels, Counted>>,
     /// Call spans that are the second span of a call.
     duplicates: u64,
     /// Call spans a gateway reported.
@@ -82,6 +109,7 @@ pub(crate) struct GenAiCalls {
     metric_set: MetricSet,
     aggregator: SharedAggregator,
     normalizer: Normalizer,
+    prices: Prices,
     tools: GenAiTools,
     pairs: Pairs<Labels>,
     calls: Counter<Outcome>,
@@ -89,6 +117,8 @@ pub(crate) struct GenAiCalls {
     token_details: Counter<TokenDetails>,
     duration: Histogram,
     time_to_first_chunk: Histogram,
+    cost: Counter<Cost>,
+    priced_calls: Counter<Priced>,
     rule_error_logged_at: AtomicU64,
     duplicates: AtomicU64,
     gateway_calls: AtomicU64,
@@ -162,6 +192,24 @@ impl GenAiCalls {
             },
             "calls/s".into(),
         )?;
+        // Millionths of a US dollar: the Agent's first storage tier keeps about seven digits and nothing under
+        // one ten-millionth, which whole dollars a second would fall below.
+        let cost = builder.counter::<Cost>(ChartDescriptor {
+            title: "GenAI estimated cost".into(),
+            units: "microUSD/s".into(),
+            family: "genai".into(),
+            context: "otel.derived_metrics.genai.cost".into(),
+            chart_type: ChartType::Line,
+            priority: 60_107,
+        })?;
+        let priced_calls = builder.counter::<Priced>(ChartDescriptor {
+            title: "GenAI model calls by whether their model has a known price".into(),
+            units: "calls/s".into(),
+            family: "genai".into(),
+            context: "otel.derived_metrics.genai.priced_calls".into(),
+            chart_type: ChartType::Stacked,
+            priority: 60_108,
+        })?;
         let metric_set = builder.build()?;
         let aggregator = SharedAggregator::new(&metric_set);
         // The rules are part of this binary and their tests compile them.
@@ -170,6 +218,7 @@ impl GenAiCalls {
             metric_set,
             aggregator,
             normalizer,
+            prices: Prices::new(),
             tools: GenAiTools::new(max_tool_series)?,
             pairs: Pairs::new(),
             calls,
@@ -177,6 +226,8 @@ impl GenAiCalls {
             token_details,
             duration,
             time_to_first_chunk,
+            cost,
+            priced_calls,
             rule_error_logged_at: AtomicU64::new(0),
             duplicates: AtomicU64::new(0),
             gateway_calls: AtomicU64::new(0),
@@ -211,11 +262,13 @@ impl GenAiCalls {
                     };
                     match self.normalizer.span(scope, span) {
                         Ok(Some(call)) if call.gateway => {
-                            annotation::annotate(span, &call, false);
+                            // A gateway prices its own calls; this table is for what applications report.
+                            annotation::annotate(span, &call, false, None);
                             pending.gateway_calls += 1;
                             continue;
                         }
                         Ok(Some(call)) => {
+                            let price = self.prices.price(&call);
                             candidates.push(Candidate {
                                 call,
                                 trace_id: span.trace_id.clone(),
@@ -223,7 +276,10 @@ impl GenAiCalls {
                                 parent_span_id: span.parent_span_id.clone(),
                                 scope: scope.map(|scope| scope.name.clone()).unwrap_or_default(),
                                 group: service(),
-                                data: adjusted_count(&span.trace_state),
+                                data: Counted {
+                                    weight: adjusted_count(&span.trace_state),
+                                    price,
+                                },
                             });
                             places.push((resource_index, scope_index, span_index));
                             continue;
@@ -259,7 +315,7 @@ impl GenAiCalls {
             let (resource_index, scope_index, span_index) = place;
             let span = &mut export.resource_spans[resource_index].scope_spans[scope_index].spans
                 [span_index];
-            annotation::annotate(span, &candidate.call, keep);
+            annotation::annotate(span, &candidate.call, keep, candidate.data.price);
             if keep {
                 pending.calls.push(candidate);
             } else {
@@ -308,7 +364,8 @@ impl GenAiCalls {
         (calls, self.tools.emit(now, chunks))
     }
 
-    fn count(&self, batch: &mut Batch, service: Labels, call: &Call, weight: f64) {
+    fn count(&self, batch: &mut Batch, service: Labels, call: &Call, counted: Counted) {
+        let weight = counted.weight;
         let mut labels = service;
         labels.insert("gen_ai.operation.name", &call.operation);
         labels.insert("gen_ai.provider.name", call.provider_label());
@@ -343,6 +400,16 @@ impl GenAiCalls {
         event.observe(self.duration, call.duration_seconds, weight);
         if let Some(seconds) = call.time_to_first_chunk_seconds {
             event.observe(self.time_to_first_chunk, seconds, weight);
+        }
+        match counted.price {
+            Some(Price::Usd(usd)) => {
+                event.add(self.cost, Cost::Cost, usd * 1e6 * weight);
+                event.add(self.priced_calls, Priced::Priced, weight);
+            }
+            Some(Price::Unknown) => {
+                event.add(self.priced_calls, Priced::Unpriced, weight);
+            }
+            None => {}
         }
     }
 
@@ -486,6 +553,46 @@ mod tests {
         ] {
             assert!(out.contains(label), "{label} missing:\n{out}");
         }
+    }
+
+    #[test]
+    fn charts_what_a_call_cost_and_counts_the_calls_it_cannot_price() {
+        let mut unknown = chat_attributes();
+        unknown[2] = text("gen_ai.request.model", "no-such-model");
+        unknown[3] = text("gen_ai.response.model", "no-such-model");
+        let out = render(vec![
+            call(1, 0, chat_attributes()),
+            call(2, 0, unknown),
+            // A failed call reports no tokens: there is nothing to price.
+            call(
+                3,
+                0,
+                vec![
+                    text("gen_ai.operation.name", "chat"),
+                    text("gen_ai.provider.name", "anthropic"),
+                    text("gen_ai.request.model", "claude-sonnet-4-5"),
+                    text("error.type", "timeout"),
+                ],
+            ),
+        ]);
+        for context in [
+            "otel.derived_metrics.genai.cost",
+            "otel.derived_metrics.genai.priced_calls",
+        ] {
+            assert!(out.contains(context), "{context} missing:\n{out}");
+        }
+        // Per million tokens: 3 USD input, 0.30 cache read, 3.75 cache write, 15 output. 13 plain input tokens,
+        // 29 read, 7 written, 17 output: 328.95 millionths of a dollar.
+        let total = |dimension: &str| -> f64 {
+            let prefix = format!("SET {dimension} =");
+            out.lines()
+                .filter_map(|line| line.strip_prefix(&prefix))
+                .map(|value| value.trim().parse::<f64>().unwrap())
+                .sum()
+        };
+        assert!((total("cost") - 328.95).abs() < 1e-6, "{out}");
+        assert_eq!(total("priced"), 1.0);
+        assert_eq!(total("unpriced"), 1.0);
     }
 
     #[test]
@@ -650,6 +757,8 @@ mod tests {
                 annotation::OUTPUT_TOKENS,
                 annotation::CACHE_READ_TOKENS,
                 annotation::CACHE_WRITE_TOKENS,
+                annotation::PRICED,
+                annotation::COST_NANO_USD,
             ]
         );
     }

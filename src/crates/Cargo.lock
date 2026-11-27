@@ -1303,6 +1303,17 @@ dependencies = [
 
 [[package]]
 name = "fancy-regex"
+version = "0.19.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d301f5bf187b3c295fce6468d3875037a0bccc5f6b151c63cac2f85babf21912"
+dependencies = [
+ "bit-set 0.8.0",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
+name = "fancy-regex"
 version = "0.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0a2e16b9a584b602f1e0e5e22c30ca0906786088c27500653e432d086def8b53"
@@ -1602,6 +1613,17 @@ dependencies = [
  "memchr",
  "pin-project-lite",
  "slab",
+]
+
+[[package]]
+name = "genai-prices"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a56fb1faf74f98680bef04c8882865de066575c8351bb0a58dcbf884a0e8e99"
+dependencies = [
+ "fancy-regex 0.19.2",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3502,6 +3524,7 @@ dependencies = [
 name = "otel-genai"
 version = "0.1.3"
 dependencies = [
+ "genai-prices",
  "opentelemetry-proto",
  "serde",
  "serde_json",

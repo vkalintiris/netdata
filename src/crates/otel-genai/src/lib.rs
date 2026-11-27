@@ -22,10 +22,12 @@
 pub mod annotation;
 mod gate;
 mod pairs;
+mod price;
 mod value;
 
 use gate::Gate;
 pub use pairs::{Candidate, Pairs, Remembered};
+pub use price::{Price, Prices};
 
 use opentelemetry_proto::tonic::common::v1::{InstrumentationScope, KeyValue};
 use opentelemetry_proto::tonic::trace::v1::Span;

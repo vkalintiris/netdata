@@ -107,6 +107,7 @@ console-subscriber = "0.5"
 flatten-serde-json = { git = "https://github.com/meilisearch/meilisearch", tag = "v1.22.1" }
 fst = { git = "https://github.com/vkalintiris/fst.git", branch="bumpalo" }
 futures = "0.3"
+genai-prices = "0.2.5"
 hashbrown = "0.17"
 humantime = "2.2"
 humantime-serde = "1.1"

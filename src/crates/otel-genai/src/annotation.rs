@@ -5,7 +5,7 @@
 //! [`COUNTED`] lists the calls the charts count; a call a gateway reported is marked [`GATEWAY`] instead. A span recognised as one run of a tool carries its [`ToolCall`]
 //! the same way; [`KIND`] tells the two apart.
 
-use crate::{Call, ToolCall};
+use crate::{Call, Price, ToolCall};
 use opentelemetry_proto::tonic::common::v1::any_value::Value;
 use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue};
 use opentelemetry_proto::tonic::trace::v1::Span;
@@ -46,6 +46,13 @@ pub const CACHE_WRITE_TOKENS: &str = "netdata.genai.cache_write_tokens";
 pub const REASONING_TOKENS: &str = "netdata.genai.reasoning_tokens";
 /// Seconds.
 pub const TIME_TO_FIRST_CHUNK: &str = "netdata.genai.time_to_first_chunk";
+/// [`YES`] or [`NO`], on every model call that reports tokens and that no gateway reported: whether the price table
+/// knows the call's model.
+pub const PRICED: &str = "netdata.genai.priced";
+pub const YES: &str = "yes";
+pub const NO: &str = "no";
+/// What a priced call cost, in billionths of a US dollar: a whole number, so that a query can add it up.
+pub const COST_NANO_USD: &str = "netdata.genai.cost_nano_usd";
 
 /// Remove the attributes of `span` under [`PREFIX`]: the namespace holds only what [`annotate`] writes.
 pub fn strip(span: &mut Span) {
@@ -76,10 +83,10 @@ fn strip_under(attributes: &mut Vec<KeyValue>, prefix: &str) {
 }
 
 /// Write `call` onto `span`, the span it was normalized from; `counted` is whether the call counts by this span,
-/// and is ignored for a call a gateway reported.
+/// and is ignored for a call a gateway reported. `price` is what the price table says of the call, if it was asked.
 /// A count or time the call does not have is left out; a provider or model it does not have is named as the
 /// charts name it.
-pub fn annotate(span: &mut Span, call: &Call, counted: bool) {
+pub fn annotate(span: &mut Span, call: &Call, counted: bool, price: Option<Price>) {
     let mut add = |key: &str, value: Value| {
         span.attributes.push(KeyValue {
             key: key.to_string(),
@@ -120,6 +127,14 @@ pub fn annotate(span: &mut Span, call: &Call, counted: bool) {
     }
     if let Some(seconds) = call.time_to_first_chunk_seconds {
         add(TIME_TO_FIRST_CHUNK, Value::DoubleValue(seconds));
+    }
+    match price {
+        Some(Price::Usd(usd)) => {
+            add(PRICED, text(YES));
+            add(COST_NANO_USD, Value::IntValue((usd * 1e9).round() as i64));
+        }
+        Some(Price::Unknown) => add(PRICED, text(NO)),
+        None => {}
     }
 }
 
@@ -224,7 +239,7 @@ mod tests {
             gateway: false,
         };
         strip(&mut span);
-        annotate(&mut span, &call, false);
+        annotate(&mut span, &call, false, Some(Price::Usd(0.000_017_025)));
         assert_eq!(
             span.attributes,
             vec![
@@ -240,7 +255,20 @@ mod tests {
                 attribute(OUTPUT_TOKENS, Value::IntValue(17)),
                 attribute(CACHE_READ_TOKENS, Value::IntValue(29)),
                 attribute(TIME_TO_FIRST_CHUNK, Value::DoubleValue(0.25)),
+                text(PRICED, YES),
+                attribute(COST_NANO_USD, Value::IntValue(17_025)),
             ]
+        );
+
+        let mut unpriced = Span::default();
+        annotate(&mut unpriced, &call, true, Some(Price::Unknown));
+        assert_eq!(unpriced.attributes.last(), Some(&text(PRICED, NO)));
+
+        let mut unasked = Span::default();
+        annotate(&mut unasked, &call, true, None);
+        assert_eq!(
+            unasked.attributes.last(),
+            Some(&attribute(TIME_TO_FIRST_CHUNK, Value::DoubleValue(0.25)))
         );
     }
 
