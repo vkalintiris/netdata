@@ -24,7 +24,7 @@ import {
   type BreakdownRow,
   type Measure,
 } from '@/lib/breakdown'
-import { formatCount, formatInterval, formatPercent, formatSeconds } from '@/lib/format'
+import { formatCount, formatInterval, formatPercent, formatSeconds, formatUsd } from '@/lib/format'
 import { LABELS, unitOf, useChartNav, usePageState, type FilterName, type SpanQuery } from '@/lib/page-state'
 import { exploreGroups, groupableKeys, K, SPAN_KEY_OF } from '@/lib/traces'
 import { cn } from '@/lib/utils'
@@ -118,7 +118,7 @@ function KeyPicker({ value, onChange }: { value: string; onChange: (key: string)
 
 function formatMeasure(measure: Measure, v: number | null | undefined): string {
   if (v == null) return '–'
-  return measure === 'time' ? formatSeconds(v) : formatCount(v)
+  return measure === 'time' ? formatSeconds(v) : measure === 'cost' ? formatUsd(v) : formatCount(v)
 }
 
 // Model calls added up per value of an attribute the user picks: the question the fixed breakdowns of the Metrics
@@ -152,8 +152,20 @@ export function BreakdownPage() {
     () => (showsFailed ? failedAnswer.data : noneOf(all.data)),
     [showsFailed, failedAnswer.data, all.data],
   )
+  // The calls the cost leaves out: they report tokens for a model without a known price.
+  const unpricedQuery: SpanQuery = useMemo(() => ({ ...query, where: { ...query.where, [K.priced]: ['no'] } }), [query])
+  const unpricedAnswer = useQuery({
+    queryKey: ['breakdown-unpriced', window, unpricedQuery, key],
+    queryFn: ({ signal }) => exploreGroups(window, unpricedQuery, key, [], signal),
+    refetchInterval: live ? 15_000 : false,
+    placeholderData: (prev) => prev,
+  })
 
-  const rows = useMemo(() => ranked(breakdownRows(all.data, failures), measure), [all.data, failures, measure])
+  const rows = useMemo(
+    () => ranked(breakdownRows(all.data, failures, unpricedAnswer.data), measure),
+    [all.data, failures, unpricedAnswer.data, measure],
+  )
+  const unpricedCalls = rows.reduce((s, r) => s + r.unpriced, 0)
   // Shares are of the calls that carry the attribute.
   const total = rows.reduce((s, r) => s + (r.kind === 'unset' ? 0 : (measureOf(r, measure) ?? 0)), 0)
   // The bars compare the named values; what could not be named is often far larger and would flatten them.
@@ -241,7 +253,7 @@ export function BreakdownPage() {
               data={series}
               styles={styles}
               stacked
-              integer={measure !== 'time'}
+              integer={measure !== 'time' && measure !== 'cost'}
               format={(v) => formatMeasure(measure, v)}
               height={220}
               {...nav}
@@ -261,6 +273,9 @@ export function BreakdownPage() {
                     <TableHead className="text-right">Failed</TableHead>
                     <TableHead className="text-right">Tokens in</TableHead>
                     <TableHead className="text-right">Tokens out</TableHead>
+                    <TableHead className="text-right" title="Estimated from the tokens and published prices">
+                      Cost
+                    </TableHead>
                     <TableHead className="text-right">Time in calls</TableHead>
                     <TableHead className="text-right">Average call</TableHead>
                   </TableRow>
@@ -301,6 +316,17 @@ export function BreakdownPage() {
                         </TableCell>
                         <TableCell className={NUM}>{formatCount(row.tokensIn)}</TableCell>
                         <TableCell className={NUM}>{formatCount(row.tokensOut)}</TableCell>
+                        <TableCell
+                          className={NUM}
+                          title={
+                            row.unpriced > 0
+                              ? `${formatCount(row.unpriced)} of these calls have a model without a known price and add nothing`
+                              : undefined
+                          }
+                        >
+                          {formatUsd(row.usd)}
+                          {row.unpriced > 0 && <span className="text-muted-foreground"> *</span>}
+                        </TableCell>
                         <TableCell className={NUM}>{formatSeconds(row.seconds)}</TableCell>
                         <TableCell className={NUM}>
                           {formatSeconds(row.seconds != null && row.calls > 0 ? row.seconds / row.calls : null)}
@@ -317,7 +343,10 @@ export function BreakdownPage() {
                 Added up from the stored spans of {unitOf(query.kinds)}, each once. The attribute must be on the call's own
                 span or on its resource. At most 20 values are named, the most frequent ones; an attribute with a
                 thousand or more values in one stored file cannot be grouped and shows as other values.
-                {skipped > 0 && ` ${formatCount(skipped)} values were not whole numbers and were left out.`}
+                {skipped > 0 && ` ${formatCount(skipped)} values were not whole numbers and were left out.`} Cost is an
+                estimate: each call's tokens at the published price of its model.
+                {unpricedCalls > 0 &&
+                  ` ${formatCount(unpricedCalls)} calls have a model without a known price and add nothing to it; their rows are marked *.`}
               </span>
             </p>
           </div>

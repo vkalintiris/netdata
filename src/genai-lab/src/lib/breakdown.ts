@@ -3,7 +3,7 @@ import type { Series } from './agent'
 import { K, type ExploreAnswer } from './traces'
 
 // The sums the page asks the Function for, in this order.
-export const SUM_KEYS = [K.inputTokens, K.outputTokens, 'duration'] as const
+export const SUM_KEYS = [K.inputTokens, K.outputTokens, 'duration', K.cost] as const
 
 export const MEASURES = {
   calls: 'Calls',
@@ -12,6 +12,7 @@ export const MEASURES = {
   tokensIn: 'Tokens in',
   tokensOut: 'Tokens out',
   time: 'Time in calls',
+  cost: 'Cost',
 } as const
 
 export type Measure = keyof typeof MEASURES
@@ -32,6 +33,10 @@ export type BreakdownRow = {
   tokensIn: number | null
   tokensOut: number | null
   seconds: number | null
+  // US dollars, estimated; the calls counted in `unpriced` add nothing to it.
+  usd: number | null
+  // Calls that report tokens for a model the price table does not know.
+  unpriced: number
 }
 
 export function measureOf(row: BreakdownRow, measure: Measure): number | null {
@@ -48,6 +53,8 @@ export function measureOf(row: BreakdownRow, measure: Measure): number | null {
       return row.tokensIn == null || row.tokensOut == null ? null : row.tokensIn + row.tokensOut
     case 'time':
       return row.seconds
+    case 'cost':
+      return row.usd
   }
 }
 
@@ -75,13 +82,28 @@ export function noneOf(a: ExploreAnswer | undefined): ExploreAnswer | undefined 
   return { ...a, histogram: { stack: h.stack, dimensions: h.dimensions, buckets }, rows: { matched: 0, items: [] } }
 }
 
-// One row per value of the attribute, then what the Function could not name. `failures` is the same question asked
-// of the failed calls only; a value it does not name had none among its most frequent ones.
-export function breakdownRows(all: ExploreAnswer | undefined, failures: ExploreAnswer | undefined): BreakdownRow[] {
+// The calls of `part` that belong to what `all` does not name: `part` is the same question asked of some of the
+// calls, and may name values `all` folds into its `other`.
+function unnamed(part: Totals, all: Totals): number {
+  let named = 0
+  for (const [value, n] of part.values) if (all.values.has(value)) named += n
+  const total = [...part.values.values()].reduce((s, n) => s + n, 0) + part.other
+  return Math.max(0, total - named)
+}
+
+// One row per value of the attribute, then what the Function could not name. `failures` and `unpriced` are the same
+// question asked of the failed calls and of the calls without a known price; a value they do not name had none
+// among its most frequent ones.
+export function breakdownRows(
+  all: ExploreAnswer | undefined,
+  failures: ExploreAnswer | undefined,
+  unpriced: ExploreAnswer | undefined,
+): BreakdownRow[] {
   const h = all?.histogram
   if (!h) return []
   const total = counts(all)
   const failed = counts(failures)
+  const noPrice = counts(unpriced)
   const sums = h.sums?.length === SUM_KEYS.length ? h.sums : null
   const sum = (s: number, at: number | 'other' | 'unset') => {
     if (!sums) return null
@@ -89,6 +111,7 @@ export function breakdownRows(all: ExploreAnswer | undefined, failures: ExploreA
     return at === 'other' ? one.other : at === 'unset' ? one.unset : (one.totals[at] ?? 0)
   }
   const seconds = (ns: number | null) => (ns == null ? null : ns / 1e9)
+  const usd = seconds
 
   const rows: BreakdownRow[] = h.dimensions.map((value, i) => ({
     kind: 'value',
@@ -98,20 +121,20 @@ export function breakdownRows(all: ExploreAnswer | undefined, failures: ExploreA
     tokensIn: sum(0, i),
     tokensOut: sum(1, i),
     seconds: seconds(sum(2, i)),
+    usd: usd(sum(3, i)),
+    unpriced: noPrice.values.get(value) ?? 0,
   }))
-  // Failed calls of values the full answer names but the failures answer folded into its `other` stay there.
-  let failedNamed = 0
-  for (const [value, n] of failed.values) if (total.values.has(value)) failedNamed += n
-  const failedTotal = [...failed.values.values()].reduce((s, n) => s + n, 0) + failed.other
   if (total.other > 0) {
     rows.push({
       kind: 'other',
       value: 'other values',
       calls: total.other,
-      failed: Math.max(0, failedTotal - failedNamed),
+      failed: unnamed(failed, total),
       tokensIn: sum(0, 'other'),
       tokensOut: sum(1, 'other'),
       seconds: seconds(sum(2, 'other')),
+      usd: usd(sum(3, 'other')),
+      unpriced: unnamed(noPrice, total),
     })
   }
   if (total.unset > 0) {
@@ -123,6 +146,8 @@ export function breakdownRows(all: ExploreAnswer | undefined, failures: ExploreA
       tokensIn: sum(0, 'unset'),
       tokensOut: sum(1, 'unset'),
       seconds: seconds(sum(2, 'unset')),
+      usd: usd(sum(3, 'unset')),
+      unpriced: noPrice.unset,
     })
   }
   return rows
@@ -150,8 +175,10 @@ export function breakdownSeries(
   const sums = h.sums?.length === SUM_KEYS.length
   if (!sums && measure !== 'calls' && measure !== 'failed') return undefined
 
-  const scale = measure === 'time' ? 1e-9 : 1
-  const which = measure === 'tokensIn' ? [0] : measure === 'tokensOut' ? [1] : measure === 'tokens' ? [0, 1] : [2]
+  // Durations are in nanoseconds, costs in billionths of a dollar.
+  const scale = measure === 'time' || measure === 'cost' ? 1e-9 : 1
+  const which =
+    measure === 'tokensIn' ? [0] : measure === 'tokensOut' ? [1] : measure === 'tokens' ? [0, 1] : measure === 'cost' ? [3] : [2]
   const byCount = measure === 'calls' || measure === 'failed'
   const index = shown.map((value) => h.dimensions.indexOf(value))
   const values: number[][] = [...shown.map(() => [] as number[]), []]
@@ -181,7 +208,7 @@ export function breakdownSeries(
     labels: [...shown, rest],
     times: h.buckets.map((_, j) => w.bucket_start_s + j * w.bucket_width_s),
     values,
-    units: measure === 'time' ? 'seconds' : '',
+    units: measure === 'time' ? 'seconds' : measure === 'cost' ? 'USD' : '',
     pointSeconds: w.bucket_width_s,
     after: w.after,
     before: w.before,

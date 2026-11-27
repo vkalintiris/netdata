@@ -23,6 +23,10 @@ export const K = {
   cacheRead: 'attributes.netdata.genai.cache_read_tokens',
   cacheWrite: 'attributes.netdata.genai.cache_write_tokens',
   reasoning: 'attributes.netdata.genai.reasoning_tokens',
+  // `yes` or `no` on a model call that reports tokens: whether the plugin's price table knows its model.
+  priced: 'attributes.netdata.genai.priced',
+  // What a priced call cost, in billionths of a US dollar.
+  cost: 'attributes.netdata.genai.cost_nano_usd',
   // A trace answer names a field with several values with a `[]` suffix.
   finishReasons: 'attributes.gen_ai.response.finish_reasons[]',
   errorType: 'attributes.error.type',
@@ -42,6 +46,8 @@ const ROW_COLUMNS = [
   K.outcome,
   K.inputTokens,
   K.outputTokens,
+  K.priced,
+  K.cost,
   K.errorType,
 ]
 
@@ -106,6 +112,17 @@ export function field(fields: Fields | undefined, ...keys: string[]): string | u
     if (hit && hit[1] !== '') return hit[1]
   }
   return undefined
+}
+
+// What the plugin estimates a model call cost, in US dollars; null for a call it could not price or did not try to.
+export function usdOf(fields: Fields | undefined): number | null {
+  const v = field(fields, K.cost)
+  return v == null || Number.isNaN(Number(v)) ? null : Number(v) / 1e9
+}
+
+// A model call that reports tokens for a model the price table does not know.
+export function isUnpriced(fields: Fields | undefined): boolean {
+  return field(fields, K.priced) === 'no'
 }
 
 export class BusyError extends Error {}

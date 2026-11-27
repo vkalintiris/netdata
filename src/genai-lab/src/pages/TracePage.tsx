@@ -7,9 +7,9 @@ import { StatTile } from '@/components/StatTile'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { formatCount, formatSeconds } from '@/lib/format'
+import { formatCount, formatSeconds, formatUsd } from '@/lib/format'
 import { GATEWAY_PAGES } from '@/lib/gateways'
-import { fetchTrace, field, K, type TraceSpan } from '@/lib/traces'
+import { fetchTrace, field, isUnpriced, K, type TraceSpan, usdOf } from '@/lib/traces'
 import { transcriptOf, type CallStep, type Step, type ToolStep } from '@/lib/transcript'
 import { cn } from '@/lib/utils'
 
@@ -53,6 +53,7 @@ function CallStepView({
   const f = (key: string) => field(step.span.fields, key)
   const tokensIn = tokens(step.span, K.inputTokens)
   const tokensOut = tokens(step.span, K.outputTokens)
+  const usd = usdOf(step.span.fields)
   return (
     <li className={cn('rounded-lg border bg-card', active && 'border-primary/60')}>
       <button
@@ -73,6 +74,8 @@ function CallStepView({
           <span>
             {tokensIn == null ? '–' : formatCount(tokensIn)} in · {tokensOut == null ? '–' : formatCount(tokensOut)} out
           </span>
+          {usd != null && <span title="Estimated from the tokens and published prices">{formatUsd(usd)}</span>}
+          {isUnpriced(step.span.fields) && <span title="This model has no known price">no price</span>}
           <span>{formatSeconds(step.span.duration_ns / 1e9)}</span>
         </span>
       </button>
@@ -176,6 +179,9 @@ export function TracePage() {
   const failedTools = tools.filter((t) => failed(t.span)).length
   const tokensIn = sum(calls, K.inputTokens)
   const tokensOut = sum(calls, K.outputTokens)
+  const priced = calls.map((c) => usdOf(c.span.fields)).filter((usd) => usd != null)
+  const usd = priced.length ? priced.reduce((s, v) => s + v, 0) : null
+  const unpriced = calls.filter((c) => isUnpriced(c.span.fields)).length
   const withContent = calls.filter((c) => c.hasContent).length
   const selectedSpanId = selected?.split(':')[1] ?? ''
   let callIndex = 0
@@ -205,7 +211,7 @@ export function TracePage() {
         <Skeleton className="h-64 w-full" />
       ) : (
         <>
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
             <StatTile
               label="Model calls"
               value={formatCount(calls.length)}
@@ -220,6 +226,15 @@ export function TracePage() {
             />
             <StatTile label="Tokens in" value={formatCount(tokensIn)} detail="added up over the calls" />
             <StatTile label="Tokens out" value={formatCount(tokensOut)} />
+            <StatTile
+              label="Estimated cost"
+              value={formatUsd(usd)}
+              detail={
+                unpriced > 0
+                  ? `${formatCount(unpriced)} calls of a model without a known price left out`
+                  : 'tokens at published prices'
+              }
+            />
             <StatTile
               label="Duration"
               value={start != null && end != null ? formatSeconds((end - start) / 1e9) : '–'}

@@ -15,6 +15,8 @@ describe('groupTraces', () => {
       [K.provider, 'openai'],
       [K.inputTokens, '100'],
       [K.outputTokens, '10'],
+      [K.priced, 'yes'],
+      [K.cost, '2000000'],
     ])
     const a2 = span('a', '2', 13, 1, [
       [K.service, 'shop'],
@@ -29,6 +31,7 @@ describe('groupTraces', () => {
       [K.provider, 'openai'],
       [K.outcome, 'error'],
       [K.inputTokens, '200'],
+      [K.priced, 'no'],
     ])
     const b1 = span('b', '1', 12, 1, [[K.service, 'bot']])
     // Newest first, as the Function lists them, with one row repeated by a second page.
@@ -48,6 +51,8 @@ describe('groupTraces', () => {
         providers: [],
         tokensIn: null,
         tokensOut: null,
+        usd: null,
+        unpriced: 0,
       },
       {
         traceId: 'a',
@@ -65,6 +70,8 @@ describe('groupTraces', () => {
         providers: ['openai'],
         tokensIn: 300,
         tokensOut: 10,
+        usd: 0.002,
+        unpriced: 1,
       },
     ])
   })

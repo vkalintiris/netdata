@@ -3,9 +3,9 @@ import { useMemo } from 'react'
 import { ListFrame, listTimeFormat, NUM } from '@/components/ListFrame'
 import { Badge } from '@/components/ui/badge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { formatCount, formatSeconds } from '@/lib/format'
+import { formatCount, formatSeconds, formatUsd } from '@/lib/format'
 import { absolute, unitOf, usePageState } from '@/lib/page-state'
-import { exploreSpans, field, K, type SpanRow } from '@/lib/traces'
+import { exploreSpans, field, isUnpriced, K, usdOf, type SpanRow } from '@/lib/traces'
 
 export function spanKey(row: { trace_id: string; span_id: string; start_ns: number }): string {
   return `${row.trace_id}:${row.span_id}:${row.start_ns}`
@@ -55,6 +55,9 @@ export function SpanList({
             <TableHead className="text-right">Duration</TableHead>
             <TableHead className="text-right">Tokens in</TableHead>
             <TableHead className="text-right">Tokens out</TableHead>
+            <TableHead className="text-right" title="Estimated from the tokens and published prices">
+              Cost
+            </TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -94,6 +97,9 @@ export function SpanList({
                 <TableCell className={NUM}>{formatSeconds(row.duration_ns / 1e9)}</TableCell>
                 <TableCell className={NUM}>{tokensIn ? formatCount(Number(tokensIn)) : tool ? '' : '–'}</TableCell>
                 <TableCell className={NUM}>{tokensOut ? formatCount(Number(tokensOut)) : tool ? '' : '–'}</TableCell>
+                <TableCell className={NUM} title={isUnpriced(row.fields) ? 'This model has no known price' : undefined}>
+                  {tool ? '' : isUnpriced(row.fields) ? 'no price' : formatUsd(usdOf(row.fields))}
+                </TableCell>
               </TableRow>
             )
           })}

@@ -10,7 +10,7 @@ import { ToolsSection } from '@/components/ToolsSection'
 import { TimeChart, type SeriesStyle } from '@/components/TimeChart'
 import { totals, type DataQuery, type Series } from '@/lib/agent'
 import { LATENCY_STYLES, latencyLines, OUTCOME_STYLES } from '@/lib/charts'
-import { formatCount, formatInterval, formatNumber, formatPercent, formatSeconds } from '@/lib/format'
+import { formatCount, formatInterval, formatNumber, formatPercent, formatSeconds, formatUsd } from '@/lib/format'
 import { LABELS, POINTS, useChartNav, usePageState, type FilterName } from '@/lib/page-state'
 import { quantile } from '@/lib/quantile'
 import { useSeries } from '@/lib/queries'
@@ -22,8 +22,10 @@ const C = {
   details: 'otel.derived_metrics.genai.token_details',
   duration: 'otel.derived_metrics.genai.call_duration',
   ttfc: 'otel.derived_metrics.genai.time_to_first_chunk',
+  // Millionths of a US dollar.
+  cost: 'otel.derived_metrics.genai.cost',
+  priced: 'otel.derived_metrics.genai.priced_calls',
 }
-
 
 const TOKEN_STYLES: SeriesStyle[] = [
   { label: 'input', name: 'Input', color: '--chart-1' },
@@ -38,6 +40,9 @@ const DETAIL_STYLES: SeriesStyle[] = [
 const fmtCount = (v: number | null) => formatCount(v)
 const fmtNumber = (v: number | null) => formatNumber(v)
 const fmtSeconds = (v: number | null) => formatSeconds(v)
+const fmtMicroUsd = (v: number | null) => formatUsd(v == null ? null : v / 1e6)
+
+const COST_STYLES: SeriesStyle[] = [{ label: 'cost', name: 'Estimated cost', color: '--chart-5' }]
 
 function rankRows(s: Series | undefined): RankRow[] {
   if (!s) return []
@@ -89,10 +94,13 @@ export function MetricsPage() {
   const tokens = useSeries(total(C.tokens))
   const durationH = useSeries(total(`${C.duration}_histogram`))
   const ttfcH = useSeries(total(`${C.ttfc}_histogram`))
+  const cost = useSeries(total(C.cost))
+  const priced = useSeries(total(C.priced))
 
   const callsTrend = useSeries(trend(C.calls))
   const tokensTrend = useSeries(trend(C.tokens))
   const detailsTrend = useSeries(trend(C.details))
+  const costTrend = useSeries(trend(C.cost))
   const durationTrendH = useSeries(trend(`${C.duration}_histogram`))
   const durationMax = useSeries(trend(`${C.duration}_max`, { timeGroup: 'max', aggregation: 'max' }))
   const ttfcTrendH = useSeries(trend(`${C.ttfc}_histogram`))
@@ -102,6 +110,7 @@ export function MetricsPage() {
   const tokensByModel = useSeries(by(C.tokens, [LABELS.model, LABELS.provider]))
   const failuresByModel = useSeries(total(C.calls, { groupByLabels: [LABELS.model, LABELS.provider], dimensions: ['error'] }))
   const tokensByService = useSeries(by(C.tokens, [LABELS.service]))
+  const costByModel = useSeries(by(C.cost, [LABELS.model, LABELS.provider]))
 
   const durationLines = useMemo(() => latencyLines(durationTrendH.data, durationMax.data), [durationTrendH.data, durationMax.data])
   const durationHeat = useMemo(() => metricHeatmap(durationTrendH.data), [durationTrendH.data])
@@ -112,6 +121,8 @@ export function MetricsPage() {
   const tokenTotals = tokens.data ? totals(tokens.data) : undefined
   const durationBuckets = durationH.data ? totals(durationH.data) : undefined
   const ttfcBuckets = ttfcH.data ? totals(ttfcH.data) : undefined
+  const costMicroUsd = cost.data ? totals(cost.data).cost : undefined
+  const unpricedCalls = priced.data ? (totals(priced.data).unpriced ?? 0) : 0
 
   const callCount = callTotals ? (callTotals.success ?? 0) + (callTotals.error ?? 0) : undefined
   const errorRate = callTotals && callCount ? (callTotals.error ?? 0) / callCount : undefined
@@ -142,7 +153,7 @@ export function MetricsPage() {
     <div className="flex flex-col">
       <FilterPanels source="metrics" />
 
-      <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+      <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
         <StatTile label="Model calls" value={formatCount(callCount)} loading={!calls.data} detail="in this window" />
         <StatTile
           label="Error rate"
@@ -164,6 +175,16 @@ export function MetricsPage() {
           detail={successCount ? `${formatCount((tokenTotals?.output ?? 0) / successCount)} per successful call` : undefined}
         />
         <StatTile
+          label="Estimated cost"
+          value={fmtMicroUsd(costMicroUsd ?? null)}
+          loading={!cost.data}
+          detail={
+            unpricedCalls > 0
+              ? `${formatCount(unpricedCalls)} calls of a model without a known price left out`
+              : 'tokens at published prices'
+          }
+        />
+        <StatTile
           label="Call duration p50"
           value={formatSeconds(q(durationBuckets, 0.5))}
           loading={!durationH.data}
@@ -182,7 +203,7 @@ export function MetricsPage() {
       </div>
 
       <SectionTitle>Trends</SectionTitle>
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 xl:grid-cols-4">
         <Panel title="Model calls by outcome" subtitle={per(callsTrend.data)}>
           <TimeChart data={callsTrend.data} styles={OUTCOME_STYLES} stacked integer format={fmtCount} {...nav} />
         </Panel>
@@ -191,6 +212,9 @@ export function MetricsPage() {
         </Panel>
         <Panel title="Cache and reasoning tokens" subtitle={per(detailsTrend.data)}>
           <TimeChart data={detailsTrend.data} styles={DETAIL_STYLES} format={fmtNumber} {...nav} />
+        </Panel>
+        <Panel title="Estimated cost" subtitle={per(costTrend.data)}>
+          <TimeChart data={costTrend.data} styles={COST_STYLES} format={fmtMicroUsd} {...nav} />
         </Panel>
       </div>
 
@@ -220,7 +244,10 @@ export function MetricsPage() {
       </div>
 
       <SectionTitle>Breakdown</SectionTitle>
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <Panel title="Cost by model" subtitle="estimated, tokens at published prices">
+          <Ranking rows={rankRows(costByModel.data)} format={fmtMicroUsd} empty="No priced calls" {...rank('model', 'provider')} />
+        </Panel>
         <Panel title="By model" subtitle="tokens, input and output">
           <Ranking rows={rankRows(tokensByModel.data)} format={formatCount} empty="No tokens reported" {...rank('model', 'provider')} />
         </Panel>

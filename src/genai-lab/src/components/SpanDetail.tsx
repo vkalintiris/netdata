@@ -7,8 +7,8 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import type { Message, Part } from '@/lib/conversation'
-import { formatCount, formatSeconds } from '@/lib/format'
-import { fetchTrace, field, K, type TraceSpan } from '@/lib/traces'
+import { formatCount, formatSeconds, formatUsd } from '@/lib/format'
+import { fetchTrace, field, isUnpriced, K, usdOf, type TraceSpan } from '@/lib/traces'
 import { conversationFor } from '@/lib/transcript'
 import { cn } from '@/lib/utils'
 
@@ -288,6 +288,13 @@ export function SpanDetail({ id, onClose, traceHref }: { id: string; onClose: ()
                   <Fact label="Reasoning tokens">{count(f(K.reasoning))}</Fact>
                   <Fact label="Cache read">{count(f(K.cacheRead))}</Fact>
                   <Fact label="Cache write">{count(f(K.cacheWrite))}</Fact>
+                  <Fact label="Estimated cost">
+                    {isUnpriced(span?.fields)
+                      ? 'This model has no known price'
+                      : usdOf(span?.fields) != null
+                        ? formatUsd(usdOf(span?.fields))
+                        : undefined}
+                  </Fact>
                 </>
               )}
               {error && <Fact label="Error">{f(K.errorType, K.statusMessage)}</Fact>}

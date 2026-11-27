@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams } from 'react-router'
 import { ListFrame, listTimeFormat, NUM } from '@/components/ListFrame'
 import { Badge } from '@/components/ui/badge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { formatCount, formatSeconds } from '@/lib/format'
+import { formatCount, formatSeconds, formatUsd } from '@/lib/format'
 import { absolute, unitOf, usePageState } from '@/lib/page-state'
 import { groupTraces, type TraceRow } from '@/lib/trace-list'
 import { exploreSpans, ROWS_MAX, spansOfTraces } from '@/lib/traces'
@@ -84,6 +84,9 @@ export function TraceList({ live }: { live: boolean }) {
             </TableHead>
             <TableHead className="text-right">Tokens in</TableHead>
             <TableHead className="text-right">Tokens out</TableHead>
+            <TableHead className="text-right" title="Estimated from the tokens and published prices">
+              Cost
+            </TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -115,6 +118,17 @@ export function TraceList({ live }: { live: boolean }) {
               <TableCell className={NUM}>{formatSeconds(trace.inCallsNs / 1e9)}</TableCell>
               <TableCell className={NUM}>{formatCount(trace.tokensIn)}</TableCell>
               <TableCell className={NUM}>{formatCount(trace.tokensOut)}</TableCell>
+              <TableCell
+                className={NUM}
+                title={
+                  trace.unpriced > 0
+                    ? `${formatCount(trace.unpriced)} model calls have a model without a known price and add nothing`
+                    : undefined
+                }
+              >
+                {formatUsd(trace.usd)}
+                {trace.unpriced > 0 && <span className="text-muted-foreground"> *</span>}
+              </TableCell>
             </TableRow>
           ))}
         </TableBody>

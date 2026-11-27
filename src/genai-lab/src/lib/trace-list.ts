@@ -1,5 +1,5 @@
 // GenAI spans grouped by trace: what one trace spent on model calls and tools, for the Traces page.
-import { field, K, type SpanRow } from './traces'
+import { field, isUnpriced, K, usdOf, type SpanRow } from './traces'
 
 export type TraceRow = {
   traceId: string
@@ -19,6 +19,10 @@ export type TraceRow = {
   providers: string[]
   tokensIn: number | null
   tokensOut: number | null
+  // US dollars, estimated; null when no call of the trace has a price.
+  usd: number | null
+  // Model calls that report tokens for a model without a known price: `usd` leaves them out.
+  unpriced: number
 }
 
 function add(sum: number | null, text: string | undefined): number | null {
@@ -61,6 +65,8 @@ export function groupTraces(rows: SpanRow[]): TraceRow[] {
         providers: [],
         tokensIn: null,
         tokensOut: null,
+        usd: null,
+        unpriced: 0,
       }
       traces.set(row.trace_id, trace)
     }
@@ -80,6 +86,9 @@ export function groupTraces(rows: SpanRow[]): TraceRow[] {
     push(trace.providers, field(row.fields, K.provider))
     trace.tokensIn = add(trace.tokensIn, field(row.fields, K.inputTokens))
     trace.tokensOut = add(trace.tokensOut, field(row.fields, K.outputTokens))
+    const usd = usdOf(row.fields)
+    if (usd != null) trace.usd = (trace.usd ?? 0) + usd
+    if (isUnpriced(row.fields)) trace.unpriced += 1
   }
   return [...traces.values()].sort((a, b) => b.startNs - a.startNs)
 }

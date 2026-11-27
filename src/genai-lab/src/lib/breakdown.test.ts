@@ -19,6 +19,7 @@ const all: ExploreAnswer = {
           { values: [300, 50], other: 10, unset: 20 },
           { values: [30, 5], other: 1, unset: 2 },
           { values: [3e9, 1e9], other: 1e9, unset: 2e9 },
+          { values: [3e6, 0], other: 1e6, unset: 0 },
         ],
       },
       {
@@ -29,6 +30,7 @@ const all: ExploreAnswer = {
           { values: [100, 400], other: 0, unset: 0 },
           { values: [10, 40], other: 0, unset: 0 },
           { values: [1e9, 8e9], other: 0, unset: 0 },
+          { values: [1e6, 5e5], other: 0, unset: 0 },
         ],
       },
     ],
@@ -36,6 +38,7 @@ const all: ExploreAnswer = {
       { key: 'in', totals: [400, 450], other: 10, unset: 20, total: 880, skipped: 0 },
       { key: 'out', totals: [40, 45], other: 1, unset: 2, total: 88, skipped: 0 },
       { key: 'duration', totals: [4e9, 9e9], other: 1e9, unset: 2e9, total: 16e9, skipped: 0 },
+      { key: 'cost', totals: [4e6, 5e5], other: 1e6, unset: 0, total: 5.5e6, skipped: 0 },
     ],
   },
   rows: { matched: 12, items: [] },
@@ -55,14 +58,28 @@ const failures: ExploreAnswer = {
   rows: { matched: 3, items: [] },
 }
 
+// The calls without a known price: three of `b`, two without a team.
+const unpriced: ExploreAnswer = {
+  window,
+  histogram: {
+    stack: 'resource.attributes.team',
+    dimensions: ['b'],
+    buckets: [
+      { counts: [1], other: 0, unset: 2 },
+      { counts: [2], other: 0, unset: 0 },
+    ],
+  },
+  rows: { matched: 5, items: [] },
+}
+
 describe('breakdownRows', () => {
   it('joins counts, failures and sums per value, then what was not named', () => {
-    expect(ranked(breakdownRows(all, failures), 'tokens')).toEqual([
-      { kind: 'value', value: 'b', calls: 5, failed: 1, tokensIn: 450, tokensOut: 45, seconds: 9 },
-      { kind: 'value', value: 'a', calls: 4, failed: 0, tokensIn: 400, tokensOut: 40, seconds: 4 },
+    expect(ranked(breakdownRows(all, failures, unpriced), 'tokens')).toEqual([
+      { kind: 'value', value: 'b', calls: 5, failed: 1, tokensIn: 450, tokensOut: 45, seconds: 9, usd: 0.0005, unpriced: 3 },
+      { kind: 'value', value: 'a', calls: 4, failed: 0, tokensIn: 400, tokensOut: 40, seconds: 4, usd: 0.004, unpriced: 0 },
       // The failed call of `c` belongs to the values the full answer does not name.
-      { kind: 'other', value: 'other values', calls: 1, failed: 1, tokensIn: 10, tokensOut: 1, seconds: 1 },
-      { kind: 'unset', value: 'not set', calls: 2, failed: 1, tokensIn: 20, tokensOut: 2, seconds: 2 },
+      { kind: 'other', value: 'other values', calls: 1, failed: 1, tokensIn: 10, tokensOut: 1, seconds: 1, usd: 0.001, unpriced: 0 },
+      { kind: 'unset', value: 'not set', calls: 2, failed: 1, tokensIn: 20, tokensOut: 2, seconds: 2, usd: 0, unpriced: 2 },
     ])
   })
 })
@@ -93,6 +110,12 @@ describe('breakdownSeries', () => {
       [2, 8],
     ])
   })
+  it('reads dollars for cost', () => {
+    expect(breakdownSeries(all, failures, 'cost', ['a'], 'rest')?.values).toEqual([
+      [0.003, 0.001],
+      [0.001, 0.0005],
+    ])
+  })
   it('reads failed calls from the failures answer', () => {
     expect(breakdownSeries(all, failures, 'failed', ['b'], 'rest')?.values).toEqual([
       [1, 0],
@@ -104,7 +127,7 @@ describe('breakdownSeries', () => {
 describe('noneOf', () => {
   it('answers no failed call for any value or time, over the same values and times', () => {
     const none = noneOf(all)
-    expect(breakdownRows(all, none).map((r) => r.failed)).toEqual([0, 0, 0, 0])
+    expect(breakdownRows(all, none, undefined).map((r) => r.failed)).toEqual([0, 0, 0, 0])
     expect(breakdownSeries(all, none, 'failed', ['a'], 'rest')?.values).toEqual([
       [0, 0],
       [0, 0],
