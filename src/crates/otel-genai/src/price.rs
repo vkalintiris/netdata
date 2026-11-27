@@ -6,7 +6,8 @@
 //!
 //! A call is looked up by the model that answered, then by the model that was requested, each first under the
 //! provider the producer names and then under any provider: behind an OpenAI-compatible proxy the provider a
-//! library names is the proxy's dialect, not who serves the model.
+//! library names is the proxy's dialect, not who serves the model. Last, a name of the form `provider/model`, as
+//! LiteLLM and the frameworks built on it write it, is read as that provider's model.
 
 use crate::Call;
 use genai_prices::{Calculator, PriceRequest, Usage, UsageKey};
@@ -115,11 +116,14 @@ impl Prices {
     }
 }
 
+/// The provider id under which the table reads a model name of the form `provider/model`.
+const PREFIXED: &str = "litellm";
+
 /// The lookups to try for `names`, in order.
 fn attempts(names: &Names) -> Vec<(Option<String>, String)> {
     let mut attempts = Vec::new();
     let models = [&names.response_model, &names.request_model];
-    for provider in [names.provider.clone(), None] {
+    for provider in [names.provider.clone(), None, Some(PREFIXED.to_string())] {
         for model in models.into_iter().flatten() {
             let attempt = (provider.clone(), model.clone());
             if !attempts.contains(&attempt) {
@@ -233,6 +237,32 @@ mod tests {
         // No provider at all.
         let bare = call(None, None, Some("claude-sonnet-4-5"), million_each());
         assert_eq!(prices.price(&bare), prices.price(&direct));
+    }
+
+    #[test]
+    fn reads_a_model_prefixed_with_its_provider() {
+        let prices = Prices::new();
+        let direct = call(
+            Some("anthropic"),
+            Some("claude-sonnet-4-5"),
+            None,
+            million_each(),
+        );
+        let prefixed = call(
+            Some("openai"),
+            Some("anthropic/claude-sonnet-4-5"),
+            None,
+            million_each(),
+        );
+        assert_eq!(prices.price(&prefixed), prices.price(&direct));
+        // The prefix names a provider that does not serve the model.
+        let misplaced = call(
+            Some("openai"),
+            Some("openai/no-such-model"),
+            None,
+            million_each(),
+        );
+        assert_eq!(prices.price(&misplaced), Some(Price::Unknown));
     }
 
     #[test]
