@@ -21,8 +21,8 @@ pub const ENABLED_VARIABLE: &str = "NETDATA_OTEL_DERIVED_METRICS_ENABLED";
 /// at least 1.
 pub const MAX_SERVICES_VARIABLE: &str = "NETDATA_OTEL_DERIVED_METRICS_MAX_SERVICES";
 
-/// The environment variable that stops the daily download of the GenAI price table, leaving the table that is part
-/// of the binary in use: `true` or `false`.
+/// The environment variable that stops the daily download of the GenAI price table: `true` or `false`. With
+/// `false` the table that is part of the binary is in use, and a table an earlier run stored is not read.
 pub const GENAI_PRICE_REFRESH_VARIABLE: &str = "NETDATA_OTEL_GENAI_PRICE_REFRESH";
 
 /// What [`crate::DerivedMetrics`] is made with.

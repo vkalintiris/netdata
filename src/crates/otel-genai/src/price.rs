@@ -13,7 +13,7 @@
 //! LiteLLM and the frameworks built on it write it, is read as that provider's model.
 
 use crate::Call;
-use genai_prices::{Calculator, PriceRequest, Usage, UsageKey};
+use genai_prices::{Calculator, ErrorKind, PriceRequest, Usage, UsageKey};
 use std::collections::HashMap;
 use std::sync::{Mutex, RwLock};
 use std::time::{Duration, UNIX_EPOCH};
@@ -26,6 +26,10 @@ pub const REMOTE_DATA_URL: &str = genai_prices::REMOTE_DATA_URL;
 #[error("not a valid price table: {0}")]
 pub struct InvalidTable(String);
 
+/// The longest provider or model name looked up: a longer one is no model's name, and what a sender puts in a
+/// name is remembered.
+const MAX_NAME_BYTES: usize = 256;
+
 /// The names a lookup remembers; past this many the memory starts over.
 const MAX_REMEMBERED_NAMES: usize = 4096;
 
@@ -34,7 +38,8 @@ const MAX_REMEMBERED_NAMES: usize = 4096;
 pub enum Price {
     /// US dollars.
     Usd(f64),
-    /// The table does not know the call's model.
+    /// The table has no price for the call: it does not know the call's model, or the call's token counts
+    /// contradict each other (more tokens read from the cache than sent, for example).
     Unknown,
 }
 
@@ -81,8 +86,9 @@ impl Prices {
     pub fn replace(&self, data: &[u8]) -> Result<(), InvalidTable> {
         let calculator =
             Calculator::from_json(data).map_err(|error| InvalidTable(error.to_string()))?;
-        *self.current.write().unwrap() = Some(calculator);
-        // A name may resolve differently in the new table.
+        let mut current = self.current.write().unwrap();
+        *current = Some(calculator);
+        // A name may resolve differently in the new table. Cleared before a lookup can read the new table.
         self.resolved.lock().unwrap().clear();
         Ok(())
     }
@@ -106,12 +112,24 @@ impl Prices {
                 usage.insert(key, count as f64);
             }
         }
+        for name in [&call.provider, &call.request_model, &call.response_model] {
+            if name
+                .as_ref()
+                .is_some_and(|name| name.len() > MAX_NAME_BYTES)
+            {
+                return Some(Price::Unknown);
+            }
+        }
         let names = Names {
             provider: call.provider.clone(),
             request_model: call.request_model.clone(),
             response_model: call.response_model.clone(),
         };
         let ended = UNIX_EPOCH + Duration::from_nanos(call.end_time_unix_nano);
+
+        // Held to the end: what is remembered below is of the table read here, and `replace` waits for it.
+        let current = self.current.read().unwrap();
+        let calculator = current.as_ref().unwrap_or(self.bundled);
 
         let remembered = self.resolved.lock().unwrap().get(&names).cloned();
         let is_new = remembered.is_none();
@@ -121,23 +139,34 @@ impl Prices {
             None => attempts(&names),
         };
 
-        let current = self.current.read().unwrap();
-        let calculator = current.as_ref().unwrap_or(self.bundled);
         let mut price = Price::Unknown;
         let mut resolved = None;
+        // Whether the table knows the names: that, unlike a price, is the same for every call that carries them.
+        let mut names_decide = true;
         for (provider, model) in attempts {
             let mut request = PriceRequest::new(&model, &usage).with_timestamp(ended);
             if let Some(provider) = &provider {
                 request = request.with_provider_id(provider);
             }
-            if let Ok(calculation) = calculator.calculate(&request) {
-                price = Price::Usd(calculation.total_price);
-                resolved = Some((provider, model));
-                break;
+            match calculator.calculate(&request) {
+                Ok(calculation) => {
+                    price = Price::Usd(calculation.total_price);
+                    resolved = Some((provider, model));
+                    break;
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        ErrorKind::ProviderNotFound | ErrorKind::ModelNotFound
+                    ) => {}
+                // The table knows the model and cannot price this call: its token counts contradict each other.
+                Err(_) => {
+                    names_decide = false;
+                    break;
+                }
             }
         }
-        drop(current);
-        if is_new {
+        if is_new && names_decide {
             let mut memory = self.resolved.lock().unwrap();
             if memory.len() >= MAX_REMEMBERED_NAMES {
                 memory.clear();
@@ -330,6 +359,40 @@ mod tests {
         assert!((usd(prices.price(&new)) - 6.0).abs() < 1e-9);
         // The new table is the whole table: it does not know the old one's models.
         assert_eq!(prices.price(&known), Some(Price::Unknown));
+    }
+
+    #[test]
+    fn counts_that_contradict_each_other_do_not_unprice_the_model() {
+        let prices = Prices::new();
+        // More tokens read from the cache than were sent at all.
+        let contradicting = call(
+            Some("openai"),
+            Some("gpt-4o-mini"),
+            None,
+            Tokens {
+                input: Some(10),
+                output: Some(10),
+                cache_read: Some(1_000),
+                ..Tokens::default()
+            },
+        );
+        assert_eq!(prices.price(&contradicting), Some(Price::Unknown));
+        let sound = call(Some("openai"), Some("gpt-4o-mini"), None, million_each());
+        assert!((usd(prices.price(&sound)) - 0.75).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_name_too_long_to_be_a_model_has_no_price() {
+        let prices = Prices::new();
+        let long = "m".repeat(MAX_NAME_BYTES + 1);
+        let call = call(
+            Some("openai"),
+            Some("gpt-4o-mini"),
+            Some(&long),
+            million_each(),
+        );
+        assert_eq!(prices.price(&call), Some(Price::Unknown));
+        assert!(prices.resolved.lock().unwrap().is_empty());
     }
 
     #[test]

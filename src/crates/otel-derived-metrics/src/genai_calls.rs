@@ -76,7 +76,7 @@ columns! {
 }
 
 columns! {
-    /// Whether the price table knows the model of a call that reports tokens.
+    /// Whether the price table could price a call that reports tokens.
     enum Priced {
         Priced = "priced",
         Unpriced = "unpriced",
@@ -203,7 +203,7 @@ impl GenAiCalls {
             priority: 60_107,
         })?;
         let priced_calls = builder.counter::<Priced>(ChartDescriptor {
-            title: "GenAI model calls by whether their model has a known price".into(),
+            title: "GenAI model calls by whether they could be priced".into(),
             units: "calls/s".into(),
             family: "genai".into(),
             context: "otel.derived_metrics.genai.priced_calls".into(),

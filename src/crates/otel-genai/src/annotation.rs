@@ -47,7 +47,7 @@ pub const REASONING_TOKENS: &str = "netdata.genai.reasoning_tokens";
 /// Seconds.
 pub const TIME_TO_FIRST_CHUNK: &str = "netdata.genai.time_to_first_chunk";
 /// [`YES`] or [`NO`], on every model call that reports tokens and that no gateway reported: whether the price table
-/// knows the call's model.
+/// could price the call.
 pub const PRICED: &str = "netdata.genai.priced";
 pub const YES: &str = "yes";
 pub const NO: &str = "no";

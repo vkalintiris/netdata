@@ -40,71 +40,91 @@ pub(crate) fn stored_table_path() -> Option<PathBuf> {
 /// Use the stored table if there is one, then download the table whenever the one in use is a day old, for as long
 /// as the task lives.
 pub(crate) async fn refresh(derived_metrics: Arc<DerivedMetrics>, stored: Option<PathBuf>) {
+    let mut wait = Duration::ZERO;
+    if let Some(path) = stored.clone() {
+        let metrics = Arc::clone(&derived_metrics);
+        // Reads a file and decodes a table: not for a thread that serves requests.
+        let used = tokio::task::spawn_blocking(move || use_stored(&metrics, &path)).await;
+        if let Ok(Some(age)) = used {
+            wait = REFRESH_EVERY.saturating_sub(age);
+        }
+    }
+
     let client = match reqwest::Client::builder().timeout(DOWNLOAD_TIMEOUT).build() {
         Ok(client) => client,
         Err(error) => {
-            tracing::warn!(
-                "GenAI prices: no HTTP client ({error}); the table that is part of the plugin stays in use"
-            );
+            tracing::warn!("GenAI prices: no HTTP client ({error}); the table in use stays");
             return;
         }
     };
 
-    let mut wait = Duration::ZERO;
-    if let Some(path) = &stored {
-        let newer_than = binary_modified();
-        if let Some((table, age)) = read_stored(path, newer_than, SystemTime::now()) {
-            match derived_metrics.replace_genai_prices(&table) {
-                Ok(()) => {
-                    tracing::info!(
-                        "GenAI prices: using the table stored in {} {} hours ago",
-                        path.display(),
-                        age.as_secs() / 3600
-                    );
-                    wait = REFRESH_EVERY.saturating_sub(age);
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        "GenAI prices: {} is {error}; a download replaces it",
-                        path.display()
-                    );
-                }
-            }
-        }
-    }
-
     loop {
         tokio::time::sleep(wait).await;
         wait = match download(&client).await {
-            Ok(table) => match derived_metrics.replace_genai_prices(&table) {
-                Ok(()) => {
-                    tracing::info!(
-                        "GenAI prices: now using the table downloaded from {GENAI_PRICES_URL} ({} bytes)",
-                        table.len()
-                    );
-                    if let Some(path) = &stored
-                        && let Err(error) = store(path, &table)
-                    {
-                        // The table is in use all the same; only the next start downloads again.
-                        tracing::warn!(
-                            "GenAI prices: the table is not kept for the next start: {error:#}"
-                        );
-                    }
+            Ok(table) => {
+                let metrics = Arc::clone(&derived_metrics);
+                let path = stored.clone();
+                // Decodes the table and writes it to disk with a sync: not for a thread that serves requests.
+                let used = tokio::task::spawn_blocking(move || {
+                    use_downloaded(&metrics, &table, path.as_deref())
+                })
+                .await;
+                if matches!(used, Ok(true)) {
                     REFRESH_EVERY
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        "GenAI prices: {GENAI_PRICES_URL} answered data that is {error}; the table in use stays"
-                    );
+                } else {
                     RETRY_AFTER
                 }
-            },
+            }
             Err(error) => {
                 tracing::warn!("GenAI prices: {error:#}; the table in use stays");
                 RETRY_AFTER
             }
         };
     }
+}
+
+/// Price from the table stored in `path`, if there is one to use. Returns how long ago it was stored.
+fn use_stored(derived_metrics: &DerivedMetrics, path: &Path) -> Option<Duration> {
+    let (table, age) = read_stored(path, binary_modified(), SystemTime::now())?;
+    match derived_metrics.replace_genai_prices(&table) {
+        Ok(()) => {
+            tracing::info!(
+                "GenAI prices: using the table stored in {} {} hours ago",
+                path.display(),
+                age.as_secs() / 3600
+            );
+            Some(age)
+        }
+        Err(error) => {
+            tracing::warn!(
+                "GenAI prices: {} is {error}; a download replaces it",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
+/// Price from `table`, just downloaded, and keep it in `stored` for the next start. Returns whether `table` is a
+/// price table.
+fn use_downloaded(derived_metrics: &DerivedMetrics, table: &[u8], stored: Option<&Path>) -> bool {
+    if let Err(error) = derived_metrics.replace_genai_prices(table) {
+        tracing::warn!(
+            "GenAI prices: {GENAI_PRICES_URL} answered data that is {error}; the table in use stays"
+        );
+        return false;
+    }
+    tracing::info!(
+        "GenAI prices: now using the table downloaded from {GENAI_PRICES_URL} ({} bytes)",
+        table.len()
+    );
+    if let Some(path) = stored
+        && let Err(error) = store(path, table)
+    {
+        // The table is in use all the same; only the next start downloads again.
+        tracing::warn!("GenAI prices: the table is not kept for the next start: {error:#}");
+    }
+    true
 }
 
 /// When this binary was written to disk; `None` when that cannot be told.
@@ -132,8 +152,8 @@ fn read_stored(
         return None;
     }
     let table = std::fs::read(path).ok()?;
-    // A file dated in the future counts as just stored.
-    let age = now.duration_since(stored_at).unwrap_or(Duration::ZERO);
+    // A file dated in the future has no age to trust: it counts as due, or it would put off every download.
+    let age = now.duration_since(stored_at).unwrap_or(REFRESH_EVERY);
     Some((table, age))
 }
 
@@ -186,10 +206,10 @@ mod tests {
             read_stored(&path, None, stored_at + 3 * HOUR),
             Some((b"table".to_vec(), 3 * HOUR))
         );
-        // A clock that went back does not make the table older than new.
+        // A table dated after now is used and is due for a download.
         assert_eq!(
             read_stored(&path, None, stored_at - HOUR),
-            Some((b"table".to_vec(), Duration::ZERO))
+            Some((b"table".to_vec(), REFRESH_EVERY))
         );
 
         // A second table replaces the first and leaves nothing else behind.
