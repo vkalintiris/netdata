@@ -231,7 +231,7 @@ export function TracePage() {
               value={formatUsd(usd)}
               detail={
                 unpriced > 0
-                  ? `${formatCount(unpriced)} calls of a model without a known price left out`
+                  ? `${formatCount(unpriced)} calls without a known price left out`
                   : 'tokens at published prices'
               }
             />

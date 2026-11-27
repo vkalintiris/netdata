@@ -180,7 +180,7 @@ export function MetricsPage() {
           loading={!cost.data}
           detail={
             unpricedCalls > 0
-              ? `${formatCount(unpricedCalls)} calls of a model without a known price left out`
+              ? `${formatCount(unpricedCalls)} calls without a known price left out`
               : 'tokens at published prices'
           }
         />
