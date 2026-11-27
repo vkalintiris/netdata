@@ -8,7 +8,17 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Skeleton } from '@/components/ui/skeleton'
 import { totals, type Filters } from '@/lib/agent'
 import { formatCount } from '@/lib/format'
-import { KINDS, LABELS, OUTCOMES, usePageState, type FilterName, type Kind, type Outcome } from '@/lib/page-state'
+import {
+  ALL_KINDS,
+  KINDS,
+  LABELS,
+  OUTCOMES,
+  unitOf,
+  usePageState,
+  type FilterName,
+  type Kind,
+  type Outcome,
+} from '@/lib/page-state'
 import { useSeries } from '@/lib/queries'
 import { K, SPAN_KEY_OF, spanStack } from '@/lib/traces'
 import { cn } from '@/lib/utils'
@@ -34,12 +44,14 @@ function without(filters: Filters, key: string): Filters {
 
 function ChoiceList({
   label,
+  unit,
   choices,
   chosen,
   onToggle,
   searchable,
 }: {
   label: string
+  unit: string
   choices: Choice[] | undefined
   chosen: string[]
   onToggle: (value: string) => void
@@ -85,7 +97,7 @@ function ChoiceList({
           </li>
         )}
         {rows.length === 0 && !typed && (
-          <li className="py-6 text-center text-sm text-muted-foreground">No calls</li>
+          <li className="py-6 text-center text-sm text-muted-foreground">No {unit}</li>
         )}
         {rows.map((r) => {
           const active = chosen.includes(r.value)
@@ -115,7 +127,7 @@ function ChoiceList({
 }
 
 function FilterPanel({ name, label, source }: { name: FilterName; label: string; source: Source }) {
-  const { window, filters, spanQuery, kinds, selected, toggleFilter, clearFilter } = usePageState()
+  const { window, filters, spanQuery, selected, toggleFilter, clearFilter } = usePageState()
   const key = LABELS[name]
   const chosen = selected(name)
   // Each panel honours the other filters, not its own, so a selection can be widened.
@@ -132,15 +144,7 @@ function FilterPanel({ name, label, source }: { name: FilterName; label: string;
         }
       : null,
   )
-  // Model calls unless the Kind filter asks for tool runs too, as on Metrics; tool runs carry no model or provider.
-  const query = useMemo(
-    () => ({
-      ...spanQuery,
-      kinds: spanQuery.kinds.length ? spanQuery.kinds : (['model call'] as Kind[]),
-      filters: without(filters, key),
-    }),
-    [spanQuery, filters, key],
-  )
+  const query = useMemo(() => ({ ...spanQuery, filters: without(filters, key) }), [spanQuery, filters, key])
   const spans = useQuery({
     queryKey: ['span-values', window, query, key],
     queryFn: ({ signal }) => spanStack(window, query, SPAN_KEY_OF[key], signal),
@@ -166,13 +170,22 @@ function FilterPanel({ name, label, source }: { name: FilterName; label: string;
     return out
   }, [source, metrics.data, spans.data])
 
+  // The GenAI charts count model calls.
+  const unit = source === 'metrics' ? 'model calls' : unitOf(spanQuery.kinds)
   return (
     <Panel
       title={label}
-      subtitle={source === 'metrics' || kinds.length === 0 ? 'calls' : 'spans'}
+      subtitle={unit}
       action={chosen.length > 0 && <ClearButton onClick={() => clearFilter(name)} />}
     >
-      <ChoiceList label={label} choices={choices} chosen={chosen} onToggle={(v) => toggleFilter(name, v)} searchable />
+      <ChoiceList
+        label={label}
+        unit={unit}
+        choices={choices}
+        chosen={chosen}
+        onToggle={(v) => toggleFilter(name, v)}
+        searchable
+      />
     </Panel>
   )
 }
@@ -180,9 +193,11 @@ function FilterPanel({ name, label, source }: { name: FilterName; label: string;
 // What a span is: a model call or one run of a tool. The Metrics page charts the two apart, so it has no such filter.
 function KindPanel() {
   const { window, spanQuery, kinds, toggleKind, clearFilter } = usePageState()
+  // Each kind's count is what choosing it would show, whatever the tab's default.
+  const query = useMemo(() => ({ ...spanQuery, kinds: ALL_KINDS }), [spanQuery])
   const spans = useQuery({
-    queryKey: ['span-values', window, { ...spanQuery, kinds: [] }, K.kind],
-    queryFn: ({ signal }) => spanStack(window, { ...spanQuery, kinds: [] }, K.kind, signal),
+    queryKey: ['span-values', window, query, K.kind],
+    queryFn: ({ signal }) => spanStack(window, query, K.kind, signal),
     refetchInterval: window.after < 0 ? 10_000 : false,
     placeholderData: (prev) => prev,
   })
@@ -195,10 +210,17 @@ function KindPanel() {
   return (
     <Panel
       title="Kind"
-      subtitle="spans"
+      subtitle={unitOf(ALL_KINDS)}
       action={kinds.length > 0 && <ClearButton onClick={() => clearFilter('kind')} />}
     >
-      <ChoiceList label="Kind" choices={choices} chosen={kinds} onToggle={(v) => toggleKind(v as Kind)} searchable={false} />
+      <ChoiceList
+        label="Kind"
+        unit={unitOf(ALL_KINDS)}
+        choices={choices}
+        chosen={kinds}
+        onToggle={(v) => toggleKind(v as Kind)}
+        searchable={false}
+      />
     </Panel>
   )
 }
@@ -206,9 +228,10 @@ function KindPanel() {
 // The outcome is no label of the charts' filters, so the Metrics page has no such filter.
 function OutcomePanel() {
   const { window, spanQuery, outcomes, toggleOutcome, clearFilter } = usePageState()
+  const query = useMemo(() => ({ ...spanQuery, outcomes: [] }), [spanQuery])
   const spans = useQuery({
-    queryKey: ['span-values', window, { ...spanQuery, outcomes: [] }, K.outcome],
-    queryFn: ({ signal }) => spanStack(window, { ...spanQuery, outcomes: [] }, K.outcome, signal),
+    queryKey: ['span-values', window, query, K.outcome],
+    queryFn: ({ signal }) => spanStack(window, query, K.outcome, signal),
     refetchInterval: window.after < 0 ? 10_000 : false,
     placeholderData: (prev) => prev,
   })
@@ -224,11 +247,12 @@ function OutcomePanel() {
   return (
     <Panel
       title="Outcome"
-      subtitle="spans"
+      subtitle={unitOf(spanQuery.kinds)}
       action={outcomes.length > 0 && <ClearButton onClick={() => clearFilter('outcome')} />}
     >
       <ChoiceList
         label="Outcome"
+        unit={unitOf(spanQuery.kinds)}
         choices={choices}
         chosen={outcomes}
         onToggle={(v) => toggleOutcome(v as Outcome)}

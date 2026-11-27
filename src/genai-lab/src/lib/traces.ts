@@ -1,7 +1,7 @@
 // The otel-traces Function: the GenAI spans the plugin recognised (model calls and tool calls) for the Spans and
 // Traces pages, and whole traces for the span detail.
 import type { TimeWindow } from './agent'
-import { absolute, KINDS, LABELS, OUTCOMES, type Kind, type SpanQuery } from './page-state'
+import { absolute, KINDS, LABELS, OUTCOMES, type SpanQuery } from './page-state'
 
 // Span fields. The `netdata.genai.*` ones are what the plugin's GenAI rules made of the span when it arrived: the
 // same values the charts count, whatever conventions the producer speaks.
@@ -132,26 +132,11 @@ export function postTraces<T>(body: unknown, signal?: AbortSignal): Promise<T> {
   return next
 }
 
-// A heatmap cell the list is narrowed to: its time range in seconds and its duration range in seconds.
-export type CallCell = { after: number; before: number; min: number; max: number | null }
-
-export function parseCell(text: string | null): CallCell | null {
-  if (!text) return null
-  const [after, before, min, max] = text.split(':').map(Number)
-  if (![after, before, min].every(Number.isFinite)) return null
-  return { after, before, min, max: Number.isFinite(max) ? max : null }
-}
-
-export function cellParam(c: CallCell): string {
-  return [c.after, c.before, c.min, c.max ?? ''].join(':')
-}
-
 export type Condition = { key: string; op: string; values: (string | number)[] }
 
-export function conditions({ filters, outcomes, kinds, where }: SpanQuery, cell?: CallCell | null): Condition[] {
-  const all = Object.keys(KINDS) as Kind[]
+export function conditions({ filters, outcomes, kinds, where, cell }: SpanQuery): Condition[] {
   const out: Condition[] = [
-    { key: K.kind, op: '=', values: (kinds.length ? kinds : all).map((k) => KINDS[k]) },
+    { key: K.kind, op: '=', values: kinds.map((k) => KINDS[k]) },
     { key: K.call, op: '!=', values: NOT_COUNTED },
   ]
   for (const [label, values] of Object.entries(filters)) {
@@ -167,6 +152,11 @@ export function conditions({ filters, outcomes, kinds, where }: SpanQuery, cell?
   return out
 }
 
+// The time range every request of a query covers: the page's window, or the cell the query is narrowed to.
+function range(w: TimeWindow, query: SpanQuery): { after: number; before: number } {
+  return query.cell ?? absolute(w)
+}
+
 export const ROWS_PAGE = 100
 
 export function exploreSpans(
@@ -174,12 +164,11 @@ export function exploreSpans(
   query: SpanQuery,
   anchor: string | undefined,
   signal?: AbortSignal,
-  cell?: CallCell | null,
   rowLimit = ROWS_PAGE,
 ): Promise<ExploreAnswer> {
-  const { after, before } = cell ?? absolute(w)
+  const { after, before } = range(w, query)
   const rows = { limit: rowLimit, columns: ROW_COLUMNS }
-  const where = conditions(query, cell)
+  const where = conditions(query)
   const body = anchor
     ? { explore: { conditions: where, anchor, rows } }
     : { explore: { after, before, conditions: where, histogram: { stack: K.requestModel }, rows } }
@@ -227,7 +216,7 @@ export function exploreGroups(
   sums: readonly string[],
   signal?: AbortSignal,
 ): Promise<ExploreAnswer> {
-  const { after, before } = absolute(w)
+  const { after, before } = range(w, query)
   const histogram = sums.length ? { stack: key, sums } : { stack: key }
   return postTraces<ExploreAnswer>(
     { explore: { after, before, conditions: conditions(query), histogram, rows: { limit: 1, columns: [key] } } },
@@ -275,7 +264,7 @@ export async function spanStack(
   key: string,
   signal?: AbortSignal,
 ): Promise<StackTotals> {
-  const { after, before } = absolute(w)
+  const { after, before } = range(w, query)
   const a = await postTraces<ExploreAnswer>(
     {
       explore: {

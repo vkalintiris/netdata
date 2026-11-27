@@ -18,13 +18,14 @@ import {
   isMeasure,
   measureOf,
   MEASURES,
+  noneOf,
   ranked,
   SUM_KEYS,
   type BreakdownRow,
   type Measure,
 } from '@/lib/breakdown'
 import { formatCount, formatInterval, formatPercent, formatSeconds } from '@/lib/format'
-import { LABELS, useChartNav, usePageState, type FilterName, type SpanQuery } from '@/lib/page-state'
+import { LABELS, unitOf, useChartNav, usePageState, type FilterName, type SpanQuery } from '@/lib/page-state'
 import { exploreGroups, groupableKeys, K, SPAN_KEY_OF } from '@/lib/traces'
 import { cn } from '@/lib/utils'
 
@@ -123,18 +124,15 @@ function formatMeasure(measure: Measure, v: number | null | undefined): string {
 // Model calls added up per value of an attribute the user picks: the question the fixed breakdowns of the Metrics
 // tab cannot be asked.
 export function BreakdownPage() {
-  const { window, spanQuery } = usePageState()
+  const { window, spanQuery: query } = usePageState()
   const [params, setParams] = useSearchParams()
   const navigate = useNavigate()
   const nav = useChartNav()
   const key = params.get('by') ?? DEFAULT_KEY
   const measure: Measure = isMeasure(params.get('measure')) ? (params.get('measure') as Measure) : 'calls'
 
-  // Tokens and failures are facts of model calls; tool calls are counted when the Kind filter asks for them.
-  const query: SpanQuery = useMemo(
-    () => (spanQuery.kinds.length ? spanQuery : { ...spanQuery, kinds: ['model call'] }),
-    [spanQuery],
-  )
+  // The failed among the calls the page shows: none when the Outcome filter keeps only the succeeded.
+  const showsFailed = query.outcomes.length === 0 || query.outcomes.includes('failed')
   const failedQuery: SpanQuery = useMemo(() => ({ ...query, outcomes: ['failed'] }), [query])
   const live = window.after < 0
   const all = useQuery({
@@ -143,17 +141,19 @@ export function BreakdownPage() {
     refetchInterval: live ? 15_000 : false,
     placeholderData: (prev) => prev,
   })
-  const failures = useQuery({
+  const failedAnswer = useQuery({
     queryKey: ['breakdown-failed', window, failedQuery, key],
     queryFn: ({ signal }) => exploreGroups(window, failedQuery, key, [], signal),
+    enabled: showsFailed,
     refetchInterval: live ? 15_000 : false,
     placeholderData: (prev) => prev,
   })
-
-  const rows = useMemo(
-    () => ranked(breakdownRows(all.data, failures.data), measure),
-    [all.data, failures.data, measure],
+  const failures = useMemo(
+    () => (showsFailed ? failedAnswer.data : noneOf(all.data)),
+    [showsFailed, failedAnswer.data, all.data],
   )
+
+  const rows = useMemo(() => ranked(breakdownRows(all.data, failures), measure), [all.data, failures, measure])
   // Shares are of the calls that carry the attribute.
   const total = rows.reduce((s, r) => s + (r.kind === 'unset' ? 0 : (measureOf(r, measure) ?? 0)), 0)
   // The bars compare the named values; what could not be named is often far larger and would flatten them.
@@ -167,8 +167,8 @@ export function BreakdownPage() {
     [rows, measure],
   )
   const series = useMemo(
-    () => breakdownSeries(all.data, failures.data, measure, shown, REST),
-    [all.data, failures.data, measure, shown],
+    () => breakdownSeries(all.data, failures, measure, shown, REST),
+    [all.data, failures, measure, shown],
   )
   const styles: SeriesStyle[] = [
     ...shown.map((value, i) => ({ label: value, color: COLORS[i % COLORS.length] })),
@@ -312,7 +312,7 @@ export function BreakdownPage() {
             <p className="flex items-start gap-2 border-t px-4 py-2 text-xs text-muted-foreground">
               <Info className="mt-px size-3.5 shrink-0" />
               <span>
-                Added up from the stored spans of model calls, each call once. The attribute must be on the call's own
+                Added up from the stored spans of {unitOf(query.kinds)}, each once. The attribute must be on the call's own
                 span or on its resource. At most 20 values are named, the most frequent ones; an attribute with a
                 thousand or more values in one stored file cannot be grouped and shows as other values.
                 {skipped > 0 && ` ${formatCount(skipped)} values were not whole numbers and were left out.`}

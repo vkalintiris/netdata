@@ -66,6 +66,15 @@ function counts(a: ExploreAnswer | undefined): Totals {
   return out
 }
 
+// The answer to a question nothing matches, over the time and the values of `a`: the failed calls of a page whose
+// Outcome filter keeps only the succeeded.
+export function noneOf(a: ExploreAnswer | undefined): ExploreAnswer | undefined {
+  const h = a?.histogram
+  if (!a || !h) return undefined
+  const buckets = h.buckets.map(() => ({ counts: h.dimensions.map(() => 0), other: 0, unset: 0 }))
+  return { ...a, histogram: { stack: h.stack, dimensions: h.dimensions, buckets }, rows: { matched: 0, items: [] } }
+}
+
 // One row per value of the attribute, then what the Function could not name. `failures` is the same question asked
 // of the failed calls only; a value it does not name had none among its most frequent ones.
 export function breakdownRows(all: ExploreAnswer | undefined, failures: ExploreAnswer | undefined): BreakdownRow[] {

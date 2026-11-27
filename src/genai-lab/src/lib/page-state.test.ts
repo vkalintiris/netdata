@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { POINTS, snap } from './page-state'
+import { ALL_KINDS, defaultKinds, POINTS, snap } from './page-state'
 
 describe('snap', () => {
   it('stretches a fixed window to whole points, keeping its end', () => {
@@ -7,5 +7,12 @@ describe('snap', () => {
   })
   it('leaves relative windows alone', () => {
     expect(snap({ after: -900, before: 0 })).toEqual({ after: -900, before: 0 })
+  })
+})
+
+describe('defaultKinds', () => {
+  it('reads an empty Kind filter as model calls on Breakdown and as every kind elsewhere', () => {
+    expect(defaultKinds('/breakdown')).toEqual(['model call'])
+    expect(defaultKinds('/traces')).toEqual(ALL_KINDS)
   })
 })

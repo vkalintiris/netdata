@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { breakdownRows, breakdownSeries, ranked } from './breakdown'
+import { breakdownRows, breakdownSeries, noneOf, ranked } from './breakdown'
 import type { ExploreAnswer } from './traces'
 
 const window = { after: 100, before: 120, bucket_start_s: 100, bucket_width_s: 10, buckets: 2 }
@@ -97,6 +97,17 @@ describe('breakdownSeries', () => {
     expect(breakdownSeries(all, failures, 'failed', ['b'], 'rest')?.values).toEqual([
       [1, 0],
       [1, 0],
+    ])
+  })
+})
+
+describe('noneOf', () => {
+  it('answers no failed call for any value or time, over the same values and times', () => {
+    const none = noneOf(all)
+    expect(breakdownRows(all, none).map((r) => r.failed)).toEqual([0, 0, 0, 0])
+    expect(breakdownSeries(all, none, 'failed', ['a'], 'rest')?.values).toEqual([
+      [0, 0],
+      [0, 0],
     ])
   })
 })

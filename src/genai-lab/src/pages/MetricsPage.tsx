@@ -14,7 +14,7 @@ import { formatCount, formatInterval, formatNumber, formatPercent, formatSeconds
 import { LABELS, POINTS, useChartNav, usePageState, type FilterName } from '@/lib/page-state'
 import { quantile } from '@/lib/quantile'
 import { useSeries } from '@/lib/queries'
-import { cellParam } from '@/lib/traces'
+import { cellParam } from '@/lib/page-state'
 
 const C = {
   calls: 'otel.derived_metrics.genai.calls',

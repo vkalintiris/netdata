@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from 'react'
-import { useSearchParams } from 'react-router'
+import { useLocation, useSearchParams } from 'react-router'
 import type { Filters, TimeWindow } from './agent'
 
 export const LABELS = {
@@ -29,11 +29,42 @@ function isKind(v: string): v is Kind {
   return v in KINDS
 }
 
+export const ALL_KINDS = Object.keys(KINDS) as Kind[]
+
+// What an empty Kind filter means on a tab: the kinds its rows are made of. Set here once, so every count on a tab
+// (the header, the Outcome panel, the page itself) is of the rows that tab shows. Breakdown adds up tokens and
+// failures, facts of model calls; the Traces lists show tool calls too.
+const DEFAULT_KINDS: Record<string, Kind[]> = { '/breakdown': ['model call'] }
+
+export function defaultKinds(pathname: string): Kind[] {
+  return DEFAULT_KINDS[pathname] ?? ALL_KINDS
+}
+
+// What the counts of a query are counts of.
+export function unitOf(kinds: Kind[]): string {
+  return kinds.length === 1 ? `${kinds[0]}s` : 'model and tool calls'
+}
+
+// A heatmap cell the Traces tab is narrowed to: its time range in seconds and its duration range in seconds.
+export type CallCell = { after: number; before: number; min: number; max: number | null }
+
+export function parseCell(text: string | null): CallCell | null {
+  if (!text) return null
+  const [after, before, min, max] = text.split(':').map(Number)
+  if (![after, before, min].every(Number.isFinite)) return null
+  return { after, before, min, max: Number.isFinite(max) ? max : null }
+}
+
+export function cellParam(c: CallCell): string {
+  return [c.after, c.before, c.min, c.max ?? ''].join(':')
+}
+
 // Conditions on any span field, as the breakdown hands them over: field key to the values it may have.
 export type Where = Record<string, string[]>
 
-// What the span pages ask the traces Function for, besides the time window.
-export type SpanQuery = { filters: Filters; outcomes: Outcome[]; kinds: Kind[]; where: Where }
+// What the span pages ask the traces Function for, besides the time window. `kinds` is never empty: an empty Kind
+// filter has become the tab's default. A `cell` replaces the window with its own time range.
+export type SpanQuery = { filters: Filters; outcomes: Outcome[]; kinds: Kind[]; where: Where; cell: CallCell | null }
 
 function parseWhere(entries: string[]): Where {
   const out: Where = {}
@@ -76,6 +107,7 @@ export function resetWindow(): TimeWindow {
 // The time window and the filters live in the URL, so a view can be reloaded and shared.
 export function usePageState() {
   const [params, setParams] = useSearchParams()
+  const { pathname } = useLocation()
 
   const window: TimeWindow = useMemo(() => {
     const after = Number(params.get('after') ?? DEFAULT_AFTER)
@@ -98,7 +130,12 @@ export function usePageState() {
   const outcomes: Outcome[] = useMemo(() => params.getAll('outcome').filter(isOutcome), [params])
   const kinds: Kind[] = useMemo(() => params.getAll('kind').filter(isKind), [params])
   const where: Where = useMemo(() => parseWhere(params.getAll('where')), [params])
-  const spanQuery: SpanQuery = useMemo(() => ({ filters, outcomes, kinds, where }), [filters, outcomes, kinds, where])
+  const cellText = params.get('cell')
+  const cell = useMemo(() => parseCell(cellText), [cellText])
+  const spanQuery: SpanQuery = useMemo(
+    () => ({ filters, outcomes, kinds: kinds.length ? kinds : defaultKinds(pathname), where, cell }),
+    [filters, outcomes, kinds, where, cell, pathname],
+  )
 
   const update = useCallback(
     (fn: (p: URLSearchParams) => void) =>

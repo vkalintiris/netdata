@@ -5,7 +5,7 @@ import { ListFrame, listTimeFormat, NUM } from '@/components/ListFrame'
 import { Badge } from '@/components/ui/badge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { formatCount, formatSeconds } from '@/lib/format'
-import { absolute, usePageState } from '@/lib/page-state'
+import { absolute, unitOf, usePageState } from '@/lib/page-state'
 import { groupTraces, type TraceRow } from '@/lib/trace-list'
 import { exploreSpans } from '@/lib/traces'
 
@@ -37,7 +37,7 @@ export function TraceList({ live }: { live: boolean }) {
   const navigate = useNavigate()
   const query = useInfiniteQuery({
     queryKey: ['traces', window, spanQuery],
-    queryFn: ({ pageParam, signal }) => exploreSpans(window, spanQuery, pageParam, signal, null, SPANS_PAGE),
+    queryFn: ({ pageParam, signal }) => exploreSpans(window, spanQuery, pageParam, signal, SPANS_PAGE),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last) => last.rows.anchor?.next,
     refetchInterval: live ? 10_000 : false,
@@ -55,7 +55,7 @@ export function TraceList({ live }: { live: boolean }) {
       summary={
         <>
           {formatCount(traces.length)} traces from the latest {formatCount(spans.length)} of{' '}
-          {formatCount(query.data?.pages[0]?.rows.matched)} spans
+          {formatCount(query.data?.pages[0]?.rows.matched)} {unitOf(spanQuery.kinds)}
           {query.hasNextPage && '; the oldest traces listed may miss their earlier spans'}
         </>
       }

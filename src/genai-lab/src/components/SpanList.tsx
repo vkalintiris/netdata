@@ -4,8 +4,8 @@ import { ListFrame, listTimeFormat, NUM } from '@/components/ListFrame'
 import { Badge } from '@/components/ui/badge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { formatCount, formatSeconds } from '@/lib/format'
-import { absolute, usePageState } from '@/lib/page-state'
-import { exploreSpans, field, K, type CallCell, type SpanRow } from '@/lib/traces'
+import { absolute, unitOf, usePageState } from '@/lib/page-state'
+import { exploreSpans, field, K, type SpanRow } from '@/lib/traces'
 
 export function spanKey(row: { trace_id: string; span_id: string; start_ns: number }): string {
   return `${row.trace_id}:${row.span_id}:${row.start_ns}`
@@ -13,20 +13,18 @@ export function spanKey(row: { trace_id: string; span_id: string; start_ns: numb
 
 // Model calls and tool calls, one row each, newest first.
 export function SpanList({
-  cell,
   selected,
   onSelect,
   live,
 }: {
-  cell: CallCell | null
   selected: string | null
   onSelect: (row: SpanRow | null) => void
   live: boolean
 }) {
   const { window, spanQuery } = usePageState()
   const query = useInfiniteQuery({
-    queryKey: ['spans', window, spanQuery, cell],
-    queryFn: ({ pageParam, signal }) => exploreSpans(window, spanQuery, pageParam, signal, cell),
+    queryKey: ['spans', window, spanQuery],
+    queryFn: ({ pageParam, signal }) => exploreSpans(window, spanQuery, pageParam, signal),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last) => last.rows.anchor?.next,
     refetchInterval: live ? 10_000 : false,
@@ -40,7 +38,7 @@ export function SpanList({
       error={query.error}
       loading={!query.data}
       empty={rows.length === 0}
-      summary={`${formatCount(rows.length)} of ${formatCount(query.data?.pages[0]?.rows.matched)} spans, newest first`}
+      summary={`${formatCount(rows.length)} of ${formatCount(query.data?.pages[0]?.rows.matched)} ${unitOf(spanQuery.kinds)}, newest first`}
       hasMore={query.hasNextPage}
       loadingMore={query.isFetchingNextPage}
       onMore={() => query.fetchNextPage()}

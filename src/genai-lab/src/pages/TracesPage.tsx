@@ -8,18 +8,18 @@ import { Button } from '@/components/ui/button'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { formatSeconds } from '@/lib/format'
 import { usePageState } from '@/lib/page-state'
-import { parseCell, type SpanRow } from '@/lib/traces'
+import type { SpanRow } from '@/lib/traces'
 import { cn } from '@/lib/utils'
 
 const cellTime = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 
 // The place to find one trace or one call: a list under the page's filters, by trace or by span.
 export function TracesPage() {
-  const { window } = usePageState()
+  const { window, spanQuery } = usePageState()
   const [params, setParams] = useSearchParams()
   const selected = params.get('span')
-  // A time and duration range handed over by a heatmap; it narrows the span rows.
-  const cell = parseCell(params.get('cell'))
+  // A time and duration range handed over by a heatmap; it narrows the span rows and the filters' counts.
+  const cell = spanQuery.cell
   const bySpan = params.get('rows') === 'spans' || cell != null
   const live = window.after < 0 && !selected && !cell
 
@@ -82,7 +82,7 @@ export function TracesPage() {
 
       {bySpan ? (
         <div className={cn('grid gap-4', selected && 'xl:grid-cols-[minmax(0,1fr)_560px]')}>
-          <SpanList cell={cell} selected={selected} onSelect={select} live={live} />
+          <SpanList selected={selected} onSelect={select} live={live} />
           {selected && (
             <SpanDetail
               key={selected}
