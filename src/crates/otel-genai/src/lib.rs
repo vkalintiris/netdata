@@ -27,7 +27,7 @@ mod value;
 
 use gate::Gate;
 pub use pairs::{Candidate, Pairs, Remembered};
-pub use price::{Price, Prices};
+pub use price::{InvalidTable, Price, Prices, REMOTE_DATA_URL as PRICES_URL};
 
 use opentelemetry_proto::tonic::common::v1::{InstrumentationScope, KeyValue};
 use opentelemetry_proto::tonic::trace::v1::Span;

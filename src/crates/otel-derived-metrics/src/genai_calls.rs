@@ -324,6 +324,11 @@ impl GenAiCalls {
         }
     }
 
+    /// Price later calls from `data`, the price table's current data; data that is not a table changes nothing.
+    pub(crate) fn replace_prices(&self, data: &[u8]) -> Result<(), otel_genai::InvalidTable> {
+        self.prices.replace(data)
+    }
+
     /// Count `pending` at `now` (Unix seconds): its spans are durable.
     pub(crate) fn commit(&self, pending: Pending, now: u64) {
         self.tools.commit(pending.tools, now);

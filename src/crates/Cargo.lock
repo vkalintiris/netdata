@@ -3556,6 +3556,7 @@ dependencies = [
  "prost",
  "rcgen",
  "regex",
+ "reqwest",
  "rustls",
  "serde",
  "serde_json",

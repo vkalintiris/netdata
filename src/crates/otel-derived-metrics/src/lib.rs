@@ -27,10 +27,13 @@ use netdata_plugin_metrics::Batch;
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use otel_bridge::signals::Signal;
+pub use otel_genai::{InvalidTable, PRICES_URL as GENAI_PRICES_URL};
 use self_monitoring::{DerivationHealth, IngestOutcomes};
 use service_log_records::ServiceLogRecords;
 use service_requests::ServiceRequests;
-pub use settings::{ENABLED_VARIABLE, MAX_SERVICES, MAX_SERVICES_VARIABLE, Settings};
+pub use settings::{
+    ENABLED_VARIABLE, GENAI_PRICE_REFRESH_VARIABLE, MAX_SERVICES, MAX_SERVICES_VARIABLE, Settings,
+};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -168,6 +171,24 @@ impl DerivedMetrics {
             service_log_records: Arc::clone(service_log_records),
             batch: service_log_records.batch(),
         })
+    }
+
+    /// Whether model calls are priced: when not, there is no price table to keep current.
+    pub fn prices_genai_calls(&self) -> bool {
+        self.per_service.is_some()
+    }
+
+    /// Price later model calls from `data`, the current data of the price table
+    /// ([`GENAI_PRICES_URL`]).
+    ///
+    /// # Errors
+    ///
+    /// `data` is not a price table; the table in use stays.
+    pub fn replace_genai_prices(&self, data: &[u8]) -> Result<(), InvalidTable> {
+        match &self.per_service {
+            Some(per_service) => per_service.genai.replace_prices(data),
+            None => Ok(()),
+        }
     }
 
     /// Count the outcome of one export request of `signal`: records stored

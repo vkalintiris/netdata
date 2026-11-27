@@ -63,6 +63,7 @@ use tonic::transport::{Identity, Server, ServerTlsConfig};
 mod aggregation;
 mod chart;
 mod chart_config;
+mod genai_prices;
 mod http_service;
 mod iter;
 mod ledger_sender;
@@ -185,14 +186,19 @@ async fn run_ingestor(
     let derived_settings = otel_derived_metrics::Settings::from_environment()?;
     if derived_settings != otel_derived_metrics::Settings::default() {
         tracing::info!(
-            "the environment replaces the settings of the derived metrics: enabled {}, at most {} services",
+            "the environment replaces the settings of the derived metrics: enabled {}, at most {} services, GenAI price refresh {}",
             derived_settings.enabled,
-            derived_settings.max_services
+            derived_settings.max_services,
+            derived_settings.genai_price_refresh
         );
     }
 
     let derived_metrics =
         Arc::new(DerivedMetrics::new(derived_settings).context("declaring the derived metrics")?);
+
+    let genai_prices_handle = (derived_settings.genai_price_refresh
+        && derived_metrics.prices_genai_calls())
+    .then(|| tokio::spawn(genai_prices::refresh(Arc::clone(&derived_metrics))));
 
     // Arc-shared: the gRPC server and the OTLP/HTTP router both hold the
     // metrics service (chart emission is transport-agnostic).
@@ -478,6 +484,9 @@ async fn run_ingestor(
     }
 
     tick_handle.abort();
+    if let Some(handle) = genai_prices_handle {
+        handle.abort();
+    }
     logs_sweep_handle.abort();
     traces_sweep_handle.abort();
 

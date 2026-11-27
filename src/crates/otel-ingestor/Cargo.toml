@@ -43,6 +43,8 @@ regex = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 serde_regex = { workspace = true }
 serde_yaml = { workspace = true }
+# The daily download of the GenAI price table.
+reqwest = { workspace = true, features = ["rustls"] }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tokio-rustls = { workspace = true }

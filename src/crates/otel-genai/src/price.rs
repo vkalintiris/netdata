@@ -4,6 +4,9 @@
 //! library's own estimate, so every call is priced here, from one table: `genai-prices`, a snapshot of which is
 //! part of this binary. A call whose model the table does not know has no price; it is never priced at zero.
 //!
+//! Prices change and models appear every week, so the host replaces the snapshot with the table's current
+//! data ([`Prices::replace`]), which it downloads from [`REMOTE_DATA_URL`]; this crate makes no requests.
+//!
 //! A call is looked up by the model that answered, then by the model that was requested, each first under the
 //! provider the producer names and then under any provider: behind an OpenAI-compatible proxy the provider a
 //! library names is the proxy's dialect, not who serves the model. Last, a name of the form `provider/model`, as
@@ -12,8 +15,16 @@
 use crate::Call;
 use genai_prices::{Calculator, PriceRequest, Usage, UsageKey};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 use std::time::{Duration, UNIX_EPOCH};
+
+/// Where the table's current data is published.
+pub const REMOTE_DATA_URL: &str = genai_prices::REMOTE_DATA_URL;
+
+/// The data given to [`Prices::replace`] is not a price table.
+#[derive(Debug, thiserror::Error)]
+#[error("not a valid price table: {0}")]
+pub struct InvalidTable(String);
 
 /// The names a lookup remembers; past this many the memory starts over.
 const MAX_REMEMBERED_NAMES: usize = 4096;
@@ -39,7 +50,10 @@ struct Names {
 type Resolved = Option<(Option<String>, String)>;
 
 pub struct Prices {
-    calculator: &'static Calculator,
+    /// The table that is part of this binary.
+    bundled: &'static Calculator,
+    /// The table that replaced it, if any.
+    current: RwLock<Option<Calculator>>,
     resolved: Mutex<HashMap<Names, Resolved>>,
 }
 
@@ -53,9 +67,24 @@ impl Prices {
     /// The table that is part of this binary. Decodes it, which takes tens of milliseconds, once per process.
     pub fn new() -> Self {
         Self {
-            calculator: Calculator::bundled(),
+            bundled: Calculator::bundled(),
+            current: RwLock::new(None),
             resolved: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Price later calls from `data`, the table's current data.
+    ///
+    /// # Errors
+    ///
+    /// `data` is not a price table; the table in use stays.
+    pub fn replace(&self, data: &[u8]) -> Result<(), InvalidTable> {
+        let calculator =
+            Calculator::from_json(data).map_err(|error| InvalidTable(error.to_string()))?;
+        *self.current.write().unwrap() = Some(calculator);
+        // A name may resolve differently in the new table.
+        self.resolved.lock().unwrap().clear();
+        Ok(())
     }
 
     /// The price of `call` at the rates of the time it ended. `None` for a call that reports no tokens: there is
@@ -92,6 +121,8 @@ impl Prices {
             None => attempts(&names),
         };
 
+        let current = self.current.read().unwrap();
+        let calculator = current.as_ref().unwrap_or(self.bundled);
         let mut price = Price::Unknown;
         let mut resolved = None;
         for (provider, model) in attempts {
@@ -99,12 +130,13 @@ impl Prices {
             if let Some(provider) = &provider {
                 request = request.with_provider_id(provider);
             }
-            if let Ok(calculation) = self.calculator.calculate(&request) {
+            if let Ok(calculation) = calculator.calculate(&request) {
                 price = Price::Usd(calculation.total_price);
                 resolved = Some((provider, model));
                 break;
             }
         }
+        drop(current);
         if is_new {
             let mut memory = self.resolved.lock().unwrap();
             if memory.len() >= MAX_REMEMBERED_NAMES {
@@ -278,6 +310,26 @@ mod tests {
         assert_eq!(prices.price(&unknown), Some(Price::Unknown));
         let unnamed = call(None, None, None, million_each());
         assert_eq!(prices.price(&unnamed), Some(Price::Unknown));
+    }
+
+    #[test]
+    fn a_replaced_table_prices_later_calls() {
+        let prices = Prices::new();
+        let known = call(Some("openai"), Some("gpt-4o-mini"), None, million_each());
+        let new = call(Some("acme"), Some("acme-1"), None, million_each());
+        assert_eq!(prices.price(&new), Some(Price::Unknown));
+
+        assert!(prices.replace(b"not a table").is_err());
+        assert!((usd(prices.price(&known)) - 0.75).abs() < 1e-9);
+
+        let table = r#"[{"id": "acme", "name": "Acme", "api_pattern": "acme", "models": [
+            {"id": "acme-1", "match": {"equals": "acme-1"}, "prices": {"input_mtok": 2, "output_mtok": 4}}
+        ]}]"#;
+        prices.replace(table.as_bytes()).unwrap();
+        // The name that had no price is looked up again, in the new table.
+        assert!((usd(prices.price(&new)) - 6.0).abs() < 1e-9);
+        // The new table is the whole table: it does not know the old one's models.
+        assert_eq!(prices.price(&known), Some(Price::Unknown));
     }
 
     #[test]

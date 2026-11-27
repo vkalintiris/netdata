@@ -21,6 +21,10 @@ pub const ENABLED_VARIABLE: &str = "NETDATA_OTEL_DERIVED_METRICS_ENABLED";
 /// at least 1.
 pub const MAX_SERVICES_VARIABLE: &str = "NETDATA_OTEL_DERIVED_METRICS_MAX_SERVICES";
 
+/// The environment variable that stops the daily download of the GenAI price table, leaving the table that is part
+/// of the binary in use: `true` or `false`.
+pub const GENAI_PRICE_REFRESH_VARIABLE: &str = "NETDATA_OTEL_GENAI_PRICE_REFRESH";
+
 /// What [`crate::DerivedMetrics`] is made with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Settings {
@@ -28,6 +32,8 @@ pub struct Settings {
     pub enabled: bool,
     /// See [`MAX_SERVICES`].
     pub max_services: usize,
+    /// Download the current GenAI price table once a day.
+    pub genai_price_refresh: bool,
 }
 
 impl Default for Settings {
@@ -35,6 +41,7 @@ impl Default for Settings {
         Self {
             enabled: true,
             max_services: MAX_SERVICES,
+            genai_price_refresh: true,
         }
     }
 }
@@ -42,7 +49,7 @@ impl Default for Settings {
 impl Settings {
     /// The usual settings, each replaced by the value of its environment
     /// variable when that is set ([`ENABLED_VARIABLE`],
-    /// [`MAX_SERVICES_VARIABLE`]).
+    /// [`MAX_SERVICES_VARIABLE`], [`GENAI_PRICE_REFRESH_VARIABLE`]).
     ///
     /// # Errors
     ///
@@ -52,20 +59,23 @@ impl Settings {
         Self::from_values(
             std::env::var_os(ENABLED_VARIABLE).as_deref(),
             std::env::var_os(MAX_SERVICES_VARIABLE).as_deref(),
+            std::env::var_os(GENAI_PRICE_REFRESH_VARIABLE).as_deref(),
         )
     }
 
-    fn from_values(enabled: Option<&OsStr>, max_services: Option<&OsStr>) -> anyhow::Result<Self> {
+    fn from_values(
+        enabled: Option<&OsStr>,
+        max_services: Option<&OsStr>,
+        genai_price_refresh: Option<&OsStr>,
+    ) -> anyhow::Result<Self> {
         let mut settings = Self::default();
 
         if let Some(value) = enabled {
-            settings.enabled = match text(ENABLED_VARIABLE, value)? {
-                "true" => true,
-                "false" => false,
-                other => anyhow::bail!(
-                    "invalid value for {ENABLED_VARIABLE}: '{other}': expected true or false"
-                ),
-            };
+            settings.enabled = flag(ENABLED_VARIABLE, value)?;
+        }
+
+        if let Some(value) = genai_price_refresh {
+            settings.genai_price_refresh = flag(GENAI_PRICE_REFRESH_VARIABLE, value)?;
         }
 
         if let Some(value) = max_services {
@@ -84,6 +94,15 @@ impl Settings {
     }
 }
 
+/// The yes or no that the environment variable `name` holds as `value`.
+fn flag(name: &str, value: &OsStr) -> anyhow::Result<bool> {
+    match text(name, value)? {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        other => anyhow::bail!("invalid value for {name}: '{other}': expected true or false"),
+    }
+}
+
 /// The text that the environment variable `name` holds as `value`.
 fn text<'a>(name: &str, value: &'a OsStr) -> anyhow::Result<&'a str> {
     value
@@ -96,7 +115,20 @@ mod tests {
     use super::*;
 
     fn settings(enabled: Option<&str>, max_services: Option<&str>) -> anyhow::Result<Settings> {
-        Settings::from_values(enabled.map(OsStr::new), max_services.map(OsStr::new))
+        Settings::from_values(enabled.map(OsStr::new), max_services.map(OsStr::new), None)
+    }
+
+    #[test]
+    fn the_environment_stops_the_price_refresh() {
+        let refresh = |value: &str| Settings::from_values(None, None, Some(OsStr::new(value)));
+        assert!(Settings::default().genai_price_refresh);
+        assert!(!refresh("false").unwrap().genai_price_refresh);
+        assert!(refresh("true").unwrap().genai_price_refresh);
+        let error = refresh("0").unwrap_err().to_string();
+        assert!(
+            error.contains(&format!("invalid value for {GENAI_PRICE_REFRESH_VARIABLE}")),
+            "{error}"
+        );
     }
 
     #[test]
@@ -107,6 +139,7 @@ mod tests {
             Settings {
                 enabled: false,
                 max_services: 20,
+                genai_price_refresh: true,
             }
         );
         assert_eq!(settings(Some("true"), None).unwrap(), Settings::default());
