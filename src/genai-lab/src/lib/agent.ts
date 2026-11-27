@@ -65,6 +65,9 @@ export function dataUrl(q: DataQuery, now = Math.floor(Date.now() / 1000)): stri
   p.set('format', 'json2')
   // Without it a one-point query is answered for a window aligned to its own length.
   p.set('options', 'unaligned')
+  // Left to itself the Agent reads a total and a trend of one window from different storage tiers, and the coarser
+  // ones add these sparse counts up short: a tile then disagrees with the chart under it.
+  p.set('tier', '0')
   if (q.groupByLabels?.length) {
     p.set('group_by', q.groupByDimension ? 'label,dimension' : 'label')
     p.set('group_by_label', q.groupByLabels.join(','))

@@ -29,6 +29,9 @@ const MENU = [
 // What is open belongs to its page: other pages keep only the window, and the OTel GenAI pages their filters too.
 const PAGE_PARAMS = ['span', 'cell', 'at', 'rows', 'by', 'measure', 'from', 'gw_team', 'gw_key', 'gw_model']
 
+// The filters only the stored spans answer, which the Breakdown and Traces tabs share.
+const SPAN_FILTERS = ['kind', 'outcome', 'where']
+
 // The menu entry a page belongs to: a trace opened from a gateway's page stays under that gateway.
 function activeEntry(pathname: string, search: string): string {
   const from = new URLSearchParams(search).get('from')
@@ -48,6 +51,8 @@ function searchFor(to: string, search: string): string {
     return kept.toString() ? `?${kept}` : ''
   }
   for (const key of PAGE_PARAMS) shared.delete(key)
+  // Metrics has no control for these and applies none of them: it must not carry them unseen.
+  if (to === '/') for (const key of SPAN_FILTERS) shared.delete(key)
   return shared.toString() ? `?${shared}` : ''
 }
 

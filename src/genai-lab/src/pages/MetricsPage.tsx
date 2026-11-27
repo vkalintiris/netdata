@@ -60,7 +60,8 @@ export function MetricsPage() {
     const before = d.times[c.col] + d.step
     const after = d.times[c.col] - Math.ceil(row.upper ?? 600)
     const next = new URLSearchParams(params)
-    next.delete('kind')
+    // The cell counts model calls under this page's filters only.
+    for (const key of ['kind', 'outcome', 'where']) next.delete(key)
     next.append('kind', 'model call')
     next.set('cell', cellParam({ after, before, min: row.lower, max: row.upper }))
     navigate(`/traces?${next}`)
@@ -142,13 +143,13 @@ export function MetricsPage() {
       <FilterPanels source="metrics" />
 
       <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <StatTile label="Calls" value={formatCount(callCount)} loading={!calls.data} detail="in this window" />
+        <StatTile label="Model calls" value={formatCount(callCount)} loading={!calls.data} detail="in this window" />
         <StatTile
           label="Error rate"
           value={formatPercent(errorRate)}
           loading={!calls.data}
           tone={errorRate ? 'error' : undefined}
-          detail={callTotals ? `${formatCount(callTotals.error ?? 0)} failed calls` : undefined}
+          detail={callTotals ? `${formatCount(callTotals.error ?? 0)} failed model calls` : undefined}
         />
         <StatTile
           label="Input tokens"
@@ -182,7 +183,7 @@ export function MetricsPage() {
 
       <SectionTitle>Trends</SectionTitle>
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-        <Panel title="Calls by outcome" subtitle={per(callsTrend.data)}>
+        <Panel title="Model calls by outcome" subtitle={per(callsTrend.data)}>
           <TimeChart data={callsTrend.data} styles={OUTCOME_STYLES} stacked integer format={fmtCount} {...nav} />
         </Panel>
         <Panel title="Tokens" subtitle={per(tokensTrend.data)}>

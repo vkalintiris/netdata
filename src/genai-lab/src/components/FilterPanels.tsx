@@ -25,7 +25,8 @@ import { cn } from '@/lib/utils'
 
 type Source = 'metrics' | 'spans'
 
-type Choice = { value: string; count: number; unmatchable?: string }
+// `listed` keeps a value with no count in the list.
+type Choice = { value: string; count: number; unmatchable?: string; listed?: boolean }
 
 const PANELS: { name: FilterName; label: string }[] = [
   { name: 'service', label: 'Service' },
@@ -60,7 +61,7 @@ function ChoiceList({
   const [term, setTerm] = useState('')
   const typed = term.trim()
   const rows = useMemo(() => {
-    const out = [...(choices ?? [])].filter((c) => c.count > 0)
+    const out = [...(choices ?? [])].filter((c) => c.count > 0 || c.listed)
     // A selection with no calls in this window stays listed, so it can be removed here.
     for (const v of chosen) if (!out.some((c) => c.value === v)) out.push({ value: v, count: 0 })
     out.sort((a, b) => b.count - a.count)
@@ -144,6 +145,19 @@ function FilterPanel({ name, label, source }: { name: FilterName; label: string;
         }
       : null,
   )
+  // A service that reports tool calls and no model call is on the Metrics page too, in its Tools section.
+  const toolServices = useSeries(
+    source === 'metrics' && name === 'service'
+      ? {
+          context: 'otel.derived_metrics.genai.tool_calls',
+          window,
+          points: 1,
+          timeGroup: 'sum',
+          aggregation: 'sum',
+          groupByLabels: [key],
+        }
+      : null,
+  )
   const query = useMemo(() => ({ ...spanQuery, filters: without(filters, key) }), [spanQuery, filters, key])
   const spans = useQuery({
     queryKey: ['span-values', window, query, key],
@@ -156,11 +170,17 @@ function FilterPanel({ name, label, source }: { name: FilterName; label: string;
     if (source === 'metrics') {
       if (!metrics.data) return undefined
       // The Agent reports a missing label as "[unset]", which no filter can match.
-      return Object.entries(totals(metrics.data)).map(([value, count]) => ({
+      const out: Choice[] = Object.entries(totals(metrics.data)).map(([value, count]) => ({
         value,
         count,
         unmatchable: value === '[unset]' ? UNSET : undefined,
       }))
+      for (const [value, count] of Object.entries(toolServices.data ? totals(toolServices.data) : {})) {
+        if (count > 0 && value !== '[unset]' && !out.some((c) => c.value === value)) {
+          out.push({ value, count: 0, listed: true })
+        }
+      }
+      return out
     }
     const t = spans.data
     if (!t) return undefined
@@ -168,7 +188,7 @@ function FilterPanel({ name, label, source }: { name: FilterName; label: string;
     if (t.unset) out.push({ value: '[unset]', count: t.unset, unmatchable: UNSET })
     if (t.other) out.push({ value: '[other]', count: t.other, unmatchable: OTHER })
     return out
-  }, [source, metrics.data, spans.data])
+  }, [source, metrics.data, toolServices.data, spans.data])
 
   // The GenAI charts count model calls.
   const unit = source === 'metrics' ? 'model calls' : unitOf(spanQuery.kinds)
